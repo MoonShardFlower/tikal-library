@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 import asyncio
 
-from tikal import LovenseBLED
+from tikal import LovenseBLED, ValidationError
 from tikal import LOVENSE_TOY_NAMES
 
 
@@ -29,7 +29,7 @@ class TestLovenseBLEDInitialization(unittest.TestCase):
 
     def test_initialization_with_invalid_model(self):
         """LovenseBLED raises ValueError for invalid model name."""
-        with self.assertRaises(ValueError) as context:
+        with self.assertRaises(ValidationError) as context:
             LovenseBLED(
                 self.mock_client,
                 "tx_uuid",
@@ -57,7 +57,7 @@ class TestLovenseBLEDInitialization(unittest.TestCase):
             self.mock_client, "tx_uuid", "rx_uuid", "Gush", self.on_power_off, ""
         )
 
-        with self.assertRaises(ValueError) as context:
+        with self.assertRaises(ValidationError) as context:
             bled.set_model_name("InvalidModel")
 
         self.assertIn("invalid model_name 'InvalidModel'", str(context.exception))
@@ -372,7 +372,7 @@ class TestLovenseBLEDQueryCommands(unittest.IsolatedAsyncioTestCase):
         self.on_power_off = Mock()
 
         self.bled = LovenseBLED(
-            self.mock_client, "tx_uuid", "rx_uuid", "Gush", self.on_power_off, ""
+            self.mock_client, "tx_uuid", "rx_uuid", "Nora", self.on_power_off, ""
         )
 
     async def test_get_battery_level_success(self):
@@ -513,17 +513,17 @@ class TestLovenseBLEDConnectionManagement(unittest.IsolatedAsyncioTestCase):
 
     async def test_is_connected_true(self):
         """is_connected returns True when a client is connected."""
-        self.assertTrue(self.bled.is_connected())
+        self.assertTrue(self.bled.is_connected)
 
     async def test_is_connected_false_not_connected(self):
         """is_connected returns False when a client reports not connected."""
         self.mock_client.is_connected = False
-        self.assertFalse(self.bled.is_connected())
+        self.assertFalse(self.bled.is_connected)
 
     async def test_is_connected_false_no_client(self):
         """is_connected returns False when a client is None."""
         self.bled._client = None
-        self.assertFalse(self.bled.is_connected())
+        self.assertFalse(self.bled.is_connected)
 
     async def test_disconnect_full_cleanup(self):
         """disconnect performs full cleanup."""
