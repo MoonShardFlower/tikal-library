@@ -8,8 +8,8 @@ class ToyCache:
 
     def __init__(self, cache_path: Path, default_model: str, logger_name: str):
         """
-        ToyCache is a persistent storage mapping bluetooth names (e.g. "LVS-A123") to model names (e.g. "Gush") so users
-        don't have to re-select models every time.
+        ToyCache is a persistent storage mapping bluetooth names (e.g. "LVS-A123") to model names (e.g. "Gush"),
+        so users don't have to re-select models every time.
         Args:
             cache_path: Path to the JSON cache file
             default_model: Default model name to use if a bluetooth name is not found in the cache
@@ -37,7 +37,9 @@ class ToyCache:
             return
         self._cache.update(updates)
         try:
-            self._cache_path.write_text(json.dumps(self._cache, indent=2), encoding="utf-8")
+            self._cache_path.write_text(
+                json.dumps(self._cache, indent=2), encoding="utf-8"
+            )
         except Exception as e:
             self._log.warning(
                 f"Error while updating ToyCache: {e} with details: {traceback.format_exc()}"
