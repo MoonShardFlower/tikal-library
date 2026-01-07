@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Callable, Any
 from bleak import BleakClient
 
-from .toy_data import LOVENSE_TOY_NAMES
+from .toy_data import LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES, ValidationError
 
 
 class ToyBLED(ABC):
@@ -56,6 +56,11 @@ class ToyBLED(ABC):
         return self._name
 
     @property
+    def is_connected(self) -> bool:
+        "True if the toy is connected, False otherwise."
+        return self._client is not None and self._client.is_connected
+
+    @property
     def intentional_disconnect(self) -> bool:
         """True if the toy was intentionally disconnected, False otherwise."""
         return self._intentional_disconnect
@@ -66,7 +71,8 @@ class ToyBLED(ABC):
         Sets the model name of the toy.
         Args:
             model_name (str): New model name
-        Raises ValueError: If model_name is not a valid model
+        Raises:
+             ValidationError: If model_name is not a valid model
         """
         raise NotImplementedError
 
@@ -125,15 +131,6 @@ class ToyBLED(ABC):
     async def disconnect(self) -> None:
         """Disconnect from the device. Stops all actions, disables notifications, and closes the BLE connection.
         Should be called before the toy object is destroyed."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def is_connected(self) -> bool:
-        """
-        Check if the toy is currently connected.
-        Returns:
-            bool: True if connected, False otherwise
-        """
         raise NotImplementedError
 
     def _clear_response_queue(self) -> None:
@@ -195,9 +192,11 @@ class LovenseBLED(ToyBLED):
         Sets the model name of the toy.
         Args:
             model_name: New model name (must be a key in LOVENSE_TOY_NAMES)
+        Raises:
+            ValidationError: If model_name is not a valid Lovense model
         """
         if model_name not in LOVENSE_TOY_NAMES:
-            raise ValueError(
+            raise ValidationError(
                 f"LovenseBLED at address {self._address} has an invalid model_name '{model_name}'. "
                 f"Valid names are: {list(LOVENSE_TOY_NAMES.keys())}"
             )
@@ -225,7 +224,7 @@ class LovenseBLED(ToyBLED):
 
     async def intensity2(self, level: int) -> bool:
         """
-        Set the secondary capability (e.g. rotation, oscillation) to the specified level (0-20).
+        Set the secondary capability (e.g., rotation, oscillation) to the specified level (0-20).
         Returns:
             bool: True if successful or no secondary capability exists, False otherwise
         """
@@ -287,16 +286,14 @@ class LovenseBLED(ToyBLED):
                 f"Disconnect error for {self._model_name} at {self._address}: {e} with details {traceback.format_exc()}"
             )
 
-    def is_connected(self) -> bool:
-        """Check if the device is currently connected."""
-        return self._client is not None and self._client.is_connected
-
     async def rotate_change_direction(self) -> bool:
         """
-        Change rotation direction (available on Nora, Ridge).
+        Change rotation direction. Returns True and does nothing if the toy does not support rotation.
         Returns:
             bool: True if successful, False otherwise
         """
+        if not self.model_name in ROTATION_TOY_NAMES:
+            return True
         response = await self._execute_command("RotateChange")
         return response == "OK"
 
@@ -392,7 +389,7 @@ class LovenseBLED(ToyBLED):
         Returns:
             bool: True if successfully sent, False otherwise
         """
-        if not self._client or not self.is_connected():
+        if not self._client or not self.is_connected:
             return False
         try:
             cmd_bytes = (
@@ -422,7 +419,7 @@ class LovenseBLED(ToyBLED):
         Returns:
             Optional[str]: Response string from toy, or None if a timeout/error occurred
         """
-        self._log.info(
+        self._log.debug(
             f"Sending command {command} to {self._model_name} at {self._address}"
         )
         async with self._command_lock:  # Prevent response mixing
@@ -447,7 +444,7 @@ class LovenseBLED(ToyBLED):
                 )
                 return None
 
-            self._log.info(
+            self._log.debug(
                 f"Received response from {self._model_name} at {self._address}: {response}"
             )
             return response

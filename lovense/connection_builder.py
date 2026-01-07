@@ -92,6 +92,7 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         Raises:
             Exception: Any exception from BleakScanner.discover()
         """
+        self._log.info(f"Scanning for Lovense devices for {timeout} seconds")
         devices = await self._scanner_class.discover(timeout=timeout)
         self._cached_ble_devices = {}
         toys = []
@@ -100,6 +101,7 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
             if device.name and device.name.startswith("LVS-"):
                 self._cached_ble_devices[device.address] = device
                 toys.append(LovenseData(device.name, device.address))
+        self._log.debug(f"Discovered {len(toys)} Lovense devices")
         return toys
 
     async def create_toys(
@@ -112,6 +114,7 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         Returns:
             list[LovenseBLED | BaseException]: List of LovenseBLED instances and exceptions for failed connections
         """
+        self._log.info(f"Connecting to {len(to_connect)} Lovense devices")
         if not to_connect:
             return []
         coroutines = []
@@ -119,6 +122,8 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
             ble_device = self._cached_ble_devices[toy_data.toy_id]
             coroutines.append(self._create_toy(toy_data.model_name, ble_device))
         results = await asyncio.gather(*coroutines, return_exceptions=True)
+        count = len([toy for toy in results if isinstance(toy, LovenseBLED)])
+        self._log.debug(f"Connected successfully to {count} Lovense devices")
         return results
 
     # ========================================================================
@@ -178,7 +183,6 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
                 f"Invalid model_name '{model_name}' for address {device.address}. "
                 f"Valid model_names are: {list(LOVENSE_TOY_NAMES.keys())}"
             )
-
         # Attempt to connect
         try:
             client = self._client_class(device, self._filtered_on_disconnect)
