@@ -1,7 +1,8 @@
 import json
-import os
 import tempfile
 import unittest
+from pathlib import Path
+import shutil
 
 from tikal import ToyCache
 
@@ -12,34 +13,30 @@ class TestToyCache(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures before each test method."""
         # Create a temporary directory for test cache files
-        self.test_dir = tempfile.mkdtemp()
-        self.cache_path = os.path.join(self.test_dir, "test_cache.json")
+        self.test_dir = Path(tempfile.mkdtemp())
+        self.cache_path = self.test_dir / "test_cache.json"
         self.default_model = "DefaultModel"
 
     def tearDown(self):
         """Clean up after each test method."""
-        # Remove test cache file and directory
-        import shutil
-
-        if os.path.exists(self.test_dir):
+        if self.test_dir.exists():
             shutil.rmtree(self.test_dir)
 
     def test_init_creates_cache_file(self):
         """Test that __init__ creates a cache file if it doesn't exist."""
         _ = ToyCache(self.cache_path, self.default_model, "")
-        self.assertTrue(os.path.exists(self.cache_path))
+        self.assertTrue(self.cache_path.exists())
 
     def test_init_creates_directory(self):
         """Test that __init__ creates the directory structure if it doesn't exist."""
-        nested_path = os.path.join(self.test_dir, "subdir", "cache.json")
+        nested_path = self.test_dir / "subdir" / "cache.json"
         _ = ToyCache(nested_path, self.default_model, "")
-        self.assertTrue(os.path.exists(nested_path))
+        self.assertTrue(nested_path.exists())
 
     def test_init_reads_existing_cache(self):
         """Test that __init__ reads an existing cache file."""
         test_data = {"LVS-A123": "Gush", "LVS-B456": "Edge"}
-        with open(self.cache_path, "w", encoding="utf-8") as f:
-            json.dump(test_data, f)
+        self.cache_path.write_text(json.dumps(test_data), encoding="utf-8")
 
         cache = ToyCache(self.cache_path, self.default_model, "")
         self.assertEqual(cache.get_model_name("LVS-A123"), "Gush")
@@ -47,14 +44,13 @@ class TestToyCache(unittest.TestCase):
 
     def test_init_with_empty_cache_path(self):
         """Test initialization with an empty cache path."""
-        cache = ToyCache("", self.default_model, "")
+        cache = ToyCache(Path(), self.default_model, "")
         self.assertEqual(cache.get_model_name("any_name"), self.default_model)
 
     def test_get_model_name_returns_cached_value(self):
         """Test that get_model_name returns a cached value when it exists."""
         test_data = {"LVS-A123": "Gush"}
-        with open(self.cache_path, "w", encoding="utf-8") as f:
-            json.dump(test_data, f)
+        self.cache_path.write_text(json.dumps(test_data), encoding="utf-8")
 
         cache = ToyCache(self.cache_path, self.default_model, "")
         self.assertEqual(cache.get_model_name("LVS-A123"), "Gush")
@@ -73,8 +69,7 @@ class TestToyCache(unittest.TestCase):
     def test_update_overwrites_existing_entry(self):
         """Test that update overwrites existing entries."""
         test_data = {"LVS-A123": "OldModel"}
-        with open(self.cache_path, "w", encoding="utf-8") as f:
-            json.dump(test_data, f)
+        self.cache_path.write_text(json.dumps(test_data), encoding="utf-8")
 
         cache = ToyCache(self.cache_path, self.default_model, "")
         cache.update({"LVS-A123": "NewModel"})
@@ -92,15 +87,14 @@ class TestToyCache(unittest.TestCase):
 
     def test_update_with_empty_cache_path(self):
         """Test that update with empty cache_path doesn't raise an error."""
-        cache = ToyCache("", self.default_model, "")
+        cache = ToyCache(Path(), self.default_model, "")
         cache.update({"LVS-A123": "Gush"})
         # Should not raise an exception
 
     def test_read_handles_corrupted_json(self):
         """Test that _read handles corrupted JSON gracefully."""
         # Write invalid JSON
-        with open(self.cache_path, "w", encoding="utf-8") as f:
-            f.write("{invalid json")
+        self.cache_path.write_text("{invalid json", encoding="utf-8")
 
         # Should not raise exception, should initialize empty cache
         cache = ToyCache(self.cache_path, self.default_model, "")
@@ -109,8 +103,7 @@ class TestToyCache(unittest.TestCase):
     def test_read_handles_non_dict_json(self):
         """Test that _read handles non-dict JSON gracefully."""
         # Write valid JSON but not a dict
-        with open(self.cache_path, "w", encoding="utf-8") as f:
-            json.dump(["not", "a", "dict"], f)
+        self.cache_path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
 
         cache = ToyCache(self.cache_path, self.default_model, "")
         self.assertEqual(cache.get_model_name("any_name"), self.default_model)

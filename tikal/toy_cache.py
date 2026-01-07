@@ -1,12 +1,12 @@
 import json
 from logging import getLogger
-import os
+from pathlib import Path
 import traceback
 
 
 class ToyCache:
 
-    def __init__(self, cache_path: str, default_model: str, logger_name: str):
+    def __init__(self, cache_path: Path, default_model: str, logger_name: str):
         """
         ToyCache is a persistent storage mapping bluetooth names (e.g. "LVS-A123") to model names (e.g. "Gush") so users
         don't have to re-select models every time.
@@ -19,7 +19,7 @@ class ToyCache:
         self._default_model = default_model
         self._cache = dict()
         self._log = getLogger(logger_name)
-        if cache_path:
+        if cache_path.name:
             self._read()
         self._log.info(
             f"Initialized ToyCache with {len(self._cache)} entries from {cache_path}. Default model: {default_model}"
@@ -33,12 +33,11 @@ class ToyCache:
             updates: Dictionary of toy names to model names to add/update
         """
         self._log.info(f"Updating ToyCache with updates={updates}")
-        if not self._cache_path:
+        if not self._cache_path.name:
             return
         self._cache.update(updates)
         try:
-            with open(self._cache_path, "w", encoding="utf-8") as file:
-                json.dump(self._cache, file, indent=2)
+            self._cache_path.write_text(json.dumps(self._cache, indent=2), encoding="utf-8")
         except Exception as e:
             self._log.warning(
                 f"Error while updating ToyCache: {e} with details: {traceback.format_exc()}"
@@ -59,14 +58,13 @@ class ToyCache:
 
     def _ensure_cache_exists(self) -> None:
         """Ensure the cache directory and file exist."""
-        os.makedirs(os.path.dirname(self._cache_path), exist_ok=True)
-        if not os.path.exists(self._cache_path):
-            with open(self._cache_path, "w", encoding="utf-8") as file:
-                json.dump({}, file)
+        self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self._cache_path.exists():
+            self._cache_path.write_text("{}", encoding="utf-8")
 
     def _read(self):
         """Read the cache from the disk. Fails silently if the cache file cannot be read."""
-        if not self._cache_path:
+        if not self._cache_path.name:
             self._log.warning(
                 "No filepath to ToyCache given, ToyCache is non-functional"
             )
