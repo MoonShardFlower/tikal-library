@@ -74,8 +74,9 @@ class MockBleakScanner:
         Returns devices simulating:
         - Solace: Normal Solace toy (Thrusting and Depth commands)
         - Gush: Normal Gush toy (Vibrate command)
-        - Gush connection_failure: Gush that stops responding 10 s after the first intensity command
-        - Gush POWEROFF: Gush that sends POWEROFF 10 s after the first intensity command
+        - Nora: Normal Nora toy (Rotate command)
+        - Gush connection_failure: Gush that stops responding 5 s after the first intensity command
+        - Gush POWEROFF: Gush that sends POWEROFF 5 s after the first intensity command
         """
         await asyncio.sleep(
             timeout * 0.1
@@ -84,8 +85,9 @@ class MockBleakScanner:
         all_devices = [
             MockBLEDevice("LVS-Solace", "00:00:00:00:00:01"),
             MockBLEDevice("LVS-Gush", "00:00:00:00:00:02"),
-            MockBLEDevice("LVS-Gush connection_failure", "00:00:00:00:00:03"),
-            MockBLEDevice("LVS-Gush POWEROFF", "00:00:00:00:00:04"),
+            MockBLEDevice("LVS-Nora", "00:00:00:00:00:03"),
+            MockBLEDevice("LVS-Gush connection_failure", "00:00:00:00:00:04"),
+            MockBLEDevice("LVS-Gush POWEROFF", "00:00:00:00:00:05"),
         ]
 
         # Filter out devices that are currently connected
@@ -102,8 +104,8 @@ class MockBleakClient:
 
     Supports different behaviors based on device name:
     - Normal operation: Responds to all commands
-    - connection_failure: Stops responding 10s after the first intensity command
-    - POWEROFF: Sends POWEROFF and disconnects 10s after the first intensity command
+    - connection_failure: Stops responding 5s after the first intensity command
+    - POWEROFF: Sends POWEROFF and disconnects 5s after the first intensity command
     """
 
     def __init__(
@@ -158,6 +160,7 @@ class MockBleakClient:
         # Unregister this device so it will appear in future scans
         MockBleakScanner.unregister_connection(self.address)
 
+    @property
     def is_connected(self) -> bool:
         """Check connection status"""
         return self._is_connected
@@ -240,18 +243,18 @@ class MockBleakClient:
             return False
 
         elapsed = asyncio.get_event_loop().time() - self._first_intensity_time
-        return elapsed >= 10.0
+        return elapsed >= 5.0
 
     async def _trigger_connection_failure(self) -> None:
         """Simulate connection failure after 10 seconds"""
-        await asyncio.sleep(10.0)
+        await asyncio.sleep(5.0)
         if self._is_connected and not self._failure_triggered:
             self._failure_triggered = True
             # Simulate the device becoming unresponsive but not explicitly disconnecting
 
     async def _trigger_power_off(self) -> None:
         """Simulate POWEROFF notification after 10 seconds"""
-        await asyncio.sleep(10.0)
+        await asyncio.sleep(5.0)
         if self._is_connected and not self._failure_triggered:
             self._failure_triggered = True
 
@@ -321,6 +324,12 @@ class MockBleakClient:
         # Gush supports Vibrate
         if self._model_name == "Gush":
             if command.startswith("Vibrate:"):
+                return b"OK;"
+            return b"err;"
+
+        # Nora supports Rotate
+        if self._model_name == "Nora":
+            if command.startswith("Rotate:"):
                 return b"OK;"
             return b"err;"
 
