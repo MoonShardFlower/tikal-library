@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=80.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tikal"
+version = "0.1.0"
+description = "Toys I know and love: Unofficial Python Library to connect to and control Lovense Toys via bluetooth"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+
+authors = [
+    { name = "SnugglyBound", email = "SnugglyBound@gmail.com" }
+]
+
+dependencies = [
+    "bleak~=2.1.1"
+]
+
+keywords = [
+    "lovense",
+    "bluetooth",
+    "ble",
+    "bleak",
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Hardware :: Bluetooth"
+]
+
+[project.optional-dependencies]
+format = [
+    "black>=25.12.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/MoonShardFlower/lovense-bled"
+
+[tool.setuptools]
+packages = { find = {} }
