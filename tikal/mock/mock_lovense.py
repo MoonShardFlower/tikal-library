@@ -246,11 +246,17 @@ class MockBleakClient:
         return elapsed >= 5.0
 
     async def _trigger_connection_failure(self) -> None:
-        """Simulate connection failure after 10 seconds"""
+        """Simulate connection failure after 5 seconds"""
         await asyncio.sleep(5.0)
+
         if self._is_connected and not self._failure_triggered:
             self._failure_triggered = True
-            # Simulate the device becoming unresponsive but not explicitly disconnecting
+            self._is_connected = False
+            self._notification_callback = None
+
+            # Notify the client of disconnection
+            if self._disconnected_callback:
+                self._disconnected_callback(self)
 
     async def _trigger_power_off(self) -> None:
         """Simulate POWEROFF notification after 10 seconds"""
