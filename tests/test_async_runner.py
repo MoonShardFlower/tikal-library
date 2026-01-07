@@ -2,7 +2,7 @@ import unittest
 import asyncio
 import time
 
-from lovense.utils import AsyncRunner
+from tikal.utils import AsyncRunner
 
 
 class TestAsyncRunner(unittest.TestCase):

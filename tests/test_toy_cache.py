@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from lovense import ToyCache
+from tikal import ToyCache
 
 
 class TestToyCache(unittest.TestCase):

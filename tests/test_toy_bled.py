@@ -2,8 +2,8 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 import asyncio
 
-from lovense import LovenseBLED
-from lovense import LOVENSE_TOY_NAMES
+from tikal import LovenseBLED
+from tikal import LOVENSE_TOY_NAMES
 
 
 class TestLovenseBLEDInitialization(unittest.TestCase):
