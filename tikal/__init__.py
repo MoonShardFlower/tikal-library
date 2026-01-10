@@ -8,6 +8,8 @@ from .toy_data import (
 from .toy_cache import ToyCache
 from .connection_builder import ToyConnectionBuilder, LovenseConnectionBuilder
 from .toy_bled import ToyBLED, LovenseBLED
+from .toy_hub import ToyHub
+from .toy_controller import ToyController, LovenseController
 
 __all__ = [
     "ValidationError",
@@ -20,6 +22,9 @@ __all__ = [
     "LovenseConnectionBuilder",
     "ToyBLED",
     "LovenseBLED",
+    "ToyHub",
+    "ToyController",
+    "LovenseController",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
