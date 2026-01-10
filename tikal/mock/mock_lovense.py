@@ -130,7 +130,11 @@ class MockBleakClient:
 
     async def connect(self) -> None:
         """Simulate connection to the toy"""
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(1.0)
+
+        if self._failure_triggered:
+            raise RuntimeError("Connection failed")
+
         self._is_connected = True
 
         # Register this device as connected so it won't appear in future scans
