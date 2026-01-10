@@ -1,0 +1,213 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>tikal.toy_data &mdash; TIKAL 1.0.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=8d563738"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            TIKAL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../modules.html">tikal</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">TIKAL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">tikal.toy_data</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for tikal.toy_data</h1><div class="highlight"><pre>
+<span></span><span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span>
+
+
+<div class="viewcode-block" id="ValidationError">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_data.ValidationError">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ValidationError</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Raised when a model_name is not a valid model name for this toy.&quot;&quot;&quot;</span>
+
+    <span class="k">pass</span></div>
+
+
+
+<div class="viewcode-block" id="ToyData">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_data.ToyData">[docs]</a>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">ToyData</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Base class for toy discovery data.</span>
+
+<span class="sd">    Attributes:</span>
+<span class="sd">        name: Human readable identifier for the toy</span>
+<span class="sd">        toy_id: Unique identifier for the toy (If the toy is connected via bluetooth: toy_id == Bluetooth address)</span>
+<span class="sd">        model_name: Model name of the toy (e.g. &quot;Lush&quot;)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">toy_id</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">model_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span></div>
+
+
+
+<div class="viewcode-block" id="LovenseData">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_data.LovenseData">[docs]</a>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">LovenseData</span><span class="p">(</span><span class="n">ToyData</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Lovense-specific toy discovery data.</span>
+
+<span class="sd">    Attributes:</span>
+<span class="sd">        name: Bluetooth name of the toy, serving as human-readable identifier</span>
+<span class="sd">        toy_id: Bluetooth address of the toy, serving as its unique identifier</span>
+<span class="sd">        model_name: Model name of the toy (e.g. &quot;Lush&quot;). Most be a key in LOVENSE_TOY_NAMES.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">pass</span></div>
+
+
+
+<div class="viewcode-block" id="ToyCommands">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_data.ToyCommands">[docs]</a>
+<span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">ToyCommands</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Command configuration for a Lovense toy model.</span>
+
+<span class="sd">    Attributes:</span>
+<span class="sd">        intensity1_name: Display name for the primary capability (e.g. &quot;Vibration&quot;)</span>
+<span class="sd">        intensity1_command: Command string for primary capability (e.g. &quot;Vibrate&quot;)</span>
+<span class="sd">        intensity2_name: Display name for secondary capability (e.g. &quot;Rotation&quot;), None if not available</span>
+<span class="sd">        intensity2_command: Command string for secondary capability (e.g. &quot;Rotate&quot;), None if not available</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">intensity1_name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">intensity1_command</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">intensity2_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">intensity2_command</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span></div>
+
+
+
+<span class="c1"># Maps Lovense toy models to their respective command sets</span>
+<span class="c1"># Models of different versions are treated the same (e.g., Lush1, Lush2, Lush3 all use &quot;Lush&quot;)</span>
+<span class="n">LOVENSE_TOY_NAMES</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;Solace&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Thrust&quot;</span><span class="p">,</span> <span class="s2">&quot;Thrusting&quot;</span><span class="p">,</span> <span class="s2">&quot;Depth&quot;</span><span class="p">,</span> <span class="s2">&quot;Depth&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;SexMachine&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span>
+        <span class="s2">&quot;Thrust&quot;</span><span class="p">,</span> <span class="s2">&quot;Thrusting&quot;</span><span class="p">,</span> <span class="s2">&quot;Depth&quot;</span><span class="p">,</span> <span class="s2">&quot;Depth&quot;</span>
+    <span class="p">),</span>  <span class="c1"># Commands unknown, assume it uses the same ones as Solace</span>
+    <span class="s2">&quot;Lush&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Ferri&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Nora&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">,</span> <span class="s2">&quot;Rotation&quot;</span><span class="p">,</span> <span class="s2">&quot;Rotate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Osci&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span>
+        <span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">,</span> <span class="s2">&quot;Oscillation&quot;</span><span class="p">,</span> <span class="s2">&quot;Oscillate&quot;</span>
+    <span class="p">),</span>  <span class="c1"># Unsure about the second command, Oscillate assumed</span>
+    <span class="s2">&quot;Mission&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Flexer&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span>
+        <span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">,</span> <span class="s2">&quot;Fingering&quot;</span><span class="p">,</span> <span class="s2">&quot;Finger&quot;</span>
+    <span class="p">),</span>  <span class="c1"># Second command unknown; I just assume &#39;Finger&#39;</span>
+    <span class="s2">&quot;Gravity&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">,</span> <span class="s2">&quot;Thrust&quot;</span><span class="p">,</span> <span class="s2">&quot;Thrusting&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Dolce&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Vulse&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Tenera&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Sucking&quot;</span><span class="p">,</span> <span class="s2">&quot;Suck&quot;</span><span class="p">),</span>  <span class="c1"># Command unknown, just assume &#39;Suck&#39;</span>
+    <span class="s2">&quot;Lapis&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span>
+        <span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span>
+    <span class="p">),</span>  <span class="c1"># Has 3 independent vibrators, no idea how to independently control them</span>
+    <span class="s2">&quot;Ambi&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Hyphy&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Exomoon&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Gush&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span>
+        <span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span>
+    <span class="p">),</span>  <span class="c1"># Apparently, Oscillation cannot be controlled independently</span>
+    <span class="s2">&quot;Edge&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span>
+        <span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span>
+    <span class="p">),</span>  <span class="c1"># Has 2 independent vibrators, no idea how to independently control them</span>
+    <span class="s2">&quot;Max&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">,</span> <span class="s2">&quot;Air&quot;</span><span class="p">,</span> <span class="s2">&quot;Air:Level&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Diamo&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Calor&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>  <span class="c1"># Heat function control unknown</span>
+    <span class="s2">&quot;Ridge&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">,</span> <span class="s2">&quot;Rotation&quot;</span><span class="p">,</span> <span class="s2">&quot;Rotate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Hush&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Domi&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span><span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;Gemini&quot;</span><span class="p">:</span> <span class="n">ToyCommands</span><span class="p">(</span>
+        <span class="s2">&quot;Vibration&quot;</span><span class="p">,</span> <span class="s2">&quot;Vibrate&quot;</span>
+    <span class="p">),</span>  <span class="c1"># Has 2 independent vibrators, no idea how to independently control them</span>
+<span class="p">}</span>
+
+<span class="n">ROTATION_TOY_NAMES</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;Nora&quot;</span><span class="p">,</span> <span class="s2">&quot;Ridge&quot;</span><span class="p">]</span>
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, SnugglyBound.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

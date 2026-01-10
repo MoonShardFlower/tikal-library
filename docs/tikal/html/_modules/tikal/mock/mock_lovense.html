@@ -1,0 +1,503 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>tikal.mock.mock_lovense &mdash; TIKAL 1.0.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../../_static/documentation_options.js?v=8d563738"></script>
+      <script src="../../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../../genindex.html" />
+    <link rel="search" title="Search" href="../../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../../index.html" class="icon icon-home">
+            TIKAL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../../modules.html">tikal</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../../index.html">TIKAL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">tikal.mock.mock_lovense</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for tikal.mock.mock_lovense</h1><div class="highlight"><pre>
+<span></span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Optional</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">enum</span><span class="w"> </span><span class="kn">import</span> <span class="n">Enum</span>
+
+
+<div class="viewcode-block" id="MockBehavior">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBehavior">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">MockBehavior</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Defines different toy simulation behaviors for testing&quot;&quot;&quot;</span>
+
+    <span class="n">NORMAL</span> <span class="o">=</span> <span class="s2">&quot;normal&quot;</span>
+    <span class="n">CONNECTION_FAILURE</span> <span class="o">=</span> <span class="s2">&quot;connection_failure&quot;</span>
+    <span class="n">POWER_OFF</span> <span class="o">=</span> <span class="s2">&quot;power_off&quot;</span></div>
+
+
+
+<div class="viewcode-block" id="MockCharacteristic">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockCharacteristic">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">MockCharacteristic</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Mock GATT characteristic that matches bleak&#39;s BleakGATTCharacteristic interface&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">uuid</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">uuid</span> <span class="o">=</span> <span class="n">uuid</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">uuid</span></div>
+
+
+
+<div class="viewcode-block" id="MockService">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockService">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">MockService</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Mock GATT service that matches bleak&#39;s BleakGATTService interface&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">uuid</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">characteristics</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">MockCharacteristic</span><span class="p">]):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">uuid</span> <span class="o">=</span> <span class="n">uuid</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">characteristics</span> <span class="o">=</span> <span class="n">characteristics</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">uuid</span></div>
+
+
+
+<div class="viewcode-block" id="MockBLEDevice">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBLEDevice">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">MockBLEDevice</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Mock a BLE device that simulates discovered toys&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">address</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="n">name</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">address</span> <span class="o">=</span> <span class="n">address</span></div>
+
+
+
+<div class="viewcode-block" id="MockBleakScanner">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakScanner">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">MockBleakScanner</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Mock BLE scanner that returns predefined toy configurations.</span>
+
+<span class="sd">    Tracks connected devices globally to simulate real Bluetooth behavior where</span>
+<span class="sd">    connected devices stop advertising and don&#39;t appear in scan results.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">_connected_addresses</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+
+<div class="viewcode-block" id="MockBleakScanner.register_connection">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakScanner.register_connection">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">register_connection</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">address</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Register a device as connected (will be excluded from scan results)&quot;&quot;&quot;</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_connected_addresses</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">address</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="MockBleakScanner.unregister_connection">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakScanner.unregister_connection">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">unregister_connection</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">address</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Unregister a device as connected (will appear in scan results again)&quot;&quot;&quot;</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_connected_addresses</span><span class="o">.</span><span class="n">discard</span><span class="p">(</span><span class="n">address</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="MockBleakScanner.reset">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakScanner.reset">[docs]</a>
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">reset</span><span class="p">(</span><span class="bp">cls</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Reset all connection tracking (useful for tests)&quot;&quot;&quot;</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_connected_addresses</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="MockBleakScanner.discover">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakScanner.discover">[docs]</a>
+    <span class="nd">@staticmethod</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">discover</span><span class="p">(</span><span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">MockBLEDevice</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Returns a list of mock devices with specific behaviors encoded in their names.</span>
+<span class="sd">        Only returns devices that are not currently connected.</span>
+
+<span class="sd">        Returns devices simulating:</span>
+<span class="sd">        - Solace: Normal Solace toy (Thrusting and Depth commands)</span>
+<span class="sd">        - Gush: Normal Gush toy (Vibrate command)</span>
+<span class="sd">        - Nora: Normal Nora toy (Rotate command)</span>
+<span class="sd">        - Gush connection_failure: Gush that stops responding 5 s after the first intensity command</span>
+<span class="sd">        - Gush POWEROFF: Gush that sends POWEROFF 5 s after the first intensity command</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span>
+            <span class="n">timeout</span> <span class="o">*</span> <span class="mf">0.1</span>
+        <span class="p">)</span>  <span class="c1"># Simulate scan time (Actual scan time would be exactly timeout-seconds-long)</span>
+
+        <span class="n">all_devices</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="n">MockBLEDevice</span><span class="p">(</span><span class="s2">&quot;LVS-Solace&quot;</span><span class="p">,</span> <span class="s2">&quot;00:00:00:00:00:01&quot;</span><span class="p">),</span>
+            <span class="n">MockBLEDevice</span><span class="p">(</span><span class="s2">&quot;LVS-Gush&quot;</span><span class="p">,</span> <span class="s2">&quot;00:00:00:00:00:02&quot;</span><span class="p">),</span>
+            <span class="n">MockBLEDevice</span><span class="p">(</span><span class="s2">&quot;LVS-Nora&quot;</span><span class="p">,</span> <span class="s2">&quot;00:00:00:00:00:03&quot;</span><span class="p">),</span>
+            <span class="n">MockBLEDevice</span><span class="p">(</span><span class="s2">&quot;LVS-Gush connection_failure&quot;</span><span class="p">,</span> <span class="s2">&quot;00:00:00:00:00:04&quot;</span><span class="p">),</span>
+            <span class="n">MockBLEDevice</span><span class="p">(</span><span class="s2">&quot;LVS-Gush POWEROFF&quot;</span><span class="p">,</span> <span class="s2">&quot;00:00:00:00:00:05&quot;</span><span class="p">),</span>
+        <span class="p">]</span>
+
+        <span class="c1"># Filter out devices that are currently connected</span>
+        <span class="k">return</span> <span class="p">[</span>
+            <span class="n">device</span>
+            <span class="k">for</span> <span class="n">device</span> <span class="ow">in</span> <span class="n">all_devices</span>
+            <span class="k">if</span> <span class="n">device</span><span class="o">.</span><span class="n">address</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">MockBleakScanner</span><span class="o">.</span><span class="n">_connected_addresses</span>
+        <span class="p">]</span></div>
+</div>
+
+
+
+<div class="viewcode-block" id="MockBleakClient">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakClient">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">MockBleakClient</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Mock BLE client that simulates Lovense toy communication.</span>
+
+<span class="sd">    Supports different behaviors based on device name:</span>
+<span class="sd">    - Normal operation: Responds to all commands</span>
+<span class="sd">    - connection_failure: Stops responding 5s after the first intensity command</span>
+<span class="sd">    - POWEROFF: Sends POWEROFF and disconnects 5s after the first intensity command</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">MockBLEDevice</span><span class="p">,</span> <span class="n">disconnected_callback</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="n">Any</span><span class="p">],</span> <span class="n">Any</span><span class="p">]</span>
+    <span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">address</span> <span class="o">=</span> <span class="n">device</span><span class="o">.</span><span class="n">address</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="n">device</span><span class="o">.</span><span class="n">name</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_device</span> <span class="o">=</span> <span class="n">device</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_disconnected_callback</span> <span class="o">=</span> <span class="n">disconnected_callback</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_is_connected</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Callable</span><span class="p">[[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">bytes</span><span class="p">],</span> <span class="kc">None</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_services_cache</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">list</span><span class="p">[</span><span class="n">MockService</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_battery_level</span> <span class="o">=</span> <span class="mi">85</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_first_intensity_time</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_behavior</span> <span class="o">=</span> <span class="n">MockBehavior</span><span class="o">.</span><span class="n">NORMAL</span>
+        <span class="k">if</span> <span class="s2">&quot;connection_failure&quot;</span> <span class="ow">in</span> <span class="n">device</span><span class="o">.</span><span class="n">name</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_behavior</span> <span class="o">=</span> <span class="n">MockBehavior</span><span class="o">.</span><span class="n">CONNECTION_FAILURE</span>
+        <span class="k">elif</span> <span class="s2">&quot;POWEROFF&quot;</span> <span class="ow">in</span> <span class="n">device</span><span class="o">.</span><span class="n">name</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_behavior</span> <span class="o">=</span> <span class="n">MockBehavior</span><span class="o">.</span><span class="n">POWER_OFF</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span> <span class="o">=</span> <span class="n">device</span><span class="o">.</span><span class="n">name</span><span class="o">.</span><span class="n">split</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s2">&quot;LVS-&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_failure_triggered</span> <span class="o">=</span> <span class="kc">False</span>
+
+<div class="viewcode-block" id="MockBleakClient.connect">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakClient.connect">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">connect</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Simulate connection to the toy&quot;&quot;&quot;</span>
+        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">1.0</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_failure_triggered</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Connection failed&quot;</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_is_connected</span> <span class="o">=</span> <span class="kc">True</span>
+
+        <span class="c1"># Register this device as connected so it won&#39;t appear in future scans</span>
+        <span class="n">MockBleakScanner</span><span class="o">.</span><span class="n">register_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">address</span><span class="p">)</span>
+
+        <span class="c1"># Create a mock service structure for UUID discovery</span>
+        <span class="n">base_uuid</span> <span class="o">=</span> <span class="s2">&quot;40300001-0023-4bd4-bbd5-a6920e4c5653&quot;</span>
+        <span class="n">tx_uuid</span> <span class="o">=</span> <span class="s2">&quot;40300002-0023-4bd4-bbd5-a6920e4c5653&quot;</span>
+        <span class="n">rx_uuid</span> <span class="o">=</span> <span class="s2">&quot;40300003-0023-4bd4-bbd5-a6920e4c5653&quot;</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_services_cache</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="n">MockService</span><span class="p">(</span>
+                <span class="n">uuid</span><span class="o">=</span><span class="n">base_uuid</span><span class="p">,</span>
+                <span class="n">characteristics</span><span class="o">=</span><span class="p">[</span>
+                    <span class="n">MockCharacteristic</span><span class="p">(</span><span class="n">tx_uuid</span><span class="p">),</span>
+                    <span class="n">MockCharacteristic</span><span class="p">(</span><span class="n">rx_uuid</span><span class="p">),</span>
+                <span class="p">],</span>
+            <span class="p">)</span>
+        <span class="p">]</span></div>
+
+
+<div class="viewcode-block" id="MockBleakClient.disconnect">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakClient.disconnect">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">disconnect</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Simulate disconnection&quot;&quot;&quot;</span>
+        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.01</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_is_connected</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span> <span class="o">=</span> <span class="kc">None</span>
+
+        <span class="c1"># Unregister this device so it will appear in future scans</span>
+        <span class="n">MockBleakScanner</span><span class="o">.</span><span class="n">unregister_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">address</span><span class="p">)</span></div>
+
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_connected</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check connection status&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_connected</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">services</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">MockService</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Return mock GATT services&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_services_cache</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="p">[]</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_services_cache</span>
+
+<div class="viewcode-block" id="MockBleakClient.start_notify">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakClient.start_notify">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">start_notify</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">_</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">callback</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">bytes</span><span class="p">],</span> <span class="kc">None</span><span class="p">]</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Start notifications on a characteristic&quot;&quot;&quot;</span>
+        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.01</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_connected</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Not connected&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span> <span class="o">=</span> <span class="n">callback</span></div>
+
+
+<div class="viewcode-block" id="MockBleakClient.stop_notify">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakClient.stop_notify">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">stop_notify</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">_</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Stop notifications on a characteristic&quot;&quot;&quot;</span>
+        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.01</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span> <span class="o">=</span> <span class="kc">None</span></div>
+
+
+<div class="viewcode-block" id="MockBleakClient.write_gatt_char">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakClient.write_gatt_char">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">write_gatt_char</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">_</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">data</span><span class="p">:</span> <span class="nb">bytes</span><span class="p">,</span> <span class="n">response</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Simulate writing to a GATT characteristic (sending commands to the toy).</span>
+<span class="sd">        Processes commands and triggers appropriate responses via notification callback.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_connected</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Not connected&quot;</span><span class="p">)</span>
+
+        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.01</span><span class="p">)</span>
+
+        <span class="c1"># Decode the command</span>
+        <span class="n">command</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">(</span><span class="s2">&quot;;&quot;</span><span class="p">)</span>
+
+        <span class="c1"># Check if this is an intensity command and we should start the failure timer</span>
+        <span class="k">if</span> <span class="p">(</span>
+            <span class="n">MockBleakClient</span><span class="o">.</span><span class="n">is_intensity_command</span><span class="p">(</span><span class="n">command</span><span class="p">)</span>
+            <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_first_intensity_time</span> <span class="ow">is</span> <span class="kc">None</span>
+        <span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_first_intensity_time</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_event_loop</span><span class="p">()</span><span class="o">.</span><span class="n">time</span><span class="p">()</span>
+
+            <span class="c1"># Schedule behavior-specific actions</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_behavior</span> <span class="o">==</span> <span class="n">MockBehavior</span><span class="o">.</span><span class="n">CONNECTION_FAILURE</span><span class="p">:</span>
+                <span class="n">asyncio</span><span class="o">.</span><span class="n">create_task</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_trigger_connection_failure</span><span class="p">())</span>
+            <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">_behavior</span> <span class="o">==</span> <span class="n">MockBehavior</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">:</span>
+                <span class="n">asyncio</span><span class="o">.</span><span class="n">create_task</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_trigger_power_off</span><span class="p">())</span>
+
+        <span class="c1"># Check if we should stop responding (connection failure scenario)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_should_stop_responding</span><span class="p">():</span>
+            <span class="k">return</span>  <span class="c1"># Silently ignore command</span>
+
+        <span class="c1"># Process the command and send a response</span>
+        <span class="n">response_data</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_process_command</span><span class="p">(</span><span class="n">command</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">response_data</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">response_data</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="MockBleakClient.is_intensity_command">
+<a class="viewcode-back" href="../../../tikal.mock.html#tikal.mock.mock_lovense.MockBleakClient.is_intensity_command">[docs]</a>
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_intensity_command</span><span class="p">(</span><span class="n">command</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if the command is an intensity command&quot;&quot;&quot;</span>
+        <span class="n">intensity_prefixes</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="s2">&quot;Vibrate:&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;Rotate:&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;Thrusting:&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;Depth:&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;Air:Level:&quot;</span><span class="p">,</span>
+        <span class="p">]</span>
+        <span class="k">return</span> <span class="nb">any</span><span class="p">(</span><span class="n">command</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="n">prefix</span><span class="p">)</span> <span class="k">for</span> <span class="n">prefix</span> <span class="ow">in</span> <span class="n">intensity_prefixes</span><span class="p">)</span></div>
+
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_should_stop_responding</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if the toy should stop responding (connection_failure behavior)&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_behavior</span> <span class="o">!=</span> <span class="n">MockBehavior</span><span class="o">.</span><span class="n">CONNECTION_FAILURE</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">False</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_first_intensity_time</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">False</span>
+
+        <span class="n">elapsed</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_event_loop</span><span class="p">()</span><span class="o">.</span><span class="n">time</span><span class="p">()</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">_first_intensity_time</span>
+        <span class="k">return</span> <span class="n">elapsed</span> <span class="o">&gt;=</span> <span class="mf">5.0</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_trigger_connection_failure</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Simulate connection failure after 5 seconds&quot;&quot;&quot;</span>
+        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">5.0</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_connected</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_failure_triggered</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_failure_triggered</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_is_connected</span> <span class="o">=</span> <span class="kc">False</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span> <span class="o">=</span> <span class="kc">None</span>
+
+            <span class="c1"># Notify the client of disconnection</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_disconnected_callback</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_disconnected_callback</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_trigger_power_off</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Simulate POWEROFF notification after 10 seconds&quot;&quot;&quot;</span>
+        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">5.0</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_connected</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_failure_triggered</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_failure_triggered</span> <span class="o">=</span> <span class="kc">True</span>
+
+            <span class="c1"># Send POWEROFF notification</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span><span class="p">:</span>
+                <span class="n">poweroff_data</span> <span class="o">=</span> <span class="sa">b</span><span class="s2">&quot;POWEROFF;&quot;</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">poweroff_data</span><span class="p">)</span>
+
+            <span class="c1"># Simulate disconnection</span>
+            <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.05</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_is_connected</span> <span class="o">=</span> <span class="kc">False</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span> <span class="o">=</span> <span class="kc">None</span>
+
+            <span class="c1"># Unregister the device, so appears in scans again</span>
+            <span class="n">MockBleakScanner</span><span class="o">.</span><span class="n">unregister_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">address</span><span class="p">)</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_process_command</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">command</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">bytes</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Process a command and return the appropriate response.</span>
+<span class="sd">        Simulates toy-specific command handling.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Battery command</span>
+        <span class="k">if</span> <span class="n">command</span> <span class="o">==</span> <span class="s2">&quot;Battery&quot;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_battery_level</span><span class="si">}</span><span class="s2">;&quot;</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+
+        <span class="c1"># Device type command</span>
+        <span class="k">if</span> <span class="n">command</span> <span class="o">==</span> <span class="s2">&quot;DeviceType&quot;</span><span class="p">:</span>
+            <span class="c1"># Format: ModelCode:FirmwareVersion:Address</span>
+            <span class="n">model_code</span> <span class="o">=</span> <span class="s2">&quot;C&quot;</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span> <span class="o">==</span> <span class="s2">&quot;Gush&quot;</span> <span class="k">else</span> <span class="s2">&quot;P&quot;</span>
+            <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">model_code</span><span class="si">}</span><span class="s2">:11:</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">address</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s1">&#39;:&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;&#39;</span><span class="p">)</span><span class="si">}</span><span class="s2">;&quot;</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+
+        <span class="c1"># Status command</span>
+        <span class="k">if</span> <span class="n">command</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;Status:&quot;</span><span class="p">):</span>
+            <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;2;&quot;</span>  <span class="c1"># 2 = Normal status</span>
+
+        <span class="c1"># Batch number</span>
+        <span class="k">if</span> <span class="n">command</span> <span class="o">==</span> <span class="s2">&quot;GetBatch&quot;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;241225;&quot;</span>  <span class="c1"># YYMMDD format</span>
+
+        <span class="c1"># PowerOff command</span>
+        <span class="k">if</span> <span class="n">command</span> <span class="o">==</span> <span class="s2">&quot;PowerOff&quot;</span><span class="p">:</span>
+            <span class="n">asyncio</span><span class="o">.</span><span class="n">create_task</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_handle_power_off_command</span><span class="p">())</span>
+            <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;OK;&quot;</span>
+
+        <span class="c1"># Rotation direction change (for toys that support it)</span>
+        <span class="k">if</span> <span class="n">command</span> <span class="o">==</span> <span class="s2">&quot;RotateChange&quot;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span> <span class="ow">in</span> <span class="p">[</span><span class="s2">&quot;Nora&quot;</span><span class="p">,</span> <span class="s2">&quot;Ridge&quot;</span><span class="p">]:</span>
+                <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;OK;&quot;</span>
+            <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;err;&quot;</span>
+
+        <span class="c1"># Intensity commands - validate based on the toy model</span>
+        <span class="k">if</span> <span class="n">MockBleakClient</span><span class="o">.</span><span class="n">is_intensity_command</span><span class="p">(</span><span class="n">command</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_handle_intensity_command</span><span class="p">(</span><span class="n">command</span><span class="p">)</span>
+
+        <span class="c1"># Unknown command</span>
+        <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;err&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_handle_intensity_command</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">command</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">bytes</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Handle intensity commands based on a toy model&quot;&quot;&quot;</span>
+
+        <span class="c1"># Solace supports Thrusting and Depth</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span> <span class="o">==</span> <span class="s2">&quot;Solace&quot;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">command</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;Thrusting:&quot;</span><span class="p">)</span> <span class="ow">or</span> <span class="n">command</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;Depth:&quot;</span><span class="p">):</span>
+                <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;OK;&quot;</span>
+            <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;err;&quot;</span>  <span class="c1"># Unsupported command for this toy</span>
+
+        <span class="c1"># Gush supports Vibrate</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span> <span class="o">==</span> <span class="s2">&quot;Gush&quot;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">command</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;Vibrate:&quot;</span><span class="p">):</span>
+                <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;OK;&quot;</span>
+            <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;err;&quot;</span>
+
+        <span class="c1"># Nora supports Rotate</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span> <span class="o">==</span> <span class="s2">&quot;Nora&quot;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">command</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;Rotate:&quot;</span><span class="p">):</span>
+                <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;OK;&quot;</span>
+            <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;err;&quot;</span>
+
+        <span class="k">return</span> <span class="sa">b</span><span class="s2">&quot;OK;&quot;</span>  <span class="c1"># Default: accept any intensity command</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_power_off_command</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Handle PowerOff command&quot;&quot;&quot;</span>
+        <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.05</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_is_connected</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="c1"># Unregister the device, so appears in scans again</span>
+        <span class="n">MockBleakScanner</span><span class="o">.</span><span class="n">unregister_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">address</span><span class="p">)</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, SnugglyBound.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

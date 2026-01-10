@@ -1,0 +1,689 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>tikal.toy_bled &mdash; TIKAL 1.0.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=e59714d7" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=8d563738"></script>
+      <script src="../../_static/doctools.js?v=9bcbadda"></script>
+      <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            TIKAL
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../../modules.html">tikal</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">TIKAL</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Module code</a></li>
+      <li class="breadcrumb-item active">tikal.toy_bled</li>
+      <li class="wy-breadcrumbs-aside">
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <h1>Source code for tikal.toy_bled</h1><div class="highlight"><pre>
+<span></span><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">traceback</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">logging</span><span class="w"> </span><span class="kn">import</span> <span class="n">getLogger</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">ABC</span><span class="p">,</span> <span class="n">abstractmethod</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">Any</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">bleak</span><span class="w"> </span><span class="kn">import</span> <span class="n">BleakClient</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">.toy_data</span><span class="w"> </span><span class="kn">import</span> <span class="n">LOVENSE_TOY_NAMES</span><span class="p">,</span> <span class="n">ROTATION_TOY_NAMES</span><span class="p">,</span> <span class="n">ValidationError</span>
+
+
+<div class="viewcode-block" id="ToyBLED">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.ToyBLED">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">ToyBLED</span><span class="p">(</span><span class="n">ABC</span><span class="p">):</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">client</span><span class="p">:</span> <span class="n">BleakClient</span><span class="p">,</span>
+        <span class="n">tx_uuid</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">rx_uuid</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">model_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">logger_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Abstract base class representing a low-level BLE toy connection. Responsible for handling the</span>
+<span class="sd">        Bluetooth Low Energy communication with physical toys (command sending, response handling, and connection management)</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            client: BleakClient for BLE communication</span>
+<span class="sd">            tx_uuid: UUID for sending commands to the toy (TX characteristic)</span>
+<span class="sd">            rx_uuid: UUID for receiving responses from the toy (RX characteristic)</span>
+<span class="sd">            model_name: Model name of the toy (e.g. &quot;Gush&quot;, &quot;Nora&quot;)</span>
+<span class="sd">            logger_name: Name of the logger to use. Empty string for root logger.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span> <span class="o">=</span> <span class="n">model_name</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_address</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">address</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_name</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">name</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="n">client</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_tx_uuid</span> <span class="o">=</span> <span class="n">tx_uuid</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_rx_uuid</span> <span class="o">=</span> <span class="n">rx_uuid</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_log</span> <span class="o">=</span> <span class="n">getLogger</span><span class="p">(</span><span class="n">logger_name</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_notifications_started</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_response_queue</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Queue</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Queue</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_command_lock</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>  <span class="c1"># Enforce sequential command execution</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_intentional_disconnect</span> <span class="o">=</span> <span class="kc">False</span>  <span class="c1"># Bleak has the annoying habit of calling on_disconnect regardless of whether the disconnect was intentional or not</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">model_name</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Gets the model name of the toy.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">address</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Gets the Bluetooth address of the toy.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_address</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">name</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Gets the Bluetooth name of the toy.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_name</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_connected</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;True if the toy is connected, False otherwise.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">is_connected</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">intentional_disconnect</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;True if the toy was intentionally disconnected, False otherwise.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_intentional_disconnect</span>
+
+<div class="viewcode-block" id="ToyBLED.set_model_name">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.ToyBLED.set_model_name">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">set_model_name</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">model_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Sets the model name of the toy.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            model_name (str): New model name</span>
+
+<span class="sd">        Raises:</span>
+<span class="sd">             ValidationError: If model_name is not a valid model</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+<div class="viewcode-block" id="ToyBLED.start_notifications">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.ToyBLED.start_notifications">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">start_notifications</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Start listening for messages from the toy. If successful, the notification callback will be invoked</span>
+<span class="sd">        automatically whenever the toy sends a message.</span>
+
+<span class="sd">        Raises:</span>
+<span class="sd">            RuntimeError: If BleakClient is None or notifications cannot be started</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+<div class="viewcode-block" id="ToyBLED.disconnect">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.ToyBLED.disconnect">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">disconnect</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Disconnect from the device. Stops all actions, disables notifications, and closes the BLE connection.</span>
+<span class="sd">        Should be called before the toy object is destroyed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+<div class="viewcode-block" id="ToyBLED.intensity1">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.ToyBLED.intensity1">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">intensity1</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">level</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Set the primary capability of the toy to a specified level.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            level (int): Intensity level</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if the toy acknowledged the command, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+<div class="viewcode-block" id="ToyBLED.intensity2">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.ToyBLED.intensity2">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">intensity2</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">level</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Set the secondary capability of the toy to a specified level.</span>
+<span class="sd">        Safe to call and will do nothing if the toy has no secondary capability.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            level (int): Intensity level (typically 0-20, clamped to valid range)</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if successful or no secondary capability exists, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+<div class="viewcode-block" id="ToyBLED.stop">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.ToyBLED.stop">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">stop</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Stop all toy actions (set all intensities to zero).</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if successful, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+<div class="viewcode-block" id="ToyBLED.rotate_change_direction">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.ToyBLED.rotate_change_direction">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">rotate_change_direction</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Change rotation direction. Returns True and does nothing if the toy does not support rotation.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if successful, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+<div class="viewcode-block" id="ToyBLED.get_battery_level">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.ToyBLED.get_battery_level">[docs]</a>
+    <span class="nd">@abstractmethod</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_battery_level</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Retrieve the battery level of the connected device.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Optional[int]: Battery level in percentage (0-100), or None if an error occurred</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span></div>
+
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_clear_response_queue</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Clear the response queue to prepare for a new command.&quot;&quot;&quot;</span>
+        <span class="k">while</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_response_queue</span><span class="o">.</span><span class="n">empty</span><span class="p">():</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_response_queue</span><span class="o">.</span><span class="n">get_nowait</span><span class="p">()</span>
+            <span class="k">except</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">QueueEmpty</span><span class="p">:</span>
+                <span class="c1"># Apparently Queue.empty() is not 100% reliable. Just as a precaution, catch this exception</span>
+                <span class="k">pass</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_wait_for_response</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Wait for a response from the toy.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            timeout: Maximum time to wait in seconds</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            str: Response string from the toy, or None if timeout occurred</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">wait_for</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_response_queue</span><span class="o">.</span><span class="n">get</span><span class="p">(),</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span>
+            <span class="p">)</span>
+            <span class="k">return</span> <span class="n">response</span>
+        <span class="k">except</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">TimeoutError</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">None</span></div>
+
+
+
+<div class="viewcode-block" id="LovenseBLED">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED">[docs]</a>
+<span class="k">class</span><span class="w"> </span><span class="nc">LovenseBLED</span><span class="p">(</span><span class="n">ToyBLED</span><span class="p">):</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">client</span><span class="p">:</span> <span class="n">BleakClient</span><span class="p">,</span>
+        <span class="n">tx_uuid</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">rx_uuid</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">model_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">on_power_off</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="nb">str</span><span class="p">],</span> <span class="n">Any</span><span class="p">],</span>
+        <span class="n">logger_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Low-level representation of a Lovense BLE toy.</span>
+<span class="sd">        Implements the Lovense-specific protocol for communication with Lovense toys over Bluetooth Low Energy.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            client: BleakClient for BLE communication</span>
+<span class="sd">            tx_uuid: UUID for sending commands to the toy</span>
+<span class="sd">            rx_uuid: UUID for receiving responses from the toy</span>
+<span class="sd">            model_name: Model name (must be a key in LOVENSE_TOY_NAMES)</span>
+<span class="sd">            on_power_off: Invoked when the user powers off a toy. Receives the toy&#39;s address as an argument.</span>
+<span class="sd">            logger_name: Name of the logger to use. Empty string for root logger.</span>
+
+<span class="sd">        Raises:</span>
+<span class="sd">            ValueError: If model_name is not a valid Lovense model</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">client</span><span class="p">,</span> <span class="n">tx_uuid</span><span class="p">,</span> <span class="n">rx_uuid</span><span class="p">,</span> <span class="n">model_name</span><span class="p">,</span> <span class="n">logger_name</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_on_power_off</span> <span class="o">=</span> <span class="n">on_power_off</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_model_name</span><span class="p">(</span><span class="n">model_name</span><span class="p">)</span>
+
+<div class="viewcode-block" id="LovenseBLED.set_model_name">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.set_model_name">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">set_model_name</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">model_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Sets the model name of the toy.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            model_name: New model name (must be a key in LOVENSE_TOY_NAMES)</span>
+
+<span class="sd">        Raises:</span>
+<span class="sd">            ValidationError: If model_name is not a valid Lovense model</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">model_name</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">LOVENSE_TOY_NAMES</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">ValidationError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;LovenseBLED at address </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2"> has an invalid model_name &#39;</span><span class="si">{</span><span class="n">model_name</span><span class="si">}</span><span class="s2">&#39;. &quot;</span>
+                <span class="sa">f</span><span class="s2">&quot;Valid names are: </span><span class="si">{</span><span class="nb">list</span><span class="p">(</span><span class="n">LOVENSE_TOY_NAMES</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span> <span class="o">=</span> <span class="n">model_name</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.start_notifications">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.start_notifications">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">start_notifications</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Start listening for messages from the toy.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_notifications_started</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
+                <span class="s2">&quot;Notifications couldn&#39;t be started, because client is None&quot;</span>
+            <span class="p">)</span>
+        <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">start_notify</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_rx_uuid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_notification_callback</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_notifications_started</span> <span class="o">=</span> <span class="kc">True</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.disconnect">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.disconnect">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">disconnect</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Disconnect from the device. Should be called before the toy object is destroyed.&quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_intentional_disconnect</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_notifications_started</span><span class="p">:</span>
+                <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">stop_notify</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_rx_uuid</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_notifications_started</span> <span class="o">=</span> <span class="kc">False</span>
+            <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">disconnect</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Disconnected from </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Disconnect error for </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2"> with details </span><span class="si">{</span><span class="n">traceback</span><span class="o">.</span><span class="n">format_exc</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.intensity1">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.intensity1">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">intensity1</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">level</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Sets the primary capability (e.g., vibration, thrust) to the specified level (0-20).</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            level: Intensity level (0-20)</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if the toy acknowledged the command, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">intensity1_cmd</span> <span class="o">=</span> <span class="n">LOVENSE_TOY_NAMES</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="p">]</span><span class="o">.</span><span class="n">intensity1_command</span>
+        <span class="k">return</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_level_command</span><span class="p">(</span><span class="n">intensity1_cmd</span><span class="p">,</span> <span class="n">level</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.intensity2">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.intensity2">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">intensity2</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">level</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Set the secondary capability (e.g., rotation, oscillation) to the specified level (0-20).</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            level: Intensity level (0-20)</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if successful or no secondary capability exists, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">intensity2_cmd</span> <span class="o">=</span> <span class="n">LOVENSE_TOY_NAMES</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="p">]</span><span class="o">.</span><span class="n">intensity2_command</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">intensity2_cmd</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">True</span>  <span class="c1"># No secondary capability, return success</span>
+
+        <span class="c1"># Special case: Air:Level takes values 0-5 instead of 0-20</span>
+        <span class="k">if</span> <span class="n">intensity2_cmd</span> <span class="o">==</span> <span class="s2">&quot;Air:Level&quot;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_level_command</span><span class="p">(</span><span class="n">intensity2_cmd</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">level</span> <span class="o">/</span> <span class="mi">4</span><span class="p">))</span>
+
+        <span class="k">return</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_level_command</span><span class="p">(</span><span class="n">intensity2_cmd</span><span class="p">,</span> <span class="n">level</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.stop">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.stop">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">stop</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Stop all toy actions by setting both intensities to zero.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if successful, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">result1</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">intensity1</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+        <span class="n">result2</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">intensity2</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">result1</span> <span class="ow">and</span> <span class="n">result2</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.rotate_change_direction">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.rotate_change_direction">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">rotate_change_direction</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Change rotation direction. Returns True and does nothing if the toy does not support rotation.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if successful, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">model_name</span> <span class="ow">in</span> <span class="n">ROTATION_TOY_NAMES</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">True</span>
+        <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_command</span><span class="p">(</span><span class="s2">&quot;RotateChange&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">response</span> <span class="o">==</span> <span class="s2">&quot;OK&quot;</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.get_battery_level">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.get_battery_level">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_battery_level</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Retrieve the battery level (0-100%).</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            int: Battery level in %, or None if an error occurred</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_command</span><span class="p">(</span><span class="s2">&quot;Battery&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">response</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Failed to retrieve battery for </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+            <span class="k">return</span> <span class="kc">None</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># Quirk: If reconnected after disconnect, the battery reports as &quot;s&lt;value&gt;&quot;</span>
+            <span class="n">response</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">strip</span><span class="p">(</span><span class="s2">&quot;s&quot;</span><span class="p">)</span>
+            <span class="k">return</span> <span class="nb">int</span><span class="p">(</span><span class="n">response</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Invalid battery response for </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">response</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+            <span class="k">return</span> <span class="kc">None</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.direct_command">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.direct_command">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">direct_command</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">command</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Send any command directly to the toy. Useful for commands not explicitly provided by other methods.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            command: Command string (UTF-8)</span>
+<span class="sd">            timeout: Response timeout in seconds</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Optional[str]: Response string from toy, or None if timeout/error occurred</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_command</span><span class="p">(</span><span class="n">command</span><span class="p">,</span> <span class="n">timeout</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.get_device_type">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.get_device_type">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_device_type</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Retrieves device information.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Optional[str]: String in format &quot;DeviceType:FirmwareVersion:Address&quot; (e.g. &quot;C:11:0082059AD3BD&quot;) or None if</span>
+<span class="sd">                an error occurred</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_command</span><span class="p">(</span><span class="s2">&quot;DeviceType&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.get_status">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.get_status">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_status</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Retrieves the status code of the toy.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Optional[int]: Status code (2 = Normal) or None if error occurred</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_command</span><span class="p">(</span><span class="s2">&quot;Status:1&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">response</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Failed to retrieve status for </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+            <span class="k">return</span> <span class="kc">None</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="nb">int</span><span class="p">(</span><span class="n">response</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Invalid status response for </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">response</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+            <span class="k">return</span> <span class="kc">None</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.get_batch_number">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.get_batch_number">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">get_batch_number</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Retrieve production batch number (appears to be YYMMDD format).</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Optional[str]: Batch number string or None if an error occurred</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_command</span><span class="p">(</span><span class="s2">&quot;GetBatch&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="LovenseBLED.power_off">
+<a class="viewcode-back" href="../../tikal.html#tikal.toy_bled.LovenseBLED.power_off">[docs]</a>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">power_off</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Turn off power to the toy.</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if successful, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_command</span><span class="p">(</span><span class="s2">&quot;PowerOff&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">response</span> <span class="o">==</span> <span class="s2">&quot;OK&quot;</span></div>
+
+
+    <span class="c1"># ========================================================================</span>
+    <span class="c1"># Private Methods</span>
+    <span class="c1"># ========================================================================</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_notification_callback</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">_</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">data</span><span class="p">:</span> <span class="nb">bytes</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Callback invoked automatically when the toy sends a message.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            _: Sender handle (unused)</span>
+<span class="sd">            data: Raw response bytes from the toy</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">rstrip</span><span class="p">(</span><span class="s2">&quot;;&quot;</span><span class="p">)</span>
+            <span class="c1"># Use call_soon_threadsafe for thread-safe queue access</span>
+            <span class="n">asyncio</span><span class="o">.</span><span class="n">get_event_loop</span><span class="p">()</span><span class="o">.</span><span class="n">call_soon_threadsafe</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_response_queue</span><span class="o">.</span><span class="n">put_nowait</span><span class="p">,</span> <span class="n">msg</span>
+            <span class="p">)</span>
+
+            <span class="c1"># Handle power-off notification</span>
+            <span class="k">if</span> <span class="n">msg</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span> <span class="o">==</span> <span class="s2">&quot;POWEROFF&quot;</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_on_power_off</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="p">)</span>
+
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Error decoding notification for </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2"> with details </span><span class="si">{</span><span class="n">traceback</span><span class="o">.</span><span class="n">format_exc</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_send_command</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">command</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Encode and send a command to the toy.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            command: Command string (UTF-8)</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if successfully sent, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="ow">or</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_connected</span><span class="p">:</span>
+            <span class="k">return</span> <span class="kc">False</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">cmd_bytes</span> <span class="o">=</span> <span class="p">(</span>
+                <span class="p">(</span><span class="n">command</span> <span class="o">+</span> <span class="s2">&quot;;&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">command</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s2">&quot;;&quot;</span><span class="p">)</span>
+                <span class="k">else</span> <span class="n">command</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+            <span class="p">)</span>
+            <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">write_gatt_char</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tx_uuid</span><span class="p">,</span> <span class="n">cmd_bytes</span><span class="p">,</span> <span class="n">response</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Sent command to </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">command</span><span class="o">.</span><span class="n">strip</span><span class="p">(</span><span class="s1">&#39;;&#39;</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+            <span class="k">return</span> <span class="kc">True</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Error sending command to </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2"> with details </span><span class="si">{</span><span class="n">traceback</span><span class="o">.</span><span class="n">format_exc</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+            <span class="k">return</span> <span class="kc">False</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_execute_command</span><span class="p">(</span>
+            <span class="bp">self</span><span class="p">,</span> <span class="n">command</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Execute a command and wait for the response.</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            command: Command string (UTF-8)</span>
+<span class="sd">            timeout: Response timeout in seconds</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            Optional[str]: Response string from toy, or None if a timeout/error occurred</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">&quot;Sending command </span><span class="si">{</span><span class="n">command</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="p">)</span>
+        <span class="k">async</span> <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_command_lock</span><span class="p">:</span>  <span class="c1"># Prevent response mixing</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_notifications_started</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;Notifications not started for </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="p">)</span>
+                <span class="k">return</span> <span class="kc">None</span>
+
+            <span class="bp">self</span><span class="o">.</span><span class="n">_clear_response_queue</span><span class="p">()</span>
+
+            <span class="k">if</span> <span class="ow">not</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_send_command</span><span class="p">(</span><span class="n">command</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;Failed to send command </span><span class="si">{</span><span class="n">command</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="p">)</span>
+                <span class="k">return</span> <span class="kc">None</span>
+
+            <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wait_for_response</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">response</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                    <span class="sa">f</span><span class="s2">&quot;Timeout waiting for response from </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="p">)</span>
+                <span class="k">return</span> <span class="kc">None</span>
+
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">&quot;Received response from </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_model_name</span><span class="si">}</span><span class="s2"> at </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">_address</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">response</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="p">)</span>
+            <span class="k">return</span> <span class="n">response</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_execute_level_command</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">command_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">level</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">max_level</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">20</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Execute a command with a level parameter (0-max_level).</span>
+
+<span class="sd">        Args:</span>
+<span class="sd">            command_name: Command string</span>
+<span class="sd">            level: Intensity level (will be clamped to 0-max_level)</span>
+<span class="sd">            max_level: Maximum allowed level</span>
+
+<span class="sd">        Returns:</span>
+<span class="sd">            bool: True if the toy acknowledged the command with &quot;OK&quot;, False otherwise</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">level</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">min</span><span class="p">(</span><span class="n">max_level</span><span class="p">,</span> <span class="n">level</span><span class="p">))</span>
+        <span class="n">command</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">command_name</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">level</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="n">response</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_command</span><span class="p">(</span><span class="n">command</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">response</span> <span class="o">==</span> <span class="s2">&quot;OK&quot;</span></div>
+
+</pre></div>
+
+           </div>
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, SnugglyBound.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
