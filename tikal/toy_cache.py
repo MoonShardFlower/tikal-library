@@ -10,6 +10,7 @@ class ToyCache:
         """
         ToyCache is a persistent storage mapping bluetooth names (e.g. "LVS-A123") to model names (e.g. "Gush"),
         so users don't have to re-select models every time.
+
         Args:
             cache_path: Path to the JSON cache file
             default_model: Default model name to use if a bluetooth name is not found in the cache
@@ -29,6 +30,7 @@ class ToyCache:
         """
         Update specific entries in the cache. Existing entries are overwritten, new entries are added.
         Fails silently if an error occurs.
+
         Args:
             updates: Dictionary of toy names to model names to add/update
         """
@@ -49,8 +51,10 @@ class ToyCache:
         """
         Get the cached model name for a toy.
         If the toy is not cached, it returns the default model name (set in the constructor).
+
         Args:
             bluetooth_name: Name of the toy (e.g. "LVS-A123")
+
         Returns:
             Model name (e.g. "Gush") if cached, otherwise default model name
         """
