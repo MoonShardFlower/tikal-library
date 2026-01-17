@@ -55,11 +55,12 @@ def main():
     # Scanning and connecting to toys (see first example)
     # ------------------------------------------------------------------------------------------------------------------
 
-    toy_hub = ToyHub(logger_name=LOGGER_NAME,
-                     default_model="unknown",
-                     bluetooth_scanner=MockBleakScanner,
-                     bluetooth_client=MockBleakClient
-                     )
+    toy_hub = ToyHub(
+        logger_name=LOGGER_NAME,
+        default_model="unknown",
+        bluetooth_scanner=MockBleakScanner,
+        bluetooth_client=MockBleakClient,
+    )
 
     toy_data_list = toy_hub.discover_toys_blocking()
     toy_data_list[0].model_name = "Solace"
@@ -88,7 +89,9 @@ def main():
 
     # If you like, you can provide a callback to get notified when the command was executed and if it was successful
     def on_executed(success: bool):
-        print(f"Callback triggered: Successfully executed setting gush's vibration back to 0: {success}")
+        print(
+            f"Callback triggered: Successfully executed setting gush's vibration back to 0: {success}"
+        )
 
     gush.intensity1(0, on_executed)
     time.sleep(1)
@@ -142,7 +145,9 @@ def main():
     # The names of the toys' capabilities and the maximal intensity level can be accessed as well
     # max intensity will always be 20 for lovense toys. This is future proofing for other toy brands that might be
     # implemented in the future and might have other level ranges
-    print(f"Solace has the capabilities: {solace.intensity_names[0]} and {solace.intensity_names[1]}")
+    print(
+        f"Solace has the capabilities: {solace.intensity_names[0]} and {solace.intensity_names[1]}"
+    )
     print(f"Gush has only one capability: {gush.intensity_names[1] is None}")
     print(f"Max intensity for lovense toys: {solace.intensity_max_value}")
 

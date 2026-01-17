@@ -46,12 +46,13 @@ def main():
     # We use a mocked version of the BleakScanner and BleakClient classes here, so I know what mocked toys I will get.
     # In the real application you would leave these arguments empty,
     # so the default values (BleakScanner/BleakClient) are used.
-    toy_hub = ToyHub(logger_name=LOGGER_NAME,
-                     default_model="unknown",
-                     toy_cache_path=TOY_CACHE_PATH,
-                     bluetooth_scanner=MockBleakScanner,
-                     bluetooth_client=MockBleakClient
-                     )
+    toy_hub = ToyHub(
+        logger_name=LOGGER_NAME,
+        default_model="unknown",
+        toy_cache_path=TOY_CACHE_PATH,
+        bluetooth_scanner=MockBleakScanner,
+        bluetooth_client=MockBleakClient,
+    )
 
     # I will show the blocking method here.
     # You can also use toy_hub.discover_toys_callback() which needs a callback function as an argument. This callback
@@ -91,7 +92,7 @@ def main():
     # valid model names can be found in LOVENSE_TOY_NAMES.keys(). Invalid model names will raise a
     # ValidationError, which is caught by the connect method and returned as an unsuccessful result
     print("valid model names:\n", LOVENSE_TOY_NAMES.keys())
-    solace_data.model_name = "Ridge" # valid but incorrect model
+    solace_data.model_name = "Ridge"  # valid but incorrect model
     nora_data.model_name = "Nora"
 
     # Similar to toy discovery, the connect method also has a callback version
@@ -103,7 +104,14 @@ def main():
     solace = toys[0]
     gush = toys[1]
     nora = toys[2]
-    print("Solace is of type", type(solace), "Gush is of type", type(gush), "Nora is of type", type(nora))
+    print(
+        "Solace is of type",
+        type(solace),
+        "Gush is of type",
+        type(gush),
+        "Nora is of type",
+        type(nora),
+    )
 
     # If you realize that a model name is valid but wrong, you don't need to disconnect and reconnect the toy. Instead,
     # you can use the update_model_name method. Doing this will also update the ToyCache file
@@ -147,9 +155,11 @@ def main():
         of the associated toy_controller are still safe to call. However, methods that send commands to the toy will
         have the command scheduled (for when the toy reconnects, which will now never happen)
         """
-        print(f"Callback triggered: Connection to the toy {toy_id} permanently lost."
-              "If you like to use this toy again, you'll need to use ToyHub.connect_toys() again."
-              "Preferably you use ToyHub.discover_toys() first to see if the toy is available again")
+        print(
+            f"Callback triggered: Connection to the toy {toy_id} permanently lost."
+            "If you like to use this toy again, you'll need to use ToyHub.connect_toys() again."
+            "Preferably you use ToyHub.discover_toys() first to see if the toy is available again"
+        )
 
     def on_reconnect_success(toy_id: str):
         """
@@ -174,7 +184,9 @@ def main():
         send me the exception, context, and traceback. Thank you. If this callback is not provided, then ToyHub will
         write the information in the log instead.
         """
-        print(f"Callback triggered: The exception {exception} occurred with context {context} and traceback {traceback}")
+        print(
+            f"Callback triggered: The exception {exception} occurred with context {context} and traceback {traceback}"
+        )
 
     def on_battery_update(batteries: dict[str, int | None]):
         """
@@ -199,7 +211,9 @@ def main():
     )
     # Setting/Updating a callback can be done like this:
     new_toy_hub.battery_update_callback(on_battery_update)
-    print(f"The battery callback will be called every {new_toy_hub.BATTERY_UPDATE_INTERVAL} seconds")
+    print(
+        f"The battery callback will be called every {new_toy_hub.BATTERY_UPDATE_INTERVAL} seconds"
+    )
 
     # Connecting new toys will trigger the battery update callback immediately.
     MockBleakScanner.reset()  # you obviously don't need to do this with the real BleakScanner
