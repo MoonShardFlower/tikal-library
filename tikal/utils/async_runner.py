@@ -21,14 +21,17 @@ class AsyncRunner:
         """
         Run an async coroutine using the dedicated event loop.
         This function blocks until the coroutine is finished or the timeout occurs!
+
         Args:
             coro: The asynchronous coroutine to be executed.
             timeout: timeout in seconds to wait for the coroutine to complete. If None, there is no timeout. Defaults to 30.0
+
         Raises:
             RuntimeError: If the event loop has not been initialized. This should never occur, since the event loop is
             initialized as part of the __init__ function of AsyncRuner
             TimeoutError: If the coroutine execution exceeds the specified timeout.
             Exception: Any exception raised by the coroutine will be propagated to the caller
+
         Returns:
             T: The result returned by the executed coroutine.
         """
@@ -45,14 +48,17 @@ class AsyncRunner:
         Run multiple coroutines in parallel, returning results and exceptions.
         This function blocks until all coroutines are finished or the timeout occurs!
         You can assume that the order of the results and exceptions is the same as the order of the coroutines.
+
         Args:
             coroutines: The asynchronous coroutines to be executed in parallel
             timeout: timeout in seconds to wait for the
             coroutines to complete. If None, there is no timeout. Defaults to 30.0
+
         Raises:
             RuntimeError: If the event loop has not been initialized. This should never occur, since the event loop is
             initialized as part of the __init__ function of AsyncRuner
             TimeoutError: If the execution of any coroutine exceeds the specified timeout.
+
         Returns:
             Sequence[T]: Each element is either the result or the exception that occurred while running the coroutine
         """
@@ -76,10 +82,12 @@ class AsyncRunner:
         """
         Run an async coroutine and invoke a callback with result or exception (non-blocking).
         Returns immediately and executes the coroutine in the event loop thread.
+
         Args:
             coro: The asynchronous coroutine to be executed
             callback: Callback invoked with result or exception
             timeout: timeout in seconds. Defaults to 30.0
+
         Raises:
             RuntimeError: If the event loop has not been initialized
         """
@@ -100,11 +108,14 @@ class AsyncRunner:
     ) -> Callable[[], None]:
         """
         Schedule a coroutine to run repeatedly at a specified interval.
+
         Args:
             coro_factory: Factory function that creates the coroutine to run
             interval: Time between executions in seconds
+
         Returns:
             Callable[[], None]: Function to call to cancel the recurring task
+
         Raises:
             RuntimeError: If the event loop has not been initialized
         """
