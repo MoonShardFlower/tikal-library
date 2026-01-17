@@ -1,3 +1,13 @@
+"""
+Part of the Low-Level API: Provides connection management for toy devices.
+
+This module provides abstract and concrete implementations for discovering and connecting
+to BLE toys. This module provides:
+
+- :class:`ToyConnectionBuilder`: Abstract base class defining the connection interface
+- :class:`LovenseConnectionBuilder`: Concrete implementation for Lovense brand toys
+"""
+
 import asyncio
 from abc import ABC, abstractmethod
 from logging import getLogger
@@ -9,30 +19,35 @@ from .toy_bled import ToyBLED, LovenseBLED
 
 
 class ToyConnectionBuilder(ABC):
+    """
+    Abstract base class for discovering and connecting to toy devices.
+
+    Each toy brand implements its own connection builder that handles brand-specific discovery protocols and connection
+    procedures. This class defines the interface that all connection builders must implement.
+
+    Args:
+        logger_name: Name of the logger to use. Use empty string for root logger.
+
+    """
 
     def __init__(self, logger_name: str):
-        """
-        Abstract base class for discovering and connecting to toys. Each toy brand should implement
-        its own connection builder that handles brand-specific discovery protocols and connection procedures.
-
-        Args:
-            logger_name: Name of the logger to use. Empty string for root logger.
-        """
         self._log = getLogger(logger_name)
 
     @abstractmethod
     async def discover_toys(self, timeout: float) -> list[ToyData]:
         """
-        Scans for available toys of this brand.
+        Scan for available toys of this brand.
+
+        Scans the environment (e.g., Bluetooth, WiFi) for devices and returns their discovery data.
 
         Args:
-            timeout: Maximum time to scan in seconds
+            timeout: Maximum time to scan in seconds.
 
         Returns:
-            list[ToyData]: List of discovered toy data objects
+            List of discovered toy data objects.
 
         Raises:
-            Exception: Any exception from the underlying discovery mechanism
+            Exception: Any exception from the underlying discovery mechanism.
         """
         raise NotImplementedError
 
@@ -43,20 +58,67 @@ class ToyConnectionBuilder(ABC):
         """
         Create connected toy instances from discovery data.
 
+        Attempts to connect to each toy in the provided list and returns either a connected toy instance or an
+        exception for each connection attempt.
+
         Args:
-            to_connect: List of toy data objects to connect to. All ToyData must have valid model_names
+            to_connect: List of toy data objects to connect to. All ToyData must have valid model_names set.
 
         Returns:
-            list[ToyBLED | BaseException]: contains connected ToyBLED instances and Exceptions for failed connections.
-            Order matches the input list.
+            List containing either connected ToyBLED instances or BaseException objects for failed connections.
+            The order matches the input list. You can match results to input data by index.
 
         Raises:
-            ValidationError: If any ToyData has invalid model_name
+            ValidationError: If any ToyData has an invalid or missing model_name.
+
+        Example:
+            Processing connection results::
+
+                results = await builder.create_toys(toys)
+                for i, result in enumerate(results):
+                    if isinstance(result, BaseException):
+                        print(f"Failed to connect to {toys[i].name}: {result}")
+                    else:
+                        print(f"Connected to {result.model_name}")
         """
         raise NotImplementedError
 
 
 class LovenseConnectionBuilder(ToyConnectionBuilder):
+    """
+    Connection builder for Lovense brand toys.
+
+    Part of the Low-Level API: Handles discovery and connection for Lovense toys using Bluetooth Low Energy.
+    Manages the Lovense-specific BLE discovery process, UUID discovery, and notification configuration.
+
+    Args:
+        on_disconnect: Callback invoked when a toy disconnects unexpectedly.
+            Receives the toy's BleakClient as an argument. Not called for intentional disconnects.
+        on_power_off: Callback invoked when the user powers off a toy via the physical power button. Receives the toy's
+            Bluetooth address as a string.
+        logger_name: Name of the logger to use. Use empty string for root logger.
+        scanner_class: BLE scanner class to use. Defaults to BleakScanner. Can be overridden for testing.
+        client_class: BLE client class to use. Defaults to BleakClient. Can be overridden for testing.
+
+    Example:
+        Basic usage with callbacks::
+
+            def handle_disconnect(client: BleakClient):
+                print(f"Toy at {client.address} disconnected unexpectedly")
+
+            def handle_power_off(address: str):
+                print(f"Toy at {address} was powered off")
+
+            builder = LovenseConnectionBuilder(
+                on_disconnect=handle_disconnect,
+                on_power_off=handle_power_off,
+                logger_name="lovense"
+            )
+
+    Note:
+        The Lovense discovery protocol identifies devices by the "LVS-" prefix in their Bluetooth name.
+        Only devices matching this pattern will be discovered.
+    """
 
     def __init__(
         self,
@@ -66,17 +128,6 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         scanner_class: Type[BleakScanner] = BleakScanner,
         client_class: Type[BleakClient] = BleakClient,
     ):
-        """
-        Handles discovery and connection for Lovense toys. Manages the Lovense-specific BLE discovery process and
-        connection setup, including UUID discovery and notification configuration.
-
-        Args:
-            on_disconnect: Invoked when a toy disconnects unexpectedly. Receives the toy's BleakClient as an argument.
-            on_power_off: Invoked when the user powers off a toy. Receives the toy's address as an argument.
-            logger_name: Name of the logger to use. Empty string for root logger.
-            scanner_class: Class to use for BLE scanning (defaults to BleakScanner)
-            client_class: Class to use for BLE client connections (defaults to BleakClient)
-        """
         super().__init__(logger_name)
         self._on_disconnect = on_disconnect
         self._on_power_off = on_power_off
@@ -93,16 +144,31 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
 
     async def discover_toys(self, timeout: float) -> list[LovenseData]:
         """
-        Scans for available Lovense toys.
+        Scan for available Lovense toys via Bluetooth LE.
+
+        Discovers Lovense devices by scanning for BLE devices with names starting with "LVS-"
 
         Args:
-            timeout: Maximum scan time in seconds
+            timeout: Maximum scan time in seconds. Longer timeouts increase the chance of discovering all nearby devices
 
         Returns:
-            list[LovenseData]: List of discovered Lovense toy data
+            List of LovenseData objects containing the name and Bluetooth address of each discovered toy. The
+            model_name is left empty and needs to be filled in by you.
 
         Raises:
-            Exception: Any exception from BleakScanner.discover()
+            Exception: Any exception from BleakScanner.discover(), such as permission errors or Bluetooth adapter issues
+
+        Example:
+            ::
+
+                toys = await builder.discover_toys(timeout=5.0)
+                print(f"Found {len(toys)} Lovense devices")
+                for toy in toys:
+                    print(f"  - {toy.name} at {toy.toy_id}")
+
+        Note:
+            This method caches discovered BLE devices internally.
+            You should call this method before calling :meth:`create_toys`.
         """
         self._log.info(f"Scanning for Lovense devices for {timeout} seconds")
         devices = await self._scanner_class.discover(timeout=timeout)
@@ -120,13 +186,42 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         self, to_connect: list[LovenseData]
     ) -> list[LovenseBLED | BaseException]:
         """
-        Create connected Lovense toy instances.
+        Create connected Lovense toy instances from discovery data.
+
+        Attempts to the specified toys concurrently. For each toy, this method:
+
+        1. Retrieves the internally cached BLE device and establishes a BLE connection
+        2. Discovers the TX and RX UUIDs and starts notifications
+        3. Creates a LovenseBLED instance
 
         Args:
-            to_connect: List of LovenseData objects with valid model_names
+            to_connect: List of LovenseData objects with valid model_names.
+                Valid model_names are in LOVENSE_TOY_NAMES.keys(). Instances of LovenseData are created with a prior
+                call to :meth:`discover_toys` and model_names must be set by you.
 
         Returns:
-            list[LovenseBLED | BaseException]: List of LovenseBLED instances and exceptions for failed connections
+            List where each element is either a connected LovenseBLED instance or a BaseException
+            (ConnectionError, ValidationError, etc.) for failed connections. The order matches the input list.
+
+        Raises:
+            KeyError: If a toy's address is not in the cached devices (i.e., the toy wasn't discovered earlier.
+
+        Example:
+            ::
+
+                # Discover toys
+                toys = await builder.discover_toys(5.0)
+
+                # Set model names (e.g., from user input)
+                toys[0].model_name = "Nora"
+                toys[1].model_name = "Lush"
+
+                # Connect
+                results = await builder.create_toys(toys)
+
+                # Process results
+                connected_toys = [r for r in results if isinstance(r, LovenseBLED)]
+                failed = [r for r in results if isinstance(r, BaseException)]
         """
         self._log.info(f"Connecting to {len(to_connect)} Lovense devices")
         if not to_connect:
@@ -146,19 +241,22 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
 
     async def _find_uuid_by_type(self, client: BleakClient, uuid_type: str) -> str:
         """
-        Find UUID by type (tx or rx) for the Lovense device.
-        The TX UUID is needed for sending commands, the RX UUID for receiving responses.
+        Find the TX or RX UUID for a Lovense device.
+
+        Searches through the device's GATT services to find the appropriate UUID based on the Lovense service pattern
+        and UUID replacement rules.
 
         Args:
-            client: BleakClient of the toy
-            uuid_type: Either 'rx' or 'tx'
-
-        Raises:
-            ValueError: If uuid_type is not 'rx' or 'tx'
-            ConnectionError: If unable to find the UUID
+            client: Connected BleakClient for the toy.
+            uuid_type: Either 'rx' (for receiving notifications) or 'tx' (for sending commands).
 
         Returns:
-            UUID string for the specified type
+            UUID string in uppercase format for the specified characteristic type.
+
+        Raises:
+            ValueError: If uuid_type is not 'rx' or 'tx'.
+            ConnectionError: If unable to find the UUID matching the Lovense service pattern.
+                This can happen if the device is not a valid Lovense toy or if the connection is incomplete.
         """
         if uuid_type not in self._UUID_REPLACEMENTS:
             raise ValueError(f"Invalid UUID type: {uuid_type}")
@@ -184,19 +282,28 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
 
     async def _create_toy(self, model_name: str, device: BLEDevice) -> LovenseBLED:
         """
-        Connects to a single Lovense toy.
+        Connect to a single Lovense toy and create a LovenseBLED instance.
+
+        This internal method handles the connection process:
+        1. Validates the model name
+        2. Creates and connects a BleakClient and discovers TX and RX UUIDs
+        3. Creates a LovenseBLED instance
+        4. Starts notifications
 
         Args:
-            model_name: Model name of the toy (e.g. "Gush", "Nora")
-            device: BLEDevice from discovery scan
-
-        Raises:
-            ValidationError: If model_name is not valid
-            ConnectionError: If connection fails
-            NotificationError: If notification setup fails
+            model_name: Model name of the toy (e.g., "Gush", "Nora"). Must be a key in LOVENSE_TOY_NAMES.
+            device: BLEDevice object from the discovery scan containing the device's Bluetooth address and metadata.
 
         Returns:
-            LovenseBLED: Connected LovenseBLED instance
+            Connected and notification-ready LovenseBLED instance.
+
+        Raises:
+            ValidationError: If model_name is not a valid Lovense model name.
+            ConnectionError: If the BLE connection fails or if notification setup fails.
+
+        Note:
+            If any step fails after the initial connection, the BleakClient is disconnected before raising the exception
+            to clean up resources.
         """
         if model_name not in LOVENSE_TOY_NAMES:
             raise ValidationError(
@@ -230,13 +337,14 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
 
     def _filtered_on_disconnect(self, client: BleakClient) -> None:
         """
-        Wrapper that only calls on_disconnect for unexpected disconnects.
+        Internal disconnect handler that filters intentional vs. unexpected disconnects.
+
+        This method is registered with BleakClient as the disconnect callback. It checks whether the disconnect was
+        intentional (initiated by calling disconnect()) or unexpected (e.g., toy powered off, connection lost) and only
+        invokes the user's on_disconnect callback for unexpected disconnects.
 
         Args:
-            client: BleakClient that disconnected
-
-        Returns:
-            None
+            client: BleakClient instance that disconnected.
         """
         toy = self._toys_by_client.get(client)
         if toy and not toy.intentional_disconnect:
