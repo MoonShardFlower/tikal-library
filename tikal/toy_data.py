@@ -48,8 +48,7 @@ class ToyData:
 
     Attributes:
         name: Human-readable identifier for the toy. For Bluetooth toys, this is the Bluetooth name (e.g., "LVS-B12").
-        toy_id: Unique identifier for the toy. For Bluetooth toys, this is the Bluetooth address
-            (e.g., "DC:F5:05:A3:6D:1E")
+        toy_id: Unique identifier for the toy. For Bluetooth toys, this is the Bluetooth address (e.g., "DC:F5:05:A3:6D:1E").
         model_name: Model name of the toy (e.g., "Lush"). For Lovense toys, this is empty and must be set manually.
 
     Example:
@@ -80,11 +79,9 @@ class LovenseData(ToyData):
     handing instances to ``ConnectionBuilder.create_toys()``.
 
     Attributes:
-        name: Bluetooth name of the toy, serving as a human-readable identifier.
-            Lovense toys have names starting with "LVS-" (e.g., "LVS-Z36D").
-        toy_id: Bluetooth address of the toy, serving as its unique identifier (e.g., "DC:F5:05:A3:6D:1E")
-        model_name: Model name of the toy (e.g., "Lush", "Nora"). Must be a key in LOVENSE_TOY_NAMES dictionary.
-        You have to set the correct model name before connecting.
+        name: Bluetooth name of the toy, serving as a human-readable identifier. Lovense toys have names starting with "LVS-" (e.g., "LVS-Z36D").
+        toy_id: Bluetooth address of the toy, serving as its unique identifier (e.g., "DC:F5:05:A3:6D:1E").
+        model_name: Model name of the toy (e.g., "Lush", "Nora"). Must be a key in the LOVENSE_TOY_NAMES dictionary. You have to set the correct model name before connecting.
 
     Example:
         ::
@@ -96,7 +93,6 @@ class LovenseData(ToyData):
 
             # User selects model
             lovense_data.model_name = "Nora"
-
     """
 
     pass
@@ -114,10 +110,8 @@ class ToyCommands:
     Attributes:
         intensity1_name: Display name for the primary capability shown to users (e.g., "Vibration", "Thrust").
         intensity1_command: Command string for the primary capability sent to the toy (e.g., "Vibrate", "Thrusting").
-        intensity2_name: Display name for the secondary capability, or None if the toy has only one capability
-            (e.g., "Rotation", "Air").
-        intensity2_command: Command string for the secondary capability, or None if the toy has no secondary capability
-            (e.g., "Rotate", "Air:Level").
+        intensity2_name: Display name for the secondary capability, or None if the toy has only one capability (e.g., "Rotation", "Air").
+        intensity2_command: Command string for the secondary capability, or None if the toy has no secondary capability (e.g., "Rotate", "Air:Level").
 
     Example:
         ::
@@ -127,7 +121,6 @@ class ToyCommands:
             print(f"{commands.intensity1_name}: {commands.intensity1_command}")
             if commands.intensity2_name:
                 print(f"{commands.intensity2_name}: {commands.intensity2_command}")
-
     """
 
     intensity1_name: str

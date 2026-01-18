@@ -6,6 +6,20 @@ to BLE toys. This module provides:
 
 - :class:`ToyConnectionBuilder`: Abstract base class defining the connection interface
 - :class:`LovenseConnectionBuilder`: Concrete implementation for Lovense brand toys
+
+Example::
+
+        def handle_disconnect(client: BleakClient):
+            print(f"Toy at {client.address} disconnected unexpectedly")
+
+        def handle_power_off(address: str):
+            print(f"Toy at {address} was powered off")
+
+        builder = LovenseConnectionBuilder(
+            on_disconnect=handle_disconnect,
+            on_power_off=handle_power_off,
+            logger_name="lovense"
+        )
 """
 
 import asyncio
@@ -71,8 +85,7 @@ class ToyConnectionBuilder(ABC):
         Raises:
             ValidationError: If any ToyData has an invalid or missing model_name.
 
-        Example:
-            Processing connection results::
+        Example::
 
                 results = await builder.create_toys(toys)
                 for i, result in enumerate(results):
@@ -92,28 +105,11 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
     Manages the Lovense-specific BLE discovery process, UUID discovery, and notification configuration.
 
     Args:
-        on_disconnect: Callback invoked when a toy disconnects unexpectedly.
-            Receives the toy's BleakClient as an argument. Not called for intentional disconnects.
-        on_power_off: Callback invoked when the user powers off a toy via the physical power button. Receives the toy's
-            Bluetooth address as a string.
+        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives the toy's BleakClient as an argument. Not called for intentional disconnects.
+        on_power_off: Callback invoked when the user powers off a toy via the physical power button. Receives the toy's Bluetooth address as a string.
         logger_name: Name of the logger to use. Use empty string for root logger.
         scanner_class: BLE scanner class to use. Defaults to BleakScanner. Can be overridden for testing.
         client_class: BLE client class to use. Defaults to BleakClient. Can be overridden for testing.
-
-    Example:
-        Basic usage with callbacks::
-
-            def handle_disconnect(client: BleakClient):
-                print(f"Toy at {client.address} disconnected unexpectedly")
-
-            def handle_power_off(address: str):
-                print(f"Toy at {address} was powered off")
-
-            builder = LovenseConnectionBuilder(
-                on_disconnect=handle_disconnect,
-                on_power_off=handle_power_off,
-                logger_name="lovense"
-            )
 
     Note:
         The Lovense discovery protocol identifies devices by the "LVS-" prefix in their Bluetooth name.
@@ -158,13 +154,12 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         Raises:
             Exception: Any exception from BleakScanner.discover(), such as permission errors or Bluetooth adapter issues
 
-        Example:
-            ::
+        Example::
 
                 toys = await builder.discover_toys(timeout=5.0)
                 print(f"Found {len(toys)} Lovense devices")
                 for toy in toys:
-                    print(f"  - {toy.name} at {toy.toy_id}")
+                    print(f"{toy.name} at {toy.toy_id}")
 
         Note:
             This method caches discovered BLE devices internally.
@@ -206,8 +201,7 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         Raises:
             KeyError: If a toy's address is not in the cached devices (i.e., the toy wasn't discovered earlier.
 
-        Example:
-            ::
+        Example::
 
                 # Discover toys
                 toys = await builder.discover_toys(5.0)

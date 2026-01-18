@@ -2,16 +2,12 @@
 Part of the Low Level API: Provides representations of BLE-capable toys
 
 This module provides abstract and concrete implementations for communicating with toy devices over Bluetooth Low Energy
-This module provides
-
 - :class:`ToyBLED`: Abstract base class defining the toy communication interface
 - :class:`LovenseBLED`: Concrete implementation for Lovense brand toys
-
 You are not meant to instantiate these classes directly. :class:`ConnectionBuilder` establishes connections to toys and
 returns instances of :class:`ToyBLED`
 
-Example:
-    Typical usage::
+Example::
 
         # After connecting via LovenseConnectionBuilder
         toy = connected_toys[0]
@@ -182,8 +178,7 @@ class ToyBLED(ABC):
         Returns:
             True if the toy acknowledged the command, False otherwise.
 
-        Example:
-            ::
+        Example::
 
                 # Set primary capability to medium intensity
                 success = await toy.intensity1(10)
@@ -206,8 +201,7 @@ class ToyBLED(ABC):
         Returns:
             True if the toy acknowledged the command or the toy does not have a secondary capability, False otherwise.
 
-        Example:
-            ::
+        Example::
 
                 # Set secondary capability to low intensity
                 await toy.intensity2(5)
@@ -222,8 +216,7 @@ class ToyBLED(ABC):
         Returns:
             True if successful, False if either intensity command failed.
 
-        Example:
-            ::
+        Example::
 
                 await toy.stop()
         """
@@ -240,8 +233,7 @@ class ToyBLED(ABC):
         Returns:
             True if the toy acknowledged the command or if rotation is not supported, False if the command failed.
 
-        Example:
-            ::
+        Example::
 
                 # Reverse rotation direction
                 await toy.rotate_change_direction()
@@ -256,8 +248,7 @@ class ToyBLED(ABC):
         Returns:
             Battery level as a percentage (0-100), or None if an error occurred or the command timed out.
 
-        Example:
-            ::
+        Example::
 
                 battery = await toy.get_battery_level()
                 if battery is not None:
@@ -318,15 +309,13 @@ class LovenseBLED(ToyBLED):
         tx_uuid: UUID for sending commands to the toy (TX characteristic).
         rx_uuid: UUID for receiving responses from the toy (RX characteristic).
         model_name: Model name (e.g., "Nora", "Lush"). Must be a key in LOVENSE_TOY_NAMES.
-        on_power_off: Callback invoked when the user powers off the toy via the physical power button.
-            Receives the toy's Bluetooth address as a string argument.
+        on_power_off: Callback invoked when the user powers off the toy via the physical power button. Receives the toy's Bluetooth address as a string argument.
         logger_name: Name of the logger to use. Use empty string for root logger.
 
     Raises:
         ValidationError: If model_name is not a valid Lovense model.
 
-    Example:
-        Direct command execution::
+    Example::
 
             # Set intensity of the primary capability to maximum
             await toy.intensity1(20)
@@ -359,8 +348,7 @@ class LovenseBLED(ToyBLED):
         Raises:
             ValidationError: If model_name is not a valid Lovense model.
 
-        Example:
-            ::
+        Example::
 
                 # Update model name in case it was set incorrectly while building the connection via the ConnectionBuilder
                 toy.set_model_name("Nora")
@@ -428,8 +416,7 @@ class LovenseBLED(ToyBLED):
         Returns:
             True if the toy acknowledged the command, False otherwise.
 
-        Example:
-            ::
+        Example::
 
                 # Set primary capability to maximum
                 await toy.intensity1(20)
@@ -449,10 +436,9 @@ class LovenseBLED(ToyBLED):
             level: Intensity level (0-20). Values outside the valid range are clamped.
 
         Returns:
-            True if the toy acknowledged the command or or if no secondary capability exists, False otherwise
+            True if the toy acknowledged the command or if no secondary capability exists, False otherwise
 
-        Example:
-            ::
+        Example::
 
                 # Set secondary capability to medium intensity
                 await toy.intensity2(10)
@@ -480,8 +466,7 @@ class LovenseBLED(ToyBLED):
         Returns:
             True if both commands succeeded, False if either failed.
 
-        Example:
-            ::
+        Example::
 
                 await toy.stop()
         """
@@ -499,8 +484,7 @@ class LovenseBLED(ToyBLED):
         Returns:
             True if the toy acknowledged the command or if rotation is not supported, False if the command failed.
 
-        Example:
-            ::
+        Example::
 
                 # Toggle rotation direction
                 await toy.rotate_change_direction()
@@ -517,8 +501,7 @@ class LovenseBLED(ToyBLED):
         Returns:
             Battery level (0-100%), or None if the command failed or timed out.
 
-        Example:
-            ::
+        Example::
 
                 battery = await toy.get_battery_level()
                 if battery is not None:
@@ -560,8 +543,7 @@ class LovenseBLED(ToyBLED):
         Returns:
             Response string from the toy (with semicolon stripped), or None if timeout or error occurred.
 
-        Example:
-            ::
+        Example::
 
                 # Query firmware version
                 response = await toy.direct_command("DeviceType")
@@ -578,8 +560,7 @@ class LovenseBLED(ToyBLED):
             String in format "DeviceType:FirmwareVersion:Address" (e.g., "C:11:0082059AD3BD"), or None if an
             error occurred.
 
-        Example:
-            ::
+        Example::
 
                 info = await toy.get_device_type()
                 if info:
@@ -597,8 +578,7 @@ class LovenseBLED(ToyBLED):
         Returns:
             Status code (2 = Normal operation), or None if an error occurred.
 
-        Example:
-            ::
+        Example::
 
                 status = await toy.get_status()
                 if status == 2:
@@ -629,8 +609,7 @@ class LovenseBLED(ToyBLED):
         Returns:
             Batch number string (e.g., "241015" for October 15, 2024), or None if an error occurred.
 
-        Example:
-            ::
+        Example::
 
                 batch = await toy.get_batch_number()
                 if batch:
@@ -648,8 +627,7 @@ class LovenseBLED(ToyBLED):
         Returns:
             True if successful, False otherwise.
 
-        Example:
-            ::
+        Example::
 
                 await toy.power_off()
         """
@@ -781,12 +759,6 @@ class LovenseBLED(ToyBLED):
 
         Returns:
             True if the toy acknowledged the command with "OK", False otherwise.
-
-        Example:
-            Internal usage::
-
-                # Execute "Vibrate:15" command
-                success = await self._execute_level_command("Vibrate", 15)
         """
         level = max(0, min(max_level, level))
         command = f"{command_name}:{level}"
