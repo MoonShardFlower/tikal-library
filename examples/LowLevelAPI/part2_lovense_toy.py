@@ -158,7 +158,7 @@ async def main():
 
     # If you set the model_name to the wrong model, you can change it later.
     # Note that invalid names will still raise a ValidationError.
-    gush.set_model_name("Ridge")  # valid, but wrong model
+    gush.set_model_name("Solace")  # valid, but wrong model
     print(
         f"Gush changed to: {gush.model_name}. "
         f"This causes the intensity command to fail, so the following is now false: {await gush.intensity1(5)}"

@@ -79,7 +79,8 @@ def main():
         if toy_data.name == "LVS-Gush":
             print(f"{toy_data.name} is of model {toy_data.model_name}")
 
-    # As a sidenote: If you hand over the empty Path as toy_cache_path, ToyCache will be disabled.
+    # As a sidenote: If you hand over the empty Path as toy_cache_path, ToyCache works in-memory only. This means that
+    # ToyCache will be lost when the program terminates.
 
     # ------------------------------------------------------------------------------------------------------------------
     # Connecting to toys
