@@ -702,16 +702,10 @@ class ToyHub:
             self._disconnect_callback(client.address)
 
         async def reconnect_task():
-            try:
-                await asyncio.sleep(
-                    1.0
-                )  # Give some time in hopes of the connection failure resolving itself
-                if not client.is_connected:
-                    await client.connect()  # Try to reconnect
-            except Exception as e:
-                controller = self._toy_controllers[client.address]
-                await controller.toy.disconnect()
-                raise e
+            # Give some time in hopes of the connection failure resolving itself
+            await asyncio.sleep(1.0)
+            if not client.is_connected:
+                await client.connect()  # Try to reconnect
 
         def on_reconnect_complete(result):
             if isinstance(result, Exception):
@@ -720,6 +714,10 @@ class ToyHub:
                 )
                 if self._reconnection_failure_callback:
                     self._reconnection_failure_callback(client.address)
+                try:
+                    self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
+                except Exception as e:
+                    pass
             elif result is None:
                 self._log.info(
                     f"Reconnection successful for {client.name} at {client.address}"
@@ -733,6 +731,10 @@ class ToyHub:
                 )
                 if self._reconnection_failure_callback:
                     self._reconnection_failure_callback(client.address)
+                try:
+                    self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
+                except Exception as e:
+                    pass
 
         self._runner.run_callback(reconnect_task(), on_reconnect_complete, 5.0)
 

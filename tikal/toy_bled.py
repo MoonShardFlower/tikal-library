@@ -391,18 +391,28 @@ class LovenseBLED(ToyBLED):
             After calling this method, the toy object is unusable. To connect again, you will need to re-scan and
             connect using the ConnectionBuilder. Use the newly provided LovenseBLED object by the ConnectionBuilder.
         """
+
+        def log_disconnect_error(exception):
+            self._log.warning(
+                f"Disconnect error for {self._model_name} at {self._address}: {exception} with details {traceback.format_exc()}"
+            )
+
         try:
             self._intentional_disconnect = True
             await self.stop()
+        except Exception as e:
+            log_disconnect_error(e)
+        try:
             if self._notifications_started:
                 await self._client.stop_notify(self._rx_uuid)
                 self._notifications_started = False
+        except Exception as e:
+            log_disconnect_error(e)
+        try:
             await self._client.disconnect()
             self._log.info(f"Disconnected from {self._model_name} at {self._address}")
         except Exception as e:
-            self._log.warning(
-                f"Disconnect error for {self._model_name} at {self._address}: {e} with details {traceback.format_exc()}"
-            )
+            log_disconnect_error(e)
 
     async def intensity1(self, level: int) -> bool:
         """

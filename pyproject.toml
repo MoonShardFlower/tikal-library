@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tikal"
-version = "0.2.0"
+version = "0.2.1"
 description = "Toys I know and love: Unofficial Python Library to connect to and control Lovense Toys via bluetooth"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -39,7 +39,7 @@ classifiers = [
 
 [project.optional-dependencies]
 format = [
-    "black>=25.12.0"
+    "black>=26.1.0"
 ]
 
 [project.urls]
