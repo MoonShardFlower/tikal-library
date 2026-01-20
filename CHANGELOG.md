@@ -8,7 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
     - High Level API tested. This will be Version 1.0.0 and the first version on PyPI
     - With 1.0.0 the development status will be updated to beta and will likely remain in beta (Unless I get enough reports to confirm most lovense toys to be working)
-    - Added: High-Level API: ToyController has pattern_version property and get_pattern_data method (view docs for details)
+
+## [0.3.0] - 2026-01-21
+
+### Added
+	
+	- High-Level API: ToyController has new pattern_version property and get_pattern_data method (view docs for details)
 
 ## [0.2.1] - 2026-01-20
 

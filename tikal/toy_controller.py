@@ -92,6 +92,7 @@ class ToyController(ABC):
         self._pause_segment_elapsed: float = (
             0.0  # Time elapsed in the segment before a pause
         )
+        self._pattern_version = 0
 
         self._last_values: dict[str, int | None] = {
             "intensity1": None,
@@ -170,6 +171,16 @@ class ToyController(ABC):
             value: New connection state.
         """
         self._connected = value
+
+    @property
+    def pattern_version(self) -> int:
+        """
+        Each time the pattern state changes, the version number is incremented.
+
+        Returns:
+            current version number.
+        """
+        return self._pattern_version
 
     @property
     @abstractmethod
@@ -326,6 +337,7 @@ class ToyController(ABC):
         self._log.info(f"ToyController sets pattern for {self.toy_id}: {pattern}")
         self._pattern = pattern
         self._pattern_wraparound = wraparound
+        self._pattern_version += 1
         if reset_time:
             self._restart_pattern()
         # If not resetting, keep the current elapsed time to maintain position
@@ -643,6 +655,7 @@ class ToyController(ABC):
             return
 
         self._is_paused = paused
+        self._pattern_version += 1
         if paused:
             # Entering pause: update elapsed time up to now
             if self._segment_start_time is not None:
@@ -694,6 +707,27 @@ class ToyController(ABC):
 
         # Should not reach here, but return last segment values
         return pattern[-1][1], pattern[-1][2]
+
+    def get_pattern_data(self) -> tuple[list[tuple[int, int, int]], bool, bool, float]:
+        """
+        Gets the complete pattern state for visualization.
+
+        Pattern state consists of:
+        - pattern: List of tuples (duration, intensity1, intensity2) defining the pattern segments.
+        - wraparound: Whether the pattern repeats from the beginning after completing the last segment. If False, both
+        Intensities are 0 after the last segment.
+        - is_paused: Whether the pattern is currently paused. Paused patterns do not advance
+        - elapsed_time: Time elapsed since the start of the pattern or last wraparound in ms
+
+        Returns:
+            tuple: (pattern, wraparound, is_paused, elapsed_time)
+        """
+        return (
+            self._pattern.copy(),
+            self._pattern_wraparound,
+            self._is_paused,
+            self.get_pattern_time(),
+        )
 
 
 class LovenseController(ToyController):
