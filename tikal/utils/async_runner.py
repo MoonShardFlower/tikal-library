@@ -1,7 +1,7 @@
 import asyncio
 import threading
 import time
-from typing import Optional, Awaitable, Sequence, TypeVar, Callable
+from typing import Awaitable, Callable, Optional, Sequence, TypeVar
 
 T = TypeVar("T")
 

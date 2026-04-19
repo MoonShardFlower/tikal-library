@@ -12,9 +12,9 @@ Note:
 """
 
 import json
+import traceback
 from logging import getLogger
 from pathlib import Path
-import traceback
 
 
 class ToyCache:

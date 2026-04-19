@@ -1,6 +1,6 @@
 import asyncio
-from typing import Callable, Any, Optional
 from enum import Enum
+from typing import Any, Callable, Optional
 
 
 class MockBehavior(Enum):
