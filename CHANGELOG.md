@@ -3,11 +3,17 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
     - High Level API tested. This will be Version 1.0.0 and the first version on PyPI
     - With 1.0.0 the development status will be updated to beta and will likely remain in beta (Unless I get enough reports to confirm most lovense toys to be working)
+
+## [0.4.0] - 2026-04-19
+
+### Changed
+    
+    - Low-Level API: Introduced a transport layer to allow for the addition of potentially non-BLE toys. More generic Toy class replaces former ToyBLED class.
 
 ## [0.3.0] - 2026-01-21
 
@@ -30,6 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-01-07
 
-## Changed
+### Changed
 
     - Repository made public. Library is in alpha and not available on PyPI yet

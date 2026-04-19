@@ -20,14 +20,13 @@ Note:
 
 import time
 import traceback
-from typing import Optional, Callable, Any
 from abc import ABC, abstractmethod
-from logging import getLogger
 from collections import deque
+from logging import getLogger
+from typing import Any, Callable, Optional
 
-from . import ROTATION_TOY_NAMES
-from .toy_bled import ToyBLED, LovenseBLED
-from .toy_data import LOVENSE_TOY_NAMES
+from .toy import Lovense, Toy
+from .toy_data import LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES
 
 
 class ToyController(ABC):
@@ -68,7 +67,7 @@ class ToyController(ABC):
         This class should not be instantiated directly. Use ToyHub's connection methods to get controller instances.
     """
 
-    def __init__(self, toy: ToyBLED, toy_id: str, logger_name: str):
+    def __init__(self, toy: Toy, toy_id: str, logger_name: str):
         self._toy = toy
         self._toy_id = toy_id
         self._log = getLogger(logger_name)
@@ -540,7 +539,7 @@ class ToyController(ABC):
         Get the underlying low-level toy object (internal use only)
 
         Returns:
-            ToyBLED: The low-level toy object.
+            Toy: The low-level toy object.
 
         Warning:
             This is an internal method used by ToyHub and not meant to be used by you.
@@ -548,7 +547,7 @@ class ToyController(ABC):
         return self._toy
 
     @toy.setter
-    def toy(self, toy: ToyBLED):
+    def toy(self, toy: Toy):
         """
         Set the underlying low-level toy object (internal use only)
 
@@ -709,8 +708,7 @@ class ToyController(ABC):
         return pattern[-1][1], pattern[-1][2]
 
     def get_pattern_data(self) -> tuple[list[tuple[int, int, int]], bool, bool, float]:
-        """
-        Gets the complete pattern state for visualization.
+        """Gets the complete pattern state for visualization.
 
         Pattern state consists of:
         - pattern: List of tuples (duration, intensity1, intensity2) defining the pattern segments.
@@ -774,8 +772,8 @@ class LovenseController(ToyController):
         This class should not be instantiated directly. Use ToyHub's connection methods to get controller instances.
     """
 
-    def __init__(self, toy: LovenseBLED, toy_id: str, logger_name: str):
-        self._toy: LovenseBLED = toy
+    def __init__(self, toy: Lovense, toy_id: str, logger_name: str):
+        self._toy: Lovense = toy
         super().__init__(toy, toy_id, logger_name)
 
     @property

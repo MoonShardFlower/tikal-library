@@ -41,20 +41,21 @@ Example:
 """
 
 import asyncio
-from logging import getLogger
 import traceback
+from logging import getLogger
+from pathlib import Path
 from threading import Lock
 from time import time
-from typing import Callable, Optional, Any
-from bleak import BleakClient, BleakScanner
-from pathlib import Path
+from typing import Any, Callable, Optional
 
-from .utils.async_runner import AsyncRunner
-from .toy_cache import ToyCache
-from .toy_data import ToyData, LovenseData
+from bleak import BleakClient, BleakScanner
+
 from .connection_builder import LovenseConnectionBuilder
-from .toy_bled import LovenseBLED
-from .toy_controller import ToyController, LovenseController
+from .toy import Lovense
+from .toy_cache import ToyCache
+from .toy_controller import LovenseController, ToyController
+from .toy_data import LovenseData, ToyData
+from .utils.async_runner import AsyncRunner
 
 
 class ToyHub:
@@ -346,7 +347,7 @@ class ToyHub:
             self._lovense_builder.create_toys(lovense_data), timeout
         )
         for data, bled in zip(lovense_data, lovense_bleds):
-            if isinstance(bled, LovenseBLED):
+            if isinstance(bled, Lovense):
                 controller = LovenseController(bled, bled.address, self._log.name)
                 controllers.append(controller)
                 self._register_controller(data.toy_id, controller)
@@ -400,7 +401,7 @@ class ToyHub:
             ]
             lovense_bleds = await self._lovense_builder.create_toys(lovense_data)
             for data, bled in zip(lovense_data, lovense_bleds):
-                if isinstance(bled, LovenseBLED):
+                if isinstance(bled, Lovense):
                     controller = LovenseController(bled, bled.address, self._log.name)
                     controllers.append(controller)
                     self._register_controller(data.toy_id, controller)
@@ -716,7 +717,7 @@ class ToyHub:
                     self._reconnection_failure_callback(client.address)
                 try:
                     self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
-                except Exception as e:
+                except Exception:
                     pass
             elif result is None:
                 self._log.info(
@@ -733,7 +734,7 @@ class ToyHub:
                     self._reconnection_failure_callback(client.address)
                 try:
                     self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
-                except Exception as e:
+                except Exception:
                     pass
 
         self._runner.run_callback(reconnect_task(), on_reconnect_complete, 5.0)

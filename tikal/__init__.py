@@ -1,15 +1,15 @@
+from .connection_builder import LovenseConnectionBuilder, ToyConnectionBuilder
+from .toy import Lovense, Toy
+from .toy_cache import ToyCache
+from .toy_controller import LovenseController, ToyController
 from .toy_data import (
-    ValidationError,
-    ToyData,
-    LovenseData,
     LOVENSE_TOY_NAMES,
     ROTATION_TOY_NAMES,
+    LovenseData,
+    ToyData,
+    ValidationError,
 )
-from .toy_cache import ToyCache
-from .connection_builder import ToyConnectionBuilder, LovenseConnectionBuilder
-from .toy_bled import ToyBLED, LovenseBLED
 from .toy_hub import ToyHub
-from .toy_controller import ToyController, LovenseController
 
 __all__ = [
     "ValidationError",
@@ -20,11 +20,11 @@ __all__ = [
     "ToyCache",
     "ToyConnectionBuilder",
     "LovenseConnectionBuilder",
-    "ToyBLED",
-    "LovenseBLED",
+    "Toy",
+    "Lovense",
     "ToyHub",
     "ToyController",
     "LovenseController",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.2.0"

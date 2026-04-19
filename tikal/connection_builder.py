@@ -1,8 +1,7 @@
 """
 Part of the Low-Level API: Provides connection management for toy devices.
 
-This module provides abstract and concrete implementations for discovering and connecting
-to BLE toys. This module provides:
+This module provides abstract and concrete implementations for discovering and connecting to toys. This module provides:
 
 - :class:`ToyConnectionBuilder`: Abstract base class defining the connection interface
 - :class:`LovenseConnectionBuilder`: Concrete implementation for Lovense brand toys
@@ -25,11 +24,13 @@ Example::
 import asyncio
 from abc import ABC, abstractmethod
 from logging import getLogger
-from typing import Callable, Any, Type
-from bleak import BLEDevice, BleakScanner, BleakClient
+from typing import Any, Callable, Type
 
-from .toy_data import LOVENSE_TOY_NAMES, ToyData, LovenseData, ValidationError
-from .toy_bled import ToyBLED, LovenseBLED
+from bleak import BleakClient, BleakScanner, BLEDevice
+
+from .toy import Lovense, Toy
+from .toy_data import LOVENSE_TOY_NAMES, LovenseData, ToyData, ValidationError
+from .utils.transport import BleTransport
 
 
 class ToyConnectionBuilder(ABC):
@@ -66,9 +67,7 @@ class ToyConnectionBuilder(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def create_toys(
-        self, to_connect: list[ToyData]
-    ) -> list[ToyBLED | BaseException]:
+    async def create_toys(self, to_connect: list[ToyData]) -> list[Toy | BaseException]:
         """
         Create connected toy instances from discovery data.
 
@@ -129,7 +128,7 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         self._on_power_off = on_power_off
         self._scanner_class = scanner_class
         self._client_class = client_class
-        self._toys_by_client: dict[BleakClient, LovenseBLED] = {}
+        self._toys_by_client: dict[BleakClient, Lovense] = {}
         self._cached_ble_devices: dict[str, BLEDevice] = {}
         self._LOVENSE_SERVICE_PATTERN = "-4bd4-bbd5-a6920e4c5653"
         self._UUID_REPLACEMENTS = {
@@ -162,8 +161,7 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
                     print(f"{toy.name} at {toy.toy_id}")
 
         Note:
-            This method caches discovered BLE devices internally.
-            You should call this method before calling :meth:`create_toys`.
+            This method caches discovered BLE devices internally. You should call this method before calling :meth:`create_toys`.
         """
         self._log.info(f"Scanning for Lovense devices for {timeout} seconds")
         devices = await self._scanner_class.discover(timeout=timeout)
@@ -179,7 +177,7 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
 
     async def create_toys(
         self, to_connect: list[LovenseData]
-    ) -> list[LovenseBLED | BaseException]:
+    ) -> list[Lovense | BaseException]:
         """
         Create connected Lovense toy instances from discovery data.
 
@@ -225,7 +223,7 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
             ble_device = self._cached_ble_devices[toy_data.toy_id]
             coroutines.append(self._create_toy(toy_data.model_name, ble_device))
         results = await asyncio.gather(*coroutines, return_exceptions=True)
-        count = len([toy for toy in results if isinstance(toy, LovenseBLED)])
+        count = len([toy for toy in results if isinstance(toy, Lovense)])
         self._log.debug(f"Connected successfully to {count} Lovense devices")
         return results
 
@@ -274,7 +272,7 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
 
         raise ConnectionError(f"Unable to find {uuid_type}-UUID for {client.address}")
 
-    async def _create_toy(self, model_name: str, device: BLEDevice) -> LovenseBLED:
+    async def _create_toy(self, model_name: str, device: BLEDevice) -> Lovense:
         """
         Connect to a single Lovense toy and create a LovenseBLED instance.
 
@@ -317,9 +315,8 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         try:
             tx_uuid = await self._find_uuid_by_type(client, "tx")
             rx_uuid = await self._find_uuid_by_type(client, "rx")
-            toy = LovenseBLED(
-                client, tx_uuid, rx_uuid, model_name, self._on_power_off, self._log.name
-            )
+            transport = BleTransport(client, tx_uuid, rx_uuid)
+            toy = Lovense(transport, model_name, self._on_power_off, self._log.name)
             await toy.start_notifications()
             self._toys_by_client[client] = toy
         except Exception as e:
