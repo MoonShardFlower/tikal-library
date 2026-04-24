@@ -1,4 +1,5 @@
 from .async_runner import AsyncRunner
+from .pattern_handler import PatternHandler
 from .transport import BleTransport, UsbTransport
 
-__all__ = ["AsyncRunner", "BleTransport", "UsbTransport"]
+__all__ = ["AsyncRunner", "BleTransport", "UsbTransport", "PatternHandler"]
