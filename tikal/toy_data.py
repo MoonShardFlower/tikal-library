@@ -15,7 +15,7 @@ Constants:
     ROTATION_TOY_NAMES (list[str]): List of Lovense toy model names that support rotation direction changes.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 class ValidationError(Exception):
@@ -46,9 +46,9 @@ class ToyData:
     You shouldn't need to instantiate this class yourself. ``ConnectionBuilder.discover_toys()`` creates instances of
     this class for you.
 
-    Attributes:
-        name: Human-readable identifier for the toy. For Bluetooth toys, this is the Bluetooth name (e.g., "LVS-B12").
-        toy_id: Unique identifier for the toy. For Bluetooth toys, this is the Bluetooth address (e.g., "DC:F5:05:A3:6D:1E").
+    Properties:
+        name: Read-only human-readable identifier for the toy. For Bluetooth toys, this is the Bluetooth name (e.g., "LVS-B12").
+        toy_id: Read-only unique identifier for the toy. For Bluetooth toys, this is the Bluetooth address (e.g., "DC:F5:05:A3:6D:1E").
         model_name: Model name of the toy (e.g., "Lush"). For Lovense toys, this is empty and must be set manually.
 
     Example:
@@ -63,9 +63,35 @@ class ToyData:
             lovense_data.model_name = "Nora"
     """
 
-    name: str
-    toy_id: str
-    model_name: str = ""
+    _name: str
+    _toy_id: str
+    _model_name: str = field(default="", repr=False)
+
+    def __post_init__(self):
+        if not isinstance(self._name, str):
+            raise TypeError("name must be str")
+        if not isinstance(self._toy_id, str):
+            raise TypeError("toy_id must be str")
+        if not isinstance(self._model_name, str):
+            raise TypeError("model_name must be str")
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def toy_id(self) -> str:
+        return self._toy_id
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @model_name.setter
+    def model_name(self, value: str):
+        if not isinstance(value, str):
+            raise TypeError("model_name must be str")
+        self._model_name = value
 
 
 @dataclass
