@@ -1,8 +1,9 @@
 import asyncio
-from bleak import BleakClient
-from logging import getLogger, INFO, Formatter, StreamHandler
+from logging import INFO, Formatter, StreamHandler, getLogger
 
-from tikal import LovenseConnectionBuilder, LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES
+from bleak import BleakClient
+
+from tikal import LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES, LovenseConnectionBuilder
 from tikal.mock import MockBleakClient, MockBleakScanner
 
 # All classes use the logging module

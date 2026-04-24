@@ -1,9 +1,7 @@
 import unittest
-from unittest.mock import AsyncMock, Mock, patch, call
+from unittest.mock import AsyncMock, Mock, call, patch
 
-from tikal import LovenseConnectionBuilder
-from tikal import LovenseData, ValidationError
-from tikal import LovenseBLED
+from tikal import LovenseBLED, LovenseConnectionBuilder, LovenseData, ValidationError
 
 
 class TestLovenseConnectionBuilder(unittest.IsolatedAsyncioTestCase):

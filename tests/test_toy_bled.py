@@ -1,9 +1,8 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
-import asyncio
 
-from tikal import LovenseBLED, ValidationError
-from tikal import LOVENSE_TOY_NAMES
+from tikal import LOVENSE_TOY_NAMES, LovenseBLED, ValidationError
 
 
 class TestLovenseBLEDInitialization(unittest.TestCase):

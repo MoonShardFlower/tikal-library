@@ -1,8 +1,8 @@
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
-import shutil
 
 from tikal import ToyCache
 

@@ -1,7 +1,7 @@
 import time
+from logging import INFO, Formatter, StreamHandler, getLogger
 
 from bleak import BleakClient
-from logging import getLogger, INFO, Formatter, StreamHandler
 
 from tikal import ToyHub
 from tikal.mock import MockBleakClient, MockBleakScanner

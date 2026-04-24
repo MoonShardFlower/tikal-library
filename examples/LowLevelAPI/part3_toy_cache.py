@@ -1,8 +1,8 @@
 import asyncio
+from logging import INFO, Formatter, StreamHandler, getLogger
 from pathlib import Path
 
 from bleak import BleakClient
-from logging import getLogger, INFO, Formatter, StreamHandler
 
 from tikal import LovenseConnectionBuilder, ToyCache
 from tikal.mock import MockBleakClient, MockBleakScanner

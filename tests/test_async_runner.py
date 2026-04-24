@@ -1,6 +1,6 @@
-import unittest
 import asyncio
 import time
+import unittest
 
 from tikal.utils import AsyncRunner
 
