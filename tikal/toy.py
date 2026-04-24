@@ -75,12 +75,12 @@ class Toy(ABC):
         return self._model_name
 
     @property
-    def address(self) -> str:
+    def toy_id(self) -> str:
         """
-        The Bluetooth address of the toy.
+        And unique identifier of the toy e.g., Bluetooth address.
 
         Returns:
-            Bluetooth address as a string
+            unique identifier string
         """
         return self._toy_id
 
@@ -127,6 +127,7 @@ class Toy(ABC):
 
         Stops all toy actions, disables notifications, and closes the BLE connection.
         This method should always be called before the toy object is destroyed to ensure proper cleanup.
+        The method does not raise any exceptions.
         """
         raise NotImplementedError
 
@@ -221,6 +222,22 @@ class Toy(ABC):
                     print(f"Battery: {battery}%")
                 else:
                     print("Failed to read battery level")
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def direct_command(self, command: str, timeout: float = 3.0) -> str | None:
+        """
+        Send any command directly to the toy.
+
+        This method allows sending commands that are not implemented by the library.
+
+        Args:
+            command: Command string in UTF-8 format
+            timeout: Response timeout in seconds. Defaults to 3.0.
+
+        Returns:
+            Response string from the toy, or None if timeout or error occurred.
         """
         raise NotImplementedError
 
@@ -328,7 +345,8 @@ class Lovense(Toy):
 
         Stops all toy actions, disables notifications, and closes the BLE connection. This is regarded as intentional
         disconnect and does not trigger an on_disconnect callback even if an on_disconnect callback was set
-        (either during initialization or via set_on_disconnect)
+        (either during initialization or via set_on_disconnect).
+        The method does not raise any exceptions.
 
         Note:
             After calling this method, the toy object is unusable. To connect again, you will need to re-scan and
