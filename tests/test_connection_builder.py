@@ -245,7 +245,7 @@ class TestLovenseConnectionBuilder(unittest.IsolatedAsyncioTestCase):
         mock_device.address = "00:11:22:33:44:55"
 
         with self.assertRaises(ValidationError) as context:
-            await self.builder._create_toy("InvalidModel", mock_device)
+            await self.builder._create_toy_helper("InvalidModel", mock_device)
 
         self.assertIn("Invalid model_name 'InvalidModel'", str(context.exception))
 
@@ -260,7 +260,7 @@ class TestLovenseConnectionBuilder(unittest.IsolatedAsyncioTestCase):
             mock_client_class.return_value = mock_client
 
             with self.assertRaises(ConnectionError) as context:
-                await self.builder._create_toy("Gush", mock_device)
+                await self.builder._create_toy_helper("Gush", mock_device)
 
             self.assertIn("Error connecting to Gush", str(context.exception))
 
@@ -281,7 +281,7 @@ class TestLovenseConnectionBuilder(unittest.IsolatedAsyncioTestCase):
                 mock_find_uuid.side_effect = Exception("UUID not found")
 
                 with self.assertRaises(ConnectionError) as context:
-                    await self.builder._create_toy("Gush", mock_device)
+                    await self.builder._create_toy_helper("Gush", mock_device)
 
                 self.assertIn("Error setting up notifications", str(context.exception))
                 mock_client.disconnect.assert_called_once()
@@ -308,7 +308,7 @@ class TestLovenseConnectionBuilder(unittest.IsolatedAsyncioTestCase):
                     mock_bled.start_notifications = AsyncMock()
                     mock_bled_class.return_value = mock_bled
 
-                    result = await self.builder._create_toy("Gush", mock_device)
+                    result = await self.builder._create_toy_helper("Gush", mock_device)
 
                     self.assertEqual(result, mock_bled)
                     mock_client.connect.assert_called_once()

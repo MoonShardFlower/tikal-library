@@ -181,11 +181,12 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         """
         Create connected Lovense toy instances from discovery data.
 
-        Attempts to the specified toys concurrently. For each toy, this method:
+        Attempts to connect to the specified toys concurrently by delegating each connection
+        to :meth:`create_toy`. For each toy, this method:
 
         1. Retrieves the internally cached BLE device and establishes a BLE connection
         2. Discovers the TX and RX UUIDs and starts notifications
-        3. Creates a LovenseBLED instance
+        3. Creates a Lovense instance
 
         Args:
             to_connect: List of LovenseData objects with valid model_names.
@@ -193,11 +194,11 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
                 call to :meth:`discover_toys` and model_names must be set by you.
 
         Returns:
-            List where each element is either a connected LovenseBLED instance or a BaseException
-            (ConnectionError, ValidationError, etc.) for failed connections. The order matches the input list.
-
-        Raises:
-            KeyError: If a toy's address is not in the cached devices (i.e., the toy wasn't discovered earlier.
+            List where each element is either a connected Lovense instance or a BaseException for failed connections. Possible exceptions per element:
+            - ``KeyError``: toy address was not found in the cache (i.e., :meth:`discover_toys` was not called first)
+            - ``ValidationError``: model_name is not a valid Lovense model name
+            - ``ConnectionError``: BLE connection or notification setup failed
+            The order of results matches the order of the input list.
 
         Example::
 
@@ -212,20 +213,66 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
                 results = await builder.create_toys(toys)
 
                 # Process results
-                connected_toys = [r for r in results if isinstance(r, LovenseBLED)]
+                connected_toys = [r for r in results if isinstance(r, Lovense)]
                 failed = [r for r in results if isinstance(r, BaseException)]
         """
         self._log.info(f"Connecting to {len(to_connect)} Lovense devices")
         if not to_connect:
             return []
-        coroutines = []
-        for toy_data in to_connect:
-            ble_device = self._cached_ble_devices[toy_data.toy_id]
-            coroutines.append(self._create_toy(toy_data.model_name, ble_device))
-        results = await asyncio.gather(*coroutines, return_exceptions=True)
+        coroutines = [self.create_toy(toy_data) for toy_data in to_connect]
+        results = await asyncio.gather(*coroutines)
         count = len([toy for toy in results if isinstance(toy, Lovense)])
         self._log.debug(f"Connected successfully to {count} Lovense devices")
-        return results
+        return list(results)
+
+    async def create_toy(self, to_connect: LovenseData) -> Lovense | BaseException:
+        """
+        Create a connected Lovense toy instance from discovery data.
+
+        Attempts to connect to a single toy. See :meth:`create_toys` to connect to multiple toys concurrently.
+
+        1. Retrieves the internally cached BLE device and establishes a BLE connection
+        2. Discovers the TX and RX UUIDs and starts notifications
+        3. Creates a Lovense instance
+
+        Args:
+            to_connect: LovenseData object with a valid model_name.
+                Valid model_names are in LOVENSE_TOY_NAMES.keys(). Instances of LovenseData are created with a prior
+                call to :meth:`discover_toys` and model_names must be set by you.
+
+        Returns:
+            A connected Lovense instance on success, or a BaseException on failure.
+            Possible exceptions:
+
+            - ``KeyError``: toy address was not found in the cache (i.e., :meth:`discover_toys` was not called first)
+            - ``ValidationError``: model_name is not a valid Lovense model name
+            - ``ConnectionError``: BLE connection or notification setup failed
+
+        Example::
+
+                # Discover toys
+                toys = await builder.discover_toys(5.0)
+
+                # Set model name (e.g., from user input)
+                toys[0].model_name = "Nora"
+
+                # Connect
+                result = await builder.create_toy(toys[0])
+
+                if isinstance(result, Lovense):
+                    print("Connected!")
+                else:
+                    print(f"Failed: {result}")
+        """
+        self._log.info("Connecting to a Lovense device")
+        try:
+            ble_device = self._cached_ble_devices[to_connect.toy_id]
+            result = await self._create_toy_helper(to_connect.model_name, ble_device)
+        except Exception as e:
+            return e
+        self._log.debug("Connected successfully to a Lovense device")
+        return result
+
 
     # ========================================================================
     # Private Methods
@@ -272,7 +319,7 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
 
         raise ConnectionError(f"Unable to find {uuid_type}-UUID for {client.address}")
 
-    async def _create_toy(self, model_name: str, device: BLEDevice) -> Lovense:
+    async def _create_toy_helper(self, model_name: str, device: BLEDevice) -> Lovense:
         """
         Connect to a single Lovense toy and create a LovenseBLED instance.
 
