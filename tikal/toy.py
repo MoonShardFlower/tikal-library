@@ -284,7 +284,7 @@ class Lovense(Toy):
     Implements the Lovense-specific protocol for communication with Lovense toys over Bluetooth Low Energy.
     Handles command formatting, response parsing, and Lovense-specific notifications (like power-off events).
     You are not meant to instantiate these classes directly. :class:`LovenseConnectionBuilder` establishes connections
-    to toys and returns instances of :class:`LovenseBLED`
+    to toys and returns instances of :class:`Lovense`
 
     Args:
         transport: Transport layer handling the BLE communication.
