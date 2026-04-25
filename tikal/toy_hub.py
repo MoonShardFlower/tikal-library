@@ -56,6 +56,7 @@ from .toy_cache import ToyCache
 from .toy_controller import LovenseController, ToyController
 from .toy_data import LovenseData, ToyData
 from .utils.async_runner import AsyncRunner
+from .utils.transport import Transport
 
 
 class ToyHub:
@@ -343,18 +344,18 @@ class ToyHub:
 
         # Separate by brand
         lovense_data = [data for data in to_connect if isinstance(data, LovenseData)]
-        lovense_bleds = self._runner.run_async(
+        lovense_toys = self._runner.run_async(
             self._lovense_builder.create_toys(lovense_data), timeout
         )
-        for data, bled in zip(lovense_data, lovense_bleds):
-            if isinstance(bled, Lovense):
-                controller = LovenseController(bled, bled.address, self._log.name)
+        for data, toy in zip(lovense_data, lovense_toys):
+            if isinstance(toy, Lovense):
+                controller = LovenseController(toy, toy.toy_id, self._log.name)
                 controllers.append(controller)
                 self._register_controller(data.toy_id, controller)
-                cache_updates[data.name] = bled.model_name
+                cache_updates[data.name] = toy.model_name
             else:
                 # Connection failed, bled is an exception
-                controllers.append(bled)
+                controllers.append(toy)
 
         # Update cache with newly connected toys
         if self._toy_cache and cache_updates:
@@ -399,15 +400,15 @@ class ToyHub:
             lovense_data = [
                 data for data in to_connect if isinstance(data, LovenseData)
             ]
-            lovense_bleds = await self._lovense_builder.create_toys(lovense_data)
-            for data, bled in zip(lovense_data, lovense_bleds):
-                if isinstance(bled, Lovense):
-                    controller = LovenseController(bled, bled.address, self._log.name)
+            lovense_toys = await self._lovense_builder.create_toys(lovense_data)
+            for data, toy in zip(lovense_data, lovense_toys):
+                if isinstance(toy, Lovense):
+                    controller = LovenseController(toy, toy.toy_id, self._log.name)
                     controllers.append(controller)
                     self._register_controller(data.toy_id, controller)
-                    cache_updates[data.name] = bled.model_name
+                    cache_updates[data.name] = toy.model_name
                 else:
-                    controllers.append(bled)
+                    controllers.append(toy)
             if self._toy_cache and cache_updates:
                 self._toy_cache.update(cache_updates)
             self._log.info(f"Connection process finished")
@@ -471,7 +472,7 @@ class ToyHub:
 
         Args:
             to_disconnect: List of toy_ids to disconnect.
-            on_disconnected: Callback invoked with list of exceptions (or None for successful disconnects).
+            on_disconnected: Callback invoked with a list of exceptions (or None for successful disconnects).
             timeout: Maximum time to wait for all disconnections in seconds.
 
         Example:
@@ -687,51 +688,51 @@ class ToyHub:
         # Execute all concurrently
         await asyncio.gather(*coroutines, return_exceptions=True)
 
-    def _handle_disconnect(self, client: BleakClient) -> None:
+    def _handle_disconnect(self, transport: Transport) -> None:
         """
         Handle unexpected toy disconnection and attempt reconnection
 
         Args:
-            client: BleakClient instance of the disconnected toy.
+            transport: Transport instance of the disconnected toy.
         """
         self._log.warning(
-            f"Disconnected from {client.name} at {client.address}. Will attempt to reconnect once."
+            f"Disconnected from {transport.name} at {transport.toy_id}. Will attempt to reconnect once."
         )
-        toy_controller = self._toy_controllers[client.address]
-        self._unregister_controller(client.address)
+        toy_controller = self._toy_controllers[transport.toy_id]
+        self._unregister_controller(transport.toy_id)
         if self._disconnect_callback:
-            self._disconnect_callback(client.address)
+            self._disconnect_callback(transport.toy_id)
 
         async def reconnect_task():
             # Give some time in hopes of the connection failure resolving itself
             await asyncio.sleep(1.0)
-            if not client.is_connected:
-                await client.connect()  # Try to reconnect
+            if not transport.is_connected:
+                await transport.reconnect()  # Try to reconnect
 
         def on_reconnect_complete(result):
             if isinstance(result, Exception):
                 self._log.error(
-                    f"Unable to recover connection to toy at address {client.address} due to {result!r}"
+                    f"Unable to recover connection to toy at address {transport.toy_id} due to {result!r}"
                 )
                 if self._reconnection_failure_callback:
-                    self._reconnection_failure_callback(client.address)
+                    self._reconnection_failure_callback(transport.toy_id)
                 try:
                     self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
                 except Exception:
                     pass
             elif result is None:
                 self._log.info(
-                    f"Reconnection successful for {client.name} at {client.address}"
+                    f"Reconnection successful for {transport.name} at {transport.toy_id}"
                 )
-                self._register_controller(client.address, toy_controller)
+                self._register_controller(transport.toy_id, toy_controller)
                 if self._reconnection_success_callback:
-                    self._reconnection_success_callback(client.address)
+                    self._reconnection_success_callback(transport.toy_id)
             else:
                 self._log.exception(
                     f"Unexpected result type while trying to handle connection failure: {result!r}"
                 )
                 if self._reconnection_failure_callback:
-                    self._reconnection_failure_callback(client.address)
+                    self._reconnection_failure_callback(transport.toy_id)
                 try:
                     self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
                 except Exception:
@@ -739,27 +740,27 @@ class ToyHub:
 
         self._runner.run_callback(reconnect_task(), on_reconnect_complete, 5.0)
 
-    def _handle_power_off(self, address: str) -> None:
+    def _handle_power_off(self, toy_id: str) -> None:
         """
         Handle toy power-off event and disconnect cleanly (internal).
 
         Args:
-            address: Bluetooth address of the powered-off toy.
+            toy_id: Uniqe identifier of the toy that powered off (Bluetooth address for BLE toys)
 
         Note:
             This is an internal callback. Do not call directly.
         """
-        self._log.warning(f"Powered off toy at address {address}")
-        controller = self._toy_controllers[address]
-        self._unregister_controller(address)
+        self._log.warning(f"Powered off toy at {toy_id}")
+        controller = self._toy_controllers[toy_id]
+        self._unregister_controller(toy_id)
         if self._power_off_callback:
-            self._power_off_callback(address)
+            self._power_off_callback(toy_id)
 
         def on_disconnect_complete(result):
             if isinstance(result, Exception):
                 print(f"Unable to disconnect toy in time: {result}")
             if self._power_off_callback:
-                self._power_off_callback(address)
+                self._power_off_callback(toy_id)
 
         try:
             self._runner.run_callback(
