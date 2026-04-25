@@ -8,10 +8,10 @@ Concrete implementations wrap bleak or pyserial-asyncio-fast.
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Callable
+from typing import Awaitable, Callable, Type
 
 import serial_asyncio_fast
-from bleak import BleakClient
+from bleak import BleakClient, BLEDevice
 
 
 class Transport(ABC):
@@ -31,6 +31,7 @@ class Transport(ABC):
     def __init__(self, toy_id: str, name: str):
         self._toy_id = toy_id
         self._name = name
+        self._intentional_disconnect = False
 
     @property
     def toy_id(self) -> str:
@@ -46,6 +47,11 @@ class Transport(ABC):
     @abstractmethod
     def is_connected(self) -> bool:
         """``True`` while the underlying link is open, else ``False``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def reconnect(self) -> None:
+        """Attempts to reconnect to the toy. Does nothing if already connected."""
         raise NotImplementedError
 
     @abstractmethod
@@ -89,22 +95,76 @@ class BleTransport(Transport):
     """
     ``Transport`` implementation for Bluetooth Low Energy via bleak.
 
+    Call :meth:`connect` after construction!
+    It establishes the BLE connection and resolves TX / RX UUIDs, via the supplied *uuid_resolver*
+
     Args:
-        client: An already-connected ``BleakClient``.
-        tx_uuid: GATT characteristic UUID for outbound data (write).
-        rx_uuid: GATT characteristic UUID for inbound data (notify).
+        device: The ``BLEDevice`` to connect to.
+        uuid_resolver: Async callable that receives the connected ``BleakClient`` and returns ``(tx_uuid, rx_uuid)``.
+            Invoked once inside :meth:`connect` while the link is already open, so it can inspect the GATT services.
+        on_disconnect: Optional callback is invoked with this ``BleTransport`` instance when the underlying BLE
+            connection drops unexpectedly. Not invoked for intentional disconnects via :meth:`disconnect`.
+        client_class: ``BleakClient`` subclass to use. Defaults to ``BleakClient``; override for testing.
     """
 
-    def __init__(self, client: BleakClient, tx_uuid: str, rx_uuid: str):
-        super().__init__(toy_id=client.address, name=client.name or "")
-        self._client = client
-        self._tx_uuid = tx_uuid
-        self._rx_uuid = rx_uuid
+    def __init__(
+        self,
+        device: BLEDevice,
+        uuid_resolver: Callable[[BleakClient], Awaitable[tuple[str, str]]],
+        on_disconnect: Callable[["BleTransport"], None] | None = None,
+        client_class: Type[BleakClient] = BleakClient,
+    ):
+        super().__init__(toy_id=device.address, name=device.name or "")
+        self._uuid_resolver = uuid_resolver
+        self._on_disconnect = on_disconnect
+        self._tx_uuid: str | None = None
+        self._rx_uuid: str | None = None
+
+        def _bleak_disconnect_cb(_: BleakClient) -> None:
+            if not self._intentional_disconnect and on_disconnect:
+                on_disconnect(self)
+
+        self._client = client_class(device, disconnected_callback=_bleak_disconnect_cb)
+
+    async def connect(self) -> None:
+        """
+        Do not call. The ``ConnectionBuilder`` will call this for you.
+
+        Opens the BLE connection and resolves TX / RX UUIDs.
+        Must be called exactly once after construction and before any other method.
+
+        Raises:
+            ConnectionError: If the BLE connection fails or if UUID resolution raises.
+        """
+        try:
+            await self._client.connect()
+            self._tx_uuid, self._rx_uuid = await self._uuid_resolver(self._client)
+        except Exception as e:
+            raise ConnectionError(f"Error connecting to toy at {self.toy_id}: {e!r}")
 
     @property
     def is_connected(self) -> bool:
         """``True`` while the underlying link is open, else ``False``."""
         return self._client is not None and self._client.is_connected
+
+    async def reconnect(self) -> None:
+        """
+        Attempts to reconnect to the toy. Does nothing if already connected.
+        Use only after an unintended disconnect (``ConnectionError``).
+        If you disconnected via :meth:`disconnect`, use the ``ConnectionBuilder`` instead.
+
+        Raises:
+            RuntimeError: If called after an intentional disconnect.
+            ConnectionError: If the reconnection attempt fails.
+        """
+        if self.is_connected:
+            return
+        if self._intentional_disconnect:
+            raise RuntimeError("Cannot reconnect after intentional disconnect")
+        try:
+            await self._client.connect()
+        except Exception as e:
+            raise ConnectionError(f"Error connecting to toy at {self.toy_id}: {e!r}")
 
     async def send(self, data: bytes) -> None:
         """
@@ -120,23 +180,6 @@ class BleTransport(Transport):
             await self._client.write_gatt_char(self._tx_uuid, data, response=False)
         except Exception as e:
             raise ConnectionError(f"Error sending data to toy at {self.toy_id}: {e!r}")
-
-    async def disconnect(self) -> None:
-        """
-        Close the BLE Connection and release all resources. After this call ``is_connected`` returns ``False``.
-
-        Raises:
-            ConnectionError: If the operation fails.
-        """
-        if not self._client:
-            return
-        try:
-            await self._client.disconnect()
-        except Exception as e:
-            raise ConnectionError(
-                f"Error disconnecting from toy at {self.toy_id}: {e!r}"
-            )
-        self._client = None
 
     async def start_notify(self, callback: Callable[[bytes], None]) -> None:
         """
@@ -160,6 +203,25 @@ class BleTransport(Transport):
                 f"Error starting notifications for toy at {self.toy_id}: {e!r}"
             )
 
+    async def disconnect(self) -> None:
+        """
+        Close the BLE connection and release all resources. After this call ``is_connected`` returns ``False``.
+
+        Raises:
+            ConnectionError: If the operation fails. Connection is still regarded as closed if this exception is raised.
+        """
+        if not self._client:
+            return
+        self._intentional_disconnect = True
+        try:
+            await self._client.disconnect()
+        except Exception as e:
+            raise ConnectionError(
+                f"Error disconnecting from toy at {self.toy_id}: {e!r}"
+            )
+        finally:
+            self._client = None
+
 
 class UsbTransport(Transport):
     """
@@ -182,8 +244,10 @@ class UsbTransport(Transport):
         super().__init__(toy_id=port, name="usb")
         self._reader = reader
         self._writer = writer
+        self._port = port
         self._baudrate = baudrate
         self._connected = True
+        self._notify_callback: Callable | None = None
         self._read_task: asyncio.Task | None = None
 
     @classmethod
@@ -204,10 +268,39 @@ class UsbTransport(Transport):
         self._writer.write(data)
         await self._writer.drain()
 
-    async def start_notify(self, callback: Callable[[bytes], None]) -> None:
-        """Spawns a background task that reads lines from the serial port and invokes *callback* for each one."""
+    async def reconnect(self) -> None:
+        """
+        Attempts to reconnect to the toy. Does nothing if already connected.
+        Use only after an unintended disconnect (``ConnectionError``).
+        If you disconnected via :meth:`disconnect`, use the ``ConnectionBuilder`` instead.
 
-        # TODO: Assumes readline strategy. Other read strategy (fixed-size ``read``) might be possible.
+        Raises:
+            RuntimeError: If called after an intentional disconnect.
+            ConnectionError: If the reconnection attempt fails.
+        """
+        if self.is_connected:
+            return
+        if self._intentional_disconnect:
+            raise RuntimeError("Cannot reconnect after intentional disconnect")
+        try:
+            if not self._notify_callback:
+                raise RuntimeError("Cannot reconnect without a notification callback")
+            self._reader, self._writer = await serial_asyncio_fast.open_serial_connection(url=self._port, baudrate=self._baudrate)
+            await self.start_notify(self._notify_callback)
+        except Exception as e:
+            raise ConnectionError(f"Error connecting to toy at {self.toy_id}: {e!r}")
+
+    async def start_notify(self, callback: Callable[[bytes], None]) -> None:
+        """
+        Spawns a background task that reads lines from the serial port and invokes *callback* for each one.
+
+        Args:
+            callback: callback invoked with each inbound ``bytes`` payload.
+
+        Raises:
+            ConnectionError: If the transport is not connected or the operation fails.
+        """
+        # TODO: Assumes readline strategy. Other read strategies (fixed-size ``read``) might be possible.
         #  Might need multiple USB Transport layer classes to handle different USB toy protocols.
         async def _read_loop():
             try:
@@ -217,14 +310,28 @@ class UsbTransport(Transport):
                         callback(data)
             except asyncio.CancelledError:
                 pass
-
+        self._notify_callback = callback
         self._read_task = asyncio.create_task(_read_loop())
 
     async def disconnect(self) -> None:
+        """
+        Close the serial connection and release all resources. After this call ``is_connected`` returns ``False``.
+
+        Raises:
+            ConnectionError: If the operation fails. The connection is still regarded as closed if this exception is raised.
+        """
         self._connected = False
-        if self._read_task:
-            self._read_task.cancel()
-            await asyncio.gather(self._read_task, return_exceptions=True)
-            self._read_task = None
-        self._writer.close()
-        await self._writer.wait_closed()
+        try:
+            if self._read_task:
+                self._read_task.cancel()
+                await asyncio.gather(self._read_task, return_exceptions=True)
+                self._read_task = None
+            self._writer.close()
+            await self._writer.wait_closed()
+        except Exception as e:
+            raise ConnectionError(
+                f"Error disconnecting from toy at {self.toy_id}: {e!r}"
+            )
+        finally:
+            self._reader = None
+            self._writer = None

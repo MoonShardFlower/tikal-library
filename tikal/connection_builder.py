@@ -8,8 +8,8 @@ This module provides abstract and concrete implementations for discovering and c
 
 Example::
 
-        def handle_disconnect(client: BleakClient):
-            print(f"Toy at {client.address} disconnected unexpectedly")
+        def handle_disconnect(transport: Transport):
+            print(f"Toy at {transport.toy_id} disconnected unexpectedly")
 
         def handle_power_off(address: str):
             print(f"Toy at {address} was powered off")
@@ -30,7 +30,7 @@ from bleak import BleakClient, BleakScanner, BLEDevice
 
 from .toy import Lovense, Toy
 from .toy_data import LOVENSE_TOY_NAMES, LovenseData, ToyData, ValidationError
-from .utils.transport import BleTransport
+from .utils.transport import BleTransport, Transport
 
 
 class ToyConnectionBuilder(ABC):
@@ -104,8 +104,8 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
     Manages the Lovense-specific BLE discovery process, UUID discovery, and notification configuration.
 
     Args:
-        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives the toy's BleakClient as an argument. Not called for intentional disconnects.
-        on_power_off: Callback invoked when the user powers off a toy via the physical power button. Receives the toy's Bluetooth address as a string.
+        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives the toy's ``Transport`` instance. Not called for intentional disconnects.
+        on_power_off: Callback invoked when the user powers off a toy via the physical power button. Receives the toy id.
         logger_name: Name of the logger to use. Use empty string for root logger.
         scanner_class: BLE scanner class to use. Defaults to BleakScanner. Can be overridden for testing.
         client_class: BLE client class to use. Defaults to BleakClient. Can be overridden for testing.
@@ -117,7 +117,7 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
 
     def __init__(
         self,
-        on_disconnect: Callable[[BleakClient], Any],
+        on_disconnect: Callable[[Transport], Any],
         on_power_off: Callable[[str], Any],
         logger_name: str,
         scanner_class: Type[BleakScanner] = BleakScanner,
@@ -128,7 +128,6 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         self._on_power_off = on_power_off
         self._scanner_class = scanner_class
         self._client_class = client_class
-        self._toys_by_client: dict[BleakClient, Lovense] = {}
         self._cached_ble_devices: dict[str, BLEDevice] = {}
         self._LOVENSE_SERVICE_PATTERN = "-4bd4-bbd5-a6920e4c5653"
         self._UUID_REPLACEMENTS = {
@@ -147,8 +146,8 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
             timeout: Maximum scan time in seconds. Longer timeouts increase the chance of discovering all nearby devices
 
         Returns:
-            List of LovenseData objects containing the name and Bluetooth address of each discovered toy. The
-            model_name is left empty and needs to be filled in by you.
+            List of LovenseData objects containing the name and Bluetooth address of each discovered toy.
+            The model_name is left empty and needs to be filled in by you.
 
         Raises:
             Exception: Any exception from BleakScanner.discover(), such as permission errors or Bluetooth adapter issues
@@ -189,9 +188,8 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         3. Creates a Lovense instance
 
         Args:
-            to_connect: List of LovenseData objects with valid model_names.
-                Valid model_names are in LOVENSE_TOY_NAMES.keys(). Instances of LovenseData are created with a prior
-                call to :meth:`discover_toys` and model_names must be set by you.
+            to_connect: List of LovenseData objects with valid model_names. Valid model_names are in LOVENSE_TOY_NAMES.keys().
+                Instances of LovenseData are created with a prior call to :meth:`discover_toys` and model_names must be set by you.
 
         Returns:
             List where each element is either a connected Lovense instance or a BaseException for failed connections. Possible exceptions per element:
@@ -236,9 +234,8 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         3. Creates a Lovense instance
 
         Args:
-            to_connect: LovenseData object with a valid model_name.
-                Valid model_names are in LOVENSE_TOY_NAMES.keys(). Instances of LovenseData are created with a prior
-                call to :meth:`discover_toys` and model_names must be set by you.
+            to_connect: LovenseData object with a valid model_name. Valid model_names are in LOVENSE_TOY_NAMES.keys().
+                 Instances of LovenseData are created with a prior call to :meth:`discover_toys` and model_names must be set by you.
 
         Returns:
             A connected Lovense instance on success, or a BaseException on failure.
@@ -273,10 +270,28 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
         self._log.debug("Connected successfully to a Lovense device")
         return result
 
-
     # ========================================================================
     # Private Methods
     # ========================================================================
+
+    async def _resolve_uuids(self, client: BleakClient) -> tuple[str, str]:
+        """
+        Resolve the TX and RX UUIDs for a Lovense device by inspecting its GATT services.
+
+        Passed as the ``uuid_resolver`` to ``BleTransport``, where it is called once the BLE link is open.
+
+        Args:
+            client: The connected ``BleakClient`` to inspect.
+
+        Returns:
+            ``(tx_uuid, rx_uuid)`` as uppercase strings.
+
+        Raises:
+            ConnectionError: If either UUID cannot be found in the device's GATT table.
+        """
+        tx_uuid = await self._find_uuid_by_type(client, "tx")
+        rx_uuid = await self._find_uuid_by_type(client, "rx")
+        return tx_uuid, rx_uuid
 
     async def _find_uuid_by_type(self, client: BleakClient, uuid_type: str) -> str:
         """
@@ -321,71 +336,48 @@ class LovenseConnectionBuilder(ToyConnectionBuilder):
 
     async def _create_toy_helper(self, model_name: str, device: BLEDevice) -> Lovense:
         """
-        Connect to a single Lovense toy and create a LovenseBLED instance.
+        Connect to a single Lovense toy and create a Lovense instance.
 
-        This internal method handles the connection process:
+        This internal method handles the connection sequence:
+
         1. Validates the model name
-        2. Creates and connects a BleakClient and discovers TX and RX UUIDs
-        3. Creates a LovenseBLED instance
-        4. Starts notifications
+        2. Constructs a ``BleTransport``, injecting ``_resolve_uuids`` as the UUID resolver and registering the disconnect callback.
+        3. Calls ``transport.connect()``, which opens the BLE link and resolves the UUIDs.
+        4. Creates a ``Lovense`` instance and starts notifications
 
         Args:
             model_name: Model name of the toy (e.g., "Gush", "Nora"). Must be a key in LOVENSE_TOY_NAMES.
-            device: BLEDevice object from the discovery scan containing the device's Bluetooth address and metadata.
+            device: BLEDevice object from the discovery scan.
 
         Returns:
-            Connected and notification-ready LovenseBLED instance.
+            Connected and notification-ready Lovense instance.
 
         Raises:
             ValidationError: If model_name is not a valid Lovense model name.
-            ConnectionError: If the BLE connection fails or if notification setup fails.
+            ConnectionError: If the BLE connection, UUID resolution, or notification setup fails.
 
         Note:
-            If any step fails after the initial connection, the BleakClient is disconnected before raising the exception
-            to clean up resources.
+            If any step fails after the transport is constructed, ``transport.disconnect()`` is called to release resources before re-raising.
         """
         if model_name not in LOVENSE_TOY_NAMES:
             raise ValidationError(
                 f"Invalid model_name '{model_name}' for address {device.address}. "
                 f"Valid model_names are: {list(LOVENSE_TOY_NAMES.keys())}"
             )
-        # Attempt to connect
+
+        transport = BleTransport(
+            device,
+            uuid_resolver=self._resolve_uuids,
+            on_disconnect=self._on_disconnect,
+            client_class=self._client_class,
+        )
         try:
-            client = self._client_class(device, self._filtered_on_disconnect)
-            await client.connect()
+            await transport.connect()
+            toy = Lovense(transport, model_name, self._on_power_off, self._log.name)
+            await toy.start_notifications()
         except Exception as e:
+            await transport.disconnect()
             raise ConnectionError(
                 f"Error connecting to {model_name} at {device.address}: {e}."
             )
-
-        # Setup notifications
-        try:
-            tx_uuid = await self._find_uuid_by_type(client, "tx")
-            rx_uuid = await self._find_uuid_by_type(client, "rx")
-            transport = BleTransport(client, tx_uuid, rx_uuid)
-            toy = Lovense(transport, model_name, self._on_power_off, self._log.name)
-            await toy.start_notifications()
-            self._toys_by_client[client] = toy
-        except Exception as e:
-            await client.disconnect()
-            raise ConnectionError(
-                f"Error setting up notifications for {model_name} at {device.address}: {e}."
-            )
         return toy
-
-    def _filtered_on_disconnect(self, client: BleakClient) -> None:
-        """
-        Internal disconnect handler that filters intentional vs. unexpected disconnects.
-
-        This method is registered with BleakClient as the disconnect callback. It checks whether the disconnect was
-        intentional (initiated by calling disconnect()) or unexpected (e.g., toy powered off, connection lost) and only
-        invokes the user's on_disconnect callback for unexpected disconnects.
-
-        Args:
-            client: BleakClient instance that disconnected.
-        """
-        toy = self._toys_by_client.get(client)
-        if toy and not toy.intentional_disconnect:
-            # Only call the callback for unexpected disconnects
-            self._on_disconnect(client)
-        self._toys_by_client.pop(client, None)
