@@ -50,13 +50,13 @@ from typing import Any, Callable, Optional
 
 from bleak import BleakClient, BleakScanner
 
-from .connection_builder import LovenseConnectionBuilder
+from . import ValidationError
+from .connection_builder import BLEConnectionBuilder
 from .toy import Lovense
 from .toy_cache import ToyCache
 from .toy_controller import LovenseController, ToyController
 from .toy_data import LovenseData, ToyData
-from .utils.async_runner import AsyncRunner
-from .utils.transport import Transport
+from .utils import AsyncRunner, Transport
 
 
 class ToyHub:
@@ -115,7 +115,7 @@ class ToyHub:
         self._last_battery_update = 0.0
         self._cancel_communication_loop: Optional[Callable[[], None]] = None
         # Connection builders for different toy brands
-        self._lovense_builder = LovenseConnectionBuilder(
+        self._ble_connection_builder = BLEConnectionBuilder(
             self._handle_disconnect,
             self._handle_power_off,
             logger_name,
@@ -228,6 +228,7 @@ class ToyHub:
         Raises:
             TimeoutError: If discovery exceeds timeout * 2. Should not occur with BleakScanner
             Exception: Any exception from the underlying BLE scanner.
+            RuntimeError: If a continuous scan is in progress. See meth: start_continuous_scan and meth: stop_continuous_scan
 
         Example:
             ::
@@ -242,16 +243,15 @@ class ToyHub:
                         print(f"Model unknown. Please set manually")
         """
         self._log.info("Starting toy discovery (blocking)...")
-        toys: list[ToyData] = []
-        # Discover Lovense toys
-        lovense_toys = self._runner.run_async(
-            self._lovense_builder.discover_toys(timeout), timeout * 2
+        result: list[ToyData] = []
+        toy_data = self._runner.run_async(
+            self._ble_connection_builder.discover_toys(timeout), timeout * 2
         )
-        for toy in lovense_toys:
-            toy.model_name = self._toy_cache.get_model_name(toy.name)
-            toys.append(toy)
-        self._log.info(f"Discovered {len(toys)} toy(s)")
-        return toys
+        for td in toy_data:
+            td.model_name = self._toy_cache.get_model_name(td.name)
+            result.append(td)
+        self._log.info(f"Discovered {len(result)} toy(s)")
+        return result
 
     def discover_toys_callback(
         self,
@@ -284,17 +284,17 @@ class ToyHub:
         self._log.info("Starting toy discovery (callback)...")
 
         async def discovery_task():
-            toys: list[ToyData] = []
+            result: list[ToyData] = []
             try:
-                lovense_toys = await self._lovense_builder.discover_toys(timeout)
-                for toy in lovense_toys:
-                    toy.model_name = self._toy_cache.get_model_name(toy.name)
-                    toys.append(toy)
-                self._log.info(f"Discovered {len(toys)} toy(s)")
+                toy_data = await self._ble_connection_builder.discover_toys(timeout)
+                for td in toy_data:
+                    td.model_name = self._toy_cache.get_model_name(td.name)
+                    result.append(td)
+                self._log.info(f"Discovered {len(result)} toy(s)")
             except Exception as e:
                 e.add_note(traceback.format_exc())
                 return e
-            return toys
+            return result
 
         self._runner.run_callback(discovery_task(), on_discovered, timeout * 2)
 
@@ -342,16 +342,16 @@ class ToyHub:
         controllers: list["ToyController | BaseException"] = []
         cache_updates = {}
 
-        # Separate by brand
+        # TODO: Future, separate by connection method, e.g. BLE, serial... Not needed now, as we only support Lovense (BLE)
         lovense_data = [data for data in to_connect if isinstance(data, LovenseData)]
         lovense_toys = self._runner.run_async(
-            self._lovense_builder.create_toys(lovense_data), timeout
+            self._ble_connection_builder.create_toys(lovense_data), timeout
         )
         for data, toy in zip(lovense_data, lovense_toys):
             if isinstance(toy, Lovense):
                 controller = LovenseController(toy, toy.toy_id, self._log.name)
                 controllers.append(controller)
-                self._register_controller(data.toy_id, controller)
+                self._register_controller(controller)
                 cache_updates[data.name] = toy.model_name
             else:
                 # Connection failed, bled is an exception
@@ -394,18 +394,19 @@ class ToyHub:
         """
         self._log.info(f"Connecting to {len(to_connect)} toy(s) (callback)...")
 
+        # TODO: see connect_toys_blocking()
         async def connection_task():
             controllers: list["ToyController | BaseException"] = []
             cache_updates = {}
             lovense_data = [
                 data for data in to_connect if isinstance(data, LovenseData)
             ]
-            lovense_toys = await self._lovense_builder.create_toys(lovense_data)
+            lovense_toys = await self._ble_connection_builder.create_toys(lovense_data)
             for data, toy in zip(lovense_data, lovense_toys):
                 if isinstance(toy, Lovense):
                     controller = LovenseController(toy, toy.toy_id, self._log.name)
                     controllers.append(controller)
-                    self._register_controller(data.toy_id, controller)
+                    self._register_controller( controller)
                     cache_updates[data.name] = toy.model_name
                 else:
                     controllers.append(toy)
@@ -428,7 +429,7 @@ class ToyHub:
 
         Returns:
             list[BaseException | None]: List where each element is either None (successful disconnect)
-            or an exception (failed disconnect). Order matches input list.
+            or an exception (failed disconnect). Order matches the input list. Toys are still disconnected even if an exception occurs.
 
         Example:
             ::
@@ -473,6 +474,7 @@ class ToyHub:
         Args:
             to_disconnect: List of toy_ids to disconnect.
             on_disconnected: Callback invoked with a list of exceptions (or None for successful disconnects).
+                    Toys are still disconnected even if an exception occurs. Order matches the input list.
             timeout: Maximum time to wait for all disconnections in seconds.
 
         Example:
@@ -515,8 +517,9 @@ class ToyHub:
             model_name: New model name (must be valid for the toy's brand).
 
         Returns:
-            ToyController | BaseException: The updated controller if successful,
-            or an exception if the toy_id is unknown or the model_name is invalid.
+            ToyController | BaseException: The updated controller if successful, or:
+                - ValidationError if the model name is invalid for the toy's brand.
+                - ValueError if the toy_id is unknown.
 
         Example:
             ::
@@ -537,7 +540,7 @@ class ToyHub:
             self._toy_cache.update({name: model_name})
             try:
                 self._toy_controllers[toy_id].toy.set_model_name(model_name)
-            except Exception as e:
+            except ValidationError as e:
                 return e
             self._log.info(f"Updated model name for toy {toy_id} to {model_name}")
             return self._toy_controllers[toy_id]
@@ -546,25 +549,24 @@ class ToyHub:
     # Controller Management
     # ------------------------------------------------------------------------------------------------------------------
 
-    def _register_controller(self, toy_id: str, controller: ToyController) -> None:
+    def _register_controller(self, controller: ToyController) -> None:
         """
         Register a toy controller for background communication
 
         Adds the controller to the active controllers dict. Starts the communication loop if this is the first controller.
 
         Args:
-            toy_id: Unique identifier for the toy.
             controller: Controller instance to register.
         """
         with self._lock:
-            self._toy_controllers[toy_id] = controller
+            self._toy_controllers[controller.toy_id] = controller
             controller.connected = True
             if len(self._toy_controllers) == 1:
                 self._start_communication_loop()
         # Trigger immediate battery update for new device
         self._last_battery_update = time() - self.BATTERY_UPDATE_INTERVAL
         self._log.debug(
-            f"Registered toy {toy_id}. ({len(self._toy_controllers)} total)"
+            f"Registered toy {controller.toy_id}. ({len(self._toy_controllers)} total)"
         )
 
     def _unregister_controller(self, toy_id: str) -> None:
@@ -718,13 +720,13 @@ class ToyHub:
                     self._reconnection_failure_callback(transport.toy_id)
                 try:
                     self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
-                except Exception:
+                except TimeoutError:
                     pass
             elif result is None:
                 self._log.info(
                     f"Reconnection successful for {transport.name} at {transport.toy_id}"
                 )
-                self._register_controller(transport.toy_id, toy_controller)
+                self._register_controller(toy_controller)
                 if self._reconnection_success_callback:
                     self._reconnection_success_callback(transport.toy_id)
             else:
@@ -735,7 +737,7 @@ class ToyHub:
                     self._reconnection_failure_callback(transport.toy_id)
                 try:
                     self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
-                except Exception:
+                except TimeoutError:
                     pass
 
         self._runner.run_callback(reconnect_task(), on_reconnect_complete, 5.0)
@@ -745,7 +747,7 @@ class ToyHub:
         Handle toy power-off event and disconnect cleanly (internal).
 
         Args:
-            toy_id: Uniqe identifier of the toy that powered off (Bluetooth address for BLE toys)
+            toy_id: Unique identifier of the toy that powered off (Bluetooth address for BLE toys)
 
         Note:
             This is an internal callback. Do not call directly.
@@ -756,18 +758,15 @@ class ToyHub:
         if self._power_off_callback:
             self._power_off_callback(toy_id)
 
-        def on_disconnect_complete(result):
-            if isinstance(result, Exception):
-                print(f"Unable to disconnect toy in time: {result}")
-            if self._power_off_callback:
-                self._power_off_callback(toy_id)
+        def on_disconnect_complete(_):
+            pass  # We don't care about the result, the toy is gone either way
 
         try:
             self._runner.run_callback(
                 controller.toy.disconnect(), on_disconnect_complete, timeout=5.0
             )
-        except Exception as e:
-            print(f"Error scheduling disconnect: {e}")
+        except RuntimeError:
+            pass
 
     # ------------------------------------------------------------------------------------------------------------------
     # Shutdown
@@ -779,7 +778,7 @@ class ToyHub:
 
         This method should always be called before the program exits to ensure:
         - All toys are properly disconnected
-        - The communication loop is stopped and the async runner is shut down cleanly
+        - The communication loop is stopped, and the async runner is shut down cleanly
 
         Example:
             ::
@@ -803,6 +802,9 @@ class ToyHub:
             exceptions = [e for e in result if isinstance(e, BaseException)]
             for e in exceptions:
                 self._log.error(f"Error while trying to disconnect a toy: {e}")
+
+        # Stop Connection Builder scans
+        self._runner.run_async(self._ble_connection_builder.stop_continuous())
 
         self._runner.shutdown()
         self._log.info("CommunicationHandler shutdown complete")
