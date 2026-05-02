@@ -18,7 +18,6 @@ Note:
     The ToyHub manages the background communication loop that processes queued commands and handles pattern playback.
 """
 
-import time
 import traceback
 from abc import ABC, abstractmethod
 from collections import deque
@@ -27,6 +26,7 @@ from typing import Any, Callable, Optional
 
 from .toy import Lovense, Toy
 from .toy_data import LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES
+from .utils import PatternHandler
 
 
 class ToyController(ABC):
@@ -72,33 +72,19 @@ class ToyController(ABC):
         self._toy_id = toy_id
         self._log = getLogger(logger_name)
 
-        # Command queue
+        # State
         self._command_queue: deque[tuple[Callable, Optional[Callable[[Any], None]]]] = (
             deque()
         )
-
-        # Pattern state
-        self._pattern: list[tuple[int, int, int]] = []
-        self._pattern_wraparound = True
-        self._is_paused = False
-        self._is_blocked = False
-        self._pattern_elapsed_time: float = (
-            0.0  # Time elapsed in the pattern (excluding pauses)
-        )
-        self._segment_start_time: Optional[float] = (
-            None  # Real time when the current segment started
-        )
-        self._pause_segment_elapsed: float = (
-            0.0  # Time elapsed in the segment before a pause
-        )
-        self._pattern_version = 0
-
+        self._pattern_handler = PatternHandler()
         self._last_values: dict[str, int | None] = {
             "intensity1": None,
             "intensity2": None,
         }
         self._accepted_pause = False
         self._connected = False
+        self._is_blocked = False
+
         self._log.info(f"ToyController initialized for {toy_id}")
 
     @property
@@ -112,7 +98,7 @@ class ToyController(ABC):
         Returns:
             bool: True if paused, False otherwise.
         """
-        return self._is_paused
+        return self._pattern_handler.is_paused
 
     @property
     def is_blocked(self):
@@ -179,7 +165,7 @@ class ToyController(ABC):
         Returns:
             current version number.
         """
-        return self._pattern_version
+        return self._pattern_handler.pattern_version
 
     @property
     @abstractmethod
@@ -253,13 +239,13 @@ class ToyController(ABC):
                 print(f"Paused: {is_paused}")
         """
         self._log.info(f"ToyController toggle pause: {self.toy_id}")
-        if not self._is_paused:
-            self._set_paused(True)
+        if not self._pattern_handler.is_paused:
+            self._pattern_handler.set_paused(True)
             self.stop()
             self._is_blocked = False  # I don't want to pause and block at the same time
             return True
         else:
-            self._set_paused(False)
+            self._pattern_handler.set_paused(False)
             return False
 
     def toggle_block(self) -> bool:
@@ -290,7 +276,9 @@ class ToyController(ABC):
         if not self._is_blocked:
             self._is_blocked = True
             self.stop()
-            self._set_paused(False)  # I don't want to pause and block at the same time'
+            self._pattern_handler.set_paused(
+                False
+            )  # I don't want to pause and block at the same time'
             return True
         else:
             self._is_blocked = False
@@ -334,13 +322,8 @@ class ToyController(ABC):
             Call ``toggle_pause()`` to resume the pattern.
         """
         self._log.info(f"ToyController sets pattern for {self.toy_id}: {pattern}")
-        self._pattern = pattern
-        self._pattern_wraparound = wraparound
-        self._pattern_version += 1
-        if reset_time:
-            self._restart_pattern()
-        # If not resetting, keep the current elapsed time to maintain position
-        if not pattern:  # ensure that intensities are at 0
+        self._pattern_handler.set_pattern(pattern, wraparound, reset_time)
+        if not pattern:  # ensure that intensities are 0 if pattern is cleared
             self.stop()
 
     def get_pattern_time(self) -> float:
@@ -355,19 +338,7 @@ class ToyController(ABC):
                 elapsed = toy.get_pattern_time()
                 print(f"Pattern position: {elapsed}ms")
         """
-        if self._is_paused:
-            # When paused, return the frozen elapsed time
-            return self._pattern_elapsed_time
-
-        if self._segment_start_time is None:
-            return 0.0
-
-        # Calculate time elapsed in current segment
-        current_time = time.time() * 1000
-        segment_elapsed = current_time - self._segment_start_time
-
-        # Total elapsed = pattern elapsed at segment start + current segment elapsed
-        return self._pattern_elapsed_time + segment_elapsed
+        return self._pattern_handler.get_pattern_time()
 
     @abstractmethod
     def intensity1(
@@ -575,11 +546,11 @@ class ToyController(ABC):
         await self._process_command_queue()
 
         # Then handle pattern playback
-        if not self._pattern:
+        if not self._pattern_handler.has_active_pattern:
             return
 
         # Handle a paused or blocked state
-        if self._is_paused or self._is_blocked:
+        if self._pattern_handler.is_paused or self._is_blocked:
             if not self._accepted_pause:
                 # First time entering paused/blocked state - send stop command
                 await self._toy.stop()
@@ -593,7 +564,7 @@ class ToyController(ABC):
             self._accepted_pause = False
 
             # Get current values and send commands if values have changed
-            pattern_time = self.get_pattern_time()
+            pattern_time = self._pattern_handler.get_pattern_time()
             intensity1_value, intensity2_value = self.get_pattern_values(pattern_time)
 
             if intensity1_value != self._last_values["intensity1"]:
@@ -635,38 +606,6 @@ class ToyController(ABC):
         """
         self._command_queue.append((command, callback))
 
-    def _restart_pattern(self) -> None:
-        """Restart pattern playback from the beginning"""
-        self._pattern_elapsed_time = 0.0
-        self._segment_start_time = time.time() * 1000
-        self._pause_segment_elapsed = 0.0
-
-    def _set_paused(self, paused: bool) -> None:
-        """
-        Update the pause state and adjust timing.
-
-        When entering pause, freezes the pattern timer. When exiting pause, resumes timing from the frozen position.
-
-        Args:
-            paused: New pause state.
-        """
-        if paused == self._is_paused:
-            return
-
-        self._is_paused = paused
-        self._pattern_version += 1
-        if paused:
-            # Entering pause: update elapsed time up to now
-            if self._segment_start_time is not None:
-                current_time = time.time() * 1000
-                segment_elapsed = current_time - self._segment_start_time
-                self._pattern_elapsed_time += segment_elapsed
-                self._pause_segment_elapsed = segment_elapsed
-                self._segment_start_time = None
-        else:
-            # Exiting pause: reset segment start time now
-            self._segment_start_time = time.time() * 1000
-
     def get_pattern_values(self, pattern_time: float) -> tuple[int, int]:
         """
         Get intensity values at a specific time in the pattern.
@@ -681,31 +620,7 @@ class ToyController(ABC):
             For wraparound patterns, time is taken modulo the total pattern duration.
             For non-wraparound patterns, returns (0, 0) after the pattern completes.
         """
-        pattern = self._pattern
-        if not pattern:
-            return 0, 0
-
-        # Calculate total pattern duration
-        total_duration = sum(duration for duration, _, _ in pattern)
-
-        if total_duration == 0:
-            return 0, 0
-
-        # Handle wraparound
-        if self._pattern_wraparound:
-            pattern_time = pattern_time % total_duration
-        elif pattern_time >= total_duration:
-            return 0, 0
-
-        # Find the segment we're in
-        elapsed = 0.0
-        for duration, intensity1, intensity2 in pattern:
-            if pattern_time < elapsed + duration:
-                return intensity1, intensity2
-            elapsed += duration
-
-        # Should not reach here, but return last segment values
-        return pattern[-1][1], pattern[-1][2]
+        return self._pattern_handler.get_pattern_values(pattern_time)
 
     def get_pattern_data(self) -> tuple[list[tuple[int, int, int]], bool, bool, float]:
         """Gets the complete pattern state for visualization.
@@ -720,12 +635,7 @@ class ToyController(ABC):
         Returns:
             tuple: (pattern, wraparound, is_paused, elapsed_time)
         """
-        return (
-            self._pattern.copy(),
-            self._pattern_wraparound,
-            self._is_paused,
-            self.get_pattern_time(),
-        )
+        return self._pattern_handler.get_pattern_data()
 
 
 class LovenseController(ToyController):
@@ -841,8 +751,12 @@ class LovenseController(ToyController):
             if callback:
                 callback(False)
             return
-        if self._pattern and not self._is_paused:
-            self._set_paused(True)  # avoid the pattern overriding the command
+        if (
+            self._pattern_handler.has_active_pattern
+            and not self._pattern_handler.is_paused
+        ):
+            # avoid the pattern overriding the command
+            self._pattern_handler.set_paused(True)
 
         async def _execute():
             return await self._toy.intensity1(level)
@@ -872,8 +786,12 @@ class LovenseController(ToyController):
                 callback(False)
             return
 
-        if self._pattern and not self._is_paused:
-            self._set_paused(True)  # avoid the pattern overriding the command
+        if (
+            self._pattern_handler.has_active_pattern
+            and not self._pattern_handler.is_paused
+        ):
+            # avoid the pattern overriding the command
+            self._pattern_handler.set_paused(True)
 
         async def _execute():
             return await self._toy.intensity2(level)
@@ -899,8 +817,12 @@ class LovenseController(ToyController):
         async def _execute():
             return await self._toy.stop()
 
-        if self._pattern and not self._is_paused:
-            self._set_paused(True)
+        if (
+            self._pattern_handler.has_active_pattern
+            and not self._pattern_handler.is_paused
+        ):
+            # avoid the pattern overriding the command
+            self._pattern_handler.set_paused(True)
 
         self._schedule_command(_execute, callback)
 
