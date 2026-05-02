@@ -285,7 +285,11 @@ class UsbTransport(Transport):
         try:
             if not self._notify_callback:
                 raise RuntimeError("Cannot reconnect without a notification callback")
-            self._reader, self._writer = await serial_asyncio_fast.open_serial_connection(url=self._port, baudrate=self._baudrate)
+            self._reader, self._writer = (
+                await serial_asyncio_fast.open_serial_connection(
+                    url=self._port, baudrate=self._baudrate
+                )
+            )
             await self.start_notify(self._notify_callback)
         except Exception as e:
             raise ConnectionError(f"Error connecting to toy at {self.toy_id}: {e!r}")
@@ -300,6 +304,7 @@ class UsbTransport(Transport):
         Raises:
             ConnectionError: If the transport is not connected or the operation fails.
         """
+
         # TODO: Assumes readline strategy. Other read strategies (fixed-size ``read``) might be possible.
         #  Might need multiple USB Transport layer classes to handle different USB toy protocols.
         async def _read_loop():
@@ -310,6 +315,7 @@ class UsbTransport(Transport):
                         callback(data)
             except asyncio.CancelledError:
                 pass
+
         self._notify_callback = callback
         self._read_task = asyncio.create_task(_read_loop())
 
