@@ -314,7 +314,6 @@ class Lovense(Toy):
     ):
         super().__init__(transport, model_name, logger_name)
         self._on_power_off = on_power_off
-        self._intentional_disconnect = False  # Bleak has the annoying habit of calling on_disconnect regardless of whether the disconnect was intentional or not
         self.set_model_name(model_name)
 
     def set_model_name(self, model_name: str) -> None:
@@ -334,7 +333,7 @@ class Lovense(Toy):
         """
         if model_name not in LOVENSE_TOY_NAMES:
             raise ValidationError(
-                f"LovenseBLED at address {self._toy_id} has an invalid model_name '{model_name}'. "
+                f"Invalid model name '{model_name}' for lovense toy at address {self._toy_id}. "
                 f"Valid names are: {list(LOVENSE_TOY_NAMES.keys())}"
             )
         self._model_name = model_name
@@ -597,18 +596,6 @@ class Lovense(Toy):
     # ========================================================================
     # Private Methods
     # ========================================================================
-
-    @property
-    def intentional_disconnect(self) -> bool:
-        """
-        Check if the last disconnect was intentional.
-
-        Used internally to distinguish between user-initiated disconnects and unexpected connection losses
-
-        Returns:
-            True if the disconnect was intentional (via :meth:`disconnect`), False otherwise.
-        """
-        return self._intentional_disconnect
 
     async def start_notifications(self) -> None:
         """
