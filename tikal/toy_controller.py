@@ -168,7 +168,6 @@ class ToyController(ABC):
         return self._pattern_handler.pattern_version
 
     @property
-    @abstractmethod
     def intensity_names(self) -> tuple[str, str | None]:
         """
         Get the display names for the toy's capabilities.
@@ -184,10 +183,9 @@ class ToyController(ABC):
                 if names[1]:
                     print(f"Secondary: {names[1]}")  # example: Rotation
         """
-        raise NotImplementedError
+        return self._toy.intensity_names
 
     @property
-    @abstractmethod
     def intensity_max_value(self) -> int:
         """
         Get the maximum intensity value for this toy.
@@ -200,7 +198,7 @@ class ToyController(ABC):
                 max_val = toy.intensity_max_value
                 toy.intensity1(max_val)  # Set to maximum
         """
-        raise NotImplementedError
+        return self._toy.max_intensity
 
     def change_rotate_direction_available(self) -> bool:
         """
@@ -214,7 +212,7 @@ class ToyController(ABC):
                 if toy.change_rotate_direction_available():
                     toy.change_rotate_direction()
         """
-        return self._toy.model_name in ROTATION_TOY_NAMES
+        return self._toy.change_rotation_direction_available
 
     def toggle_pause(self) -> bool:
         """
@@ -685,39 +683,6 @@ class LovenseController(ToyController):
     def __init__(self, toy: Lovense, toy_id: str, logger_name: str):
         self._toy: Lovense = toy
         super().__init__(toy, toy_id, logger_name)
-
-    @property
-    def intensity_names(self) -> tuple[str, str | None]:
-        """
-        Get display names for Lovense toy capabilities.
-
-        Returns:
-            tuple[str, str | None]: (primary_name, secondary_name).
-            Secondary name is None if the toy has only one capability.
-
-        Example::
-
-                names = toy.intensity_names
-                print(f"{names[0]}: intensity1")  # "Vibration: intensity1"
-                if names[1]:
-                    print(f"{names[1]}: intensity2")  # "Rotation: intensity2"
-        """
-        intensity1_name = LOVENSE_TOY_NAMES[self._toy.model_name].intensity1_name
-        intensity2_name = LOVENSE_TOY_NAMES[self._toy.model_name].intensity2_name
-        return intensity1_name, intensity2_name
-
-    @property
-    def intensity_max_value(self) -> int:
-        """
-        Get maximum intensity value for Lovense toys.
-
-        Returns:
-            int: Always 20 for Lovense toys.
-
-        Note:
-            Some capabilities (like Max's air pump) use different ranges. Those are automatically scaled for you.
-        """
-        return 20
 
     def intensity1(
         self, level: int, callback: Optional[Callable[[bool], None]] = None

@@ -93,6 +93,10 @@ class ToyData:
             raise TypeError("model_name must be str")
         self._model_name = value
 
+    @property
+    def brand(self) -> str:
+        return ""
+
 
 @dataclass
 class LovenseData(ToyData):
@@ -108,6 +112,7 @@ class LovenseData(ToyData):
         name: Bluetooth name of the toy, serving as a human-readable identifier. Lovense toys have names starting with "LVS-" (e.g., "LVS-Z36D").
         toy_id: Bluetooth address of the toy, serving as its unique identifier (e.g., "DC:F5:05:A3:6D:1E").
         model_name: Model name of the toy (e.g., "Lush", "Nora"). Must be a key in the LOVENSE_TOY_NAMES dictionary. You have to set the correct model name before connecting.
+        brand: Always "lovense".
 
     Example:
         ::
@@ -121,7 +126,9 @@ class LovenseData(ToyData):
             lovense_data.model_name = "Nora"
     """
 
-    pass
+    @property
+    def brand(self) -> str:
+        return "Lovense"
 
 
 @dataclass
@@ -176,7 +183,7 @@ class ToyCommands:
 #:             print(f"{commands.intensity2_name}: {commands.intensity2_command}")
 LOVENSE_TOY_NAMES = {
     "Solace": ToyCommands("Thrust", "Thrusting", "Depth", "Depth"),
-    "SexMachine": ToyCommands(
+    "Sex Machine": ToyCommands(
         "Thrust", "Thrusting", "Depth", "Depth"
     ),  # Commands unknown, assume it uses the same ones as Solace
     "Lush": ToyCommands("Vibration", "Vibrate"),
@@ -229,3 +236,7 @@ LOVENSE_TOY_NAMES = {
 #:         if toy.model_name in ROTATION_TOY_NAMES:
 #:             await toy.rotate_change_direction()
 ROTATION_TOY_NAMES = ["Nora", "Ridge"]
+
+BRANDS = {
+    "Lovense": [toy for toy in LOVENSE_TOY_NAMES.keys()],
+}

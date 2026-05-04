@@ -104,6 +104,62 @@ class Toy(ABC):
         """
         return self._transport.is_connected
 
+    @property
+    @abstractmethod
+    def brand(self):
+        """Return the brand of the toy, e.g. 'Lovense'"""
+        raise NotImplementedError
+
+    @property
+    def change_rotation_direction_available(self) -> bool:
+        """
+       Check if the toy supports changing the rotation direction.
+
+       Returns:
+           bool: True if the rotation direction can be changed, False otherwise.
+
+       Example::
+
+               if toy.change_rotate_direction_available():
+                   await toy.change_rotate_direction()
+       """
+        return self.model_name in ROTATION_TOY_NAMES
+
+    @property
+    @abstractmethod
+    def intensity_names(self) -> tuple[str, str | None]:
+        """
+        Get the display names for the toy's capabilities.
+
+        Returns:
+            tuple[str, str | None]: A tuple of (primary_name, secondary_name).
+            The secondary name is None if the toy has only one capability.
+
+        Example::
+
+                names = toy.intensity_names
+                print(f"Primary: {names[0]}")  # example: Vibration
+                if names[1]:
+                    print(f"Secondary: {names[1]}")  # example: Rotation
+        """
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def max_intensity(self) -> int:
+        """
+        Get the maximum intensity value for this toy.
+
+        Returns:
+            int: Maximum intensity value (e.g., 20 for Lovense toys).
+
+        Example::
+
+                max_val = toy.intensity_max_value
+                await toy.intensity1(max_val)  # Set to maximum
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def set_model_name(self, model_name: str) -> None:
         """
@@ -316,12 +372,50 @@ class Lovense(Toy):
         self._on_power_off = on_power_off
         self.set_model_name(model_name)
 
+    @property
+    def brand(self):
+        """Return the brand of the toy. Always "Lovense" for this class"""
+        return "Lovense"
+
+    @property
+    def intensity_names(self) -> tuple[str, str | None]:
+        """
+        Get display names for Lovense toy capabilities.
+
+        Returns:
+            tuple[str, str | None]: (primary_name, secondary_name).
+            Secondary name is None if the toy has only one capability.
+
+        Example::
+
+                names = toy.intensity_names
+                print(f"{names[0]}: intensity1")  # "Vibration: intensity1"
+                if names[1]:
+                    print(f"{names[1]}: intensity2")  # "Rotation: intensity2"
+        """
+        intensity1_name = LOVENSE_TOY_NAMES[self._model_name].intensity1_name
+        intensity2_name = LOVENSE_TOY_NAMES[self._model_name].intensity2_name
+        return intensity1_name, intensity2_name
+
+    @property
+    def max_intensity(self) -> int:
+        """
+        Get maximum intensity value for Lovense toys.
+
+        Returns:
+            int: Always 20 for Lovense toys.
+
+        Note:
+            Some capabilities (like Max's air pump) use different ranges. Those are automatically scaled for you.
+        """
+        return 20
+
     def set_model_name(self, model_name: str) -> None:
         """
         Set the model name of the toy.
 
         Args:
-            model_name: New model name. Must be a key in LOVENSE_TOY_NAMES (e.g., "Nora", "Lush", "Max").
+            model_name: New model name. Must be a key in LOVENSE_TOY_NAMES (e.g., "Nora", "Lush", "Max"). Case Insensitive.
 
         Raises:
             ValidationError: If model_name is not a valid Lovense model.
@@ -331,12 +425,12 @@ class Lovense(Toy):
                 # Update model name in case it was set incorrectly while building the connection via the ConnectionBuilder
                 toy.set_model_name("Nora")
         """
-        if model_name not in LOVENSE_TOY_NAMES:
+        if model_name.title() not in LOVENSE_TOY_NAMES:
             raise ValidationError(
                 f"Invalid model name '{model_name}' for lovense toy at address {self._toy_id}. "
                 f"Valid names are: {list(LOVENSE_TOY_NAMES.keys())}"
             )
-        self._model_name = model_name
+        self._model_name = model_name.title()
 
     async def disconnect(self) -> None:
         """
@@ -358,7 +452,6 @@ class Lovense(Toy):
             )
 
         try:
-            self._intentional_disconnect = True
             await self.stop()
         except Exception as e:
             log_disconnect_error(e)
