@@ -6,6 +6,7 @@ from .toy_controller import LovenseController, ToyController
 from .toy_data import (
     LOVENSE_TOY_NAMES,
     ROTATION_TOY_NAMES,
+    BRANDS,
     LovenseData,
     ToyData,
     ValidationError,
@@ -19,6 +20,7 @@ __all__ = [
     "LovenseData",
     "LOVENSE_TOY_NAMES",
     "ROTATION_TOY_NAMES",
+    "BRANDS",
     "ToyCache",
     "ToyConnectionBuilder",
     "LovenseConnectionBuilder",
