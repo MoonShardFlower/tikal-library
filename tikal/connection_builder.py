@@ -299,11 +299,15 @@ class BLEConnectionBuilder:
                 print(f"{toy.name} at {toy.toy_id}")
         """
         if self._continuous_task and not self._continuous_task.done():
-            raise RuntimeError("Continuous scan in progress. Use meth: stop_continuous_scan")
+            raise RuntimeError(
+                "Continuous scan in progress. Use meth: stop_continuous_scan"
+            )
         self._log.info(f"Starting toy discovery for {timeout}s")
         devices = await self._scanner_class.discover(timeout=timeout)
         if self._continuous_task and not self._continuous_task.done():
-            raise RuntimeError("Continuous scan in progress. Use meth: stop_continuous_scan")
+            raise RuntimeError(
+                "Continuous scan in progress. Use meth: stop_continuous_scan"
+            )
         self._ble_devices.clear()
 
         toy_data_list = []
@@ -318,7 +322,9 @@ class BLEConnectionBuilder:
         self._log.info(f"Discovery complete: {len(toy_data_list)} toy(s) found")
         return toy_data_list
 
-    async def start_continuous(self, on_update: Callable[[list[ToyData] | Exception], Any] | None = None) -> None:
+    async def start_continuous(
+        self, on_update: Callable[[list[ToyData] | Exception], Any] | None = None
+    ) -> None:
         """
         Start continuous background discovery of Toys.
 

@@ -100,16 +100,16 @@ class Toy(ABC):
     @property
     def change_rotation_direction_available(self) -> bool:
         """
-       Check if the toy supports changing the rotation direction.
+        Check if the toy supports changing the rotation direction.
 
-       Returns:
-           bool: True if the rotation direction can be changed, False otherwise.
+        Returns:
+            bool: True if the rotation direction can be changed, False otherwise.
 
-       Example::
+        Example::
 
-               if toy.change_rotate_direction_available:
-                   await toy.change_rotate_direction()
-       """
+                if toy.change_rotate_direction_available:
+                    await toy.change_rotate_direction()
+        """
         return self.model_name in ROTATION_TOY_NAMES
 
     @property
@@ -360,6 +360,7 @@ class Lovense(Toy):
             response = await toy.direct_command("DeviceType")
             print(f"Device info: {response}")
     """
+
     _MAX_INTENSITY = 20
 
     def __init__(
@@ -804,9 +805,7 @@ class Lovense(Toy):
             )
             return response
 
-    async def _execute_level_command(
-        self, command_name: str, level: int
-    ) -> bool:
+    async def _execute_level_command(self, command_name: str, level: int) -> bool:
         """
         Execute a command with a level parameter.
 

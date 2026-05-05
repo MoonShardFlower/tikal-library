@@ -406,7 +406,7 @@ class ToyHub:
                 if isinstance(toy, Lovense):
                     controller = LovenseController(toy, self._log.name)
                     controllers.append(controller)
-                    self._register_controller( controller)
+                    self._register_controller(controller)
                     cache_updates[data.name] = toy.model_name
                 else:
                     controllers.append(toy)

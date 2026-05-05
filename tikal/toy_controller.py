@@ -417,6 +417,7 @@ class ToyController(ABC):
             If the toy is blocked, the callback receives False immediately and no command is sent.
             If disconnected, the command is queued and sent upon reconnection.
         """
+
         async def _execute():
             return await self._toy.intensity1(level)
 
@@ -446,6 +447,7 @@ class ToyController(ABC):
 
                 toy.intensity2(toy.max_intensity // 2)  # Set secondary capability intensity to medium
         """
+
         async def _execute():
             return await self._toy.intensity2(level)
 
@@ -477,6 +479,7 @@ class ToyController(ABC):
         Note:
             You can use property:`change_rotate_direction_available` to check support before calling.
         """
+
         async def _execute():
             return await self._toy.rotate_change_direction()
 
@@ -497,6 +500,7 @@ class ToyController(ABC):
                 # With confirmation
                 toy.stop(callback=lambda ok: print("Stopped" if ok else "Failed"))
         """
+
         async def _execute():
             return await self._toy.stop()
 
@@ -524,6 +528,7 @@ class ToyController(ABC):
             You can provide a callback to ToyHub as well. If you do so, ToyHub queries battery levels regularly and
             invokes the hub's battery callback. This method serves as an alternative to querying the battery level
         """
+
         async def _execute():
             return await self._toy.get_battery_level()
 
@@ -571,6 +576,7 @@ class ToyController(ABC):
                     # Example: "C:11:0082059AD3BD"
                 toy.direct_command("DeviceType", callback=handle_response)
         """
+
         async def _execute():
             return await self._toy.direct_command(command)
 
