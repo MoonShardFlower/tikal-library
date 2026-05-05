@@ -55,8 +55,15 @@ class PatternHandler:
             self._restart_pattern()
 
     def set_paused(self, paused: bool) -> None:
-        """Update pause state and adjust timing."""
+        """
+        Set the paused state. While paused patterns do not progress. Does nothing if there is no active pattern.
+        Args:
+            paused: True to pause, False to resume
+        """
         if paused == self._is_paused:
+            return
+
+        if not self.has_active_pattern:
             return
 
         self._is_paused = paused
