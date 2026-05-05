@@ -349,12 +349,12 @@ class ToyHub:
         )
         for data, toy in zip(lovense_data, lovense_toys):
             if isinstance(toy, Lovense):
-                controller = LovenseController(toy, toy.toy_id, self._log.name)
+                controller = LovenseController(toy, self._log.name)
                 controllers.append(controller)
                 self._register_controller(controller)
                 cache_updates[data.name] = toy.model_name
             else:
-                # Connection failed, bled is an exception
+                # Connection failed, toy is an exception
                 controllers.append(toy)
 
         # Update cache with newly connected toys
@@ -404,7 +404,7 @@ class ToyHub:
             lovense_toys = await self._ble_connection_builder.create_toys(lovense_data)
             for data, toy in zip(lovense_data, lovense_toys):
                 if isinstance(toy, Lovense):
-                    controller = LovenseController(toy, toy.toy_id, self._log.name)
+                    controller = LovenseController(toy, self._log.name)
                     controllers.append(controller)
                     self._register_controller( controller)
                     cache_updates[data.name] = toy.model_name
