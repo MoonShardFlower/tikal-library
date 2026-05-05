@@ -9,7 +9,7 @@ returns instances of :class:`Toy`
 
 Example::
 
-        # After connecting via LovenseConnectionBuilder
+        # After connecting via BLEConnectionBuilder
         toy = connected_toys[0]
 
         # Control the toy
@@ -63,36 +63,29 @@ class Toy(ABC):
         self._log = getLogger(logger_name)
         self._response_queue: asyncio.Queue[str] = asyncio.Queue()
         self._command_lock = asyncio.Lock()  # Enforce sequential command execution
+        self._intensity1 = 0
+        self._intensity2 = 0
 
     @property
     def model_name(self) -> str:
-        """
-        The model name of the toy.
-
-        Returns:
-            Model name string (e.g., "Nora", "Lush").
-        """
+        """Returns the model name of the toy (e.g., "Nora", "Lush")."""
         return self._model_name
 
     @property
     def toy_id(self) -> str:
-        """
-        And unique identifier of the toy e.g., Bluetooth address.
-
-        Returns:
-            unique identifier string
-        """
+        """Returns a unique identifier of the toy e.g., Bluetooth address."""
         return self._toy_id
 
     @property
     def name(self) -> str:
-        """
-        The Bluetooth name of the toy.
-
-        Returns:
-            Bluetooth name string
-        """
+        """Returns a human-readable identifier of the toy e.g., Bluetooth name."""
         return self._name
+
+    @property
+    @abstractmethod
+    def brand(self) -> str:
+        """Returns a human-readable identifier of the toy brand e.g., 'Lovense'."""
+        raise NotImplementedError
 
     @property
     def is_connected(self) -> bool:
@@ -105,12 +98,6 @@ class Toy(ABC):
         return self._transport.is_connected
 
     @property
-    @abstractmethod
-    def brand(self):
-        """Return the brand of the toy, e.g. 'Lovense'"""
-        raise NotImplementedError
-
-    @property
     def change_rotation_direction_available(self) -> bool:
         """
        Check if the toy supports changing the rotation direction.
@@ -120,7 +107,7 @@ class Toy(ABC):
 
        Example::
 
-               if toy.change_rotate_direction_available():
+               if toy.change_rotate_direction_available:
                    await toy.change_rotate_direction()
        """
         return self.model_name in ROTATION_TOY_NAMES
@@ -132,8 +119,7 @@ class Toy(ABC):
         Get the display names for the toy's capabilities.
 
         Returns:
-            tuple[str, str | None]: A tuple of (primary_name, secondary_name).
-            The secondary name is None if the toy has only one capability.
+            tuple[str, str | None]: A tuple of (primary_name, secondary_name). The secondary name is None if the toy has only one capability.
 
         Example::
 
@@ -159,6 +145,20 @@ class Toy(ABC):
                 await toy.intensity1(max_val)  # Set to maximum
         """
         raise NotImplementedError
+
+    @property
+    def current_intensities(self) -> tuple[int, int]:
+        """
+        Get the current intensity values for the toy's capabilities.
+
+        Returns:
+            tuple[int, int]: A tuple of (primary_intensity, secondary_intensity). The secondary intensity is always 0 if the toy has only one capability.
+
+        Example::
+            intensity1, intensity2 = toy.current_intensities
+            print(f"Primary intensity: {intensity1}, Secondary intensity: {intensity2}")")
+        """
+        return self._intensity1, self._intensity2
 
     @abstractmethod
     def set_model_name(self, model_name: str) -> None:
@@ -360,6 +360,7 @@ class Lovense(Toy):
             response = await toy.direct_command("DeviceType")
             print(f"Device info: {response}")
     """
+    _MAX_INTENSITY = 20
 
     def __init__(
         self,
@@ -373,8 +374,8 @@ class Lovense(Toy):
         self.set_model_name(model_name)
 
     @property
-    def brand(self):
-        """Return the brand of the toy. Always "Lovense" for this class"""
+    def brand(self) -> str:
+        """Returns the brand of the toy. Always "Lovense" for this class"""
         return "Lovense"
 
     @property
@@ -408,14 +409,14 @@ class Lovense(Toy):
         Note:
             Some capabilities (like Max's air pump) use different ranges. Those are automatically scaled for you.
         """
-        return 20
+        return self._MAX_INTENSITY
 
     def set_model_name(self, model_name: str) -> None:
         """
         Set the model name of the toy.
 
         Args:
-            model_name: New model name. Must be a key in LOVENSE_TOY_NAMES (e.g., "Nora", "Lush", "Max"). Case Insensitive.
+            model_name: New model name. Must be in LOVENSE_TOY_NAMES.keys() of module ToyData. Case Insensitive. Case Insensitive.
 
         Raises:
             ValidationError: If model_name is not a valid Lovense model.
@@ -477,6 +478,8 @@ class Lovense(Toy):
 
                 await toy.intensity1(20)  # Set primary capability to maximum
         """
+        level = max(0, min(self._MAX_INTENSITY, level))
+        self._intensity1 = level
         intensity1_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity1_command
         return await self._execute_level_command(intensity1_cmd, level)
 
@@ -502,14 +505,16 @@ class Lovense(Toy):
             For Max's air pump, the level is automatically divided by 4 to convert from 0-20 scale to 0-5 scale.
         """
         intensity2_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity2_command
+        level = max(0, min(self._MAX_INTENSITY, level))
 
         if not intensity2_cmd:
             return True  # No secondary capability, return success
 
         # Special case: Air:Level takes values 0-5 instead of 0-20
         if intensity2_cmd == "Air:Level":
-            return await self._execute_level_command(intensity2_cmd, int(level / 4))
+            level = int(level / 4)
 
+        self._intensity2 = level
         return await self._execute_level_command(intensity2_cmd, level)
 
     async def stop(self) -> bool:
@@ -800,7 +805,7 @@ class Lovense(Toy):
             return response
 
     async def _execute_level_command(
-        self, command_name: str, level: int, max_level: int = 20
+        self, command_name: str, level: int
     ) -> bool:
         """
         Execute a command with a level parameter.
@@ -809,13 +814,11 @@ class Lovense(Toy):
 
         Args:
             command_name: Command string without the level parameter (e.g., "Vibrate", "Rotate").
-            level: Intensity level. Will be clamped to 0-max_level.
-            max_level: Maximum allowed level. Defaults to 20.
+            level: Intensity level.
 
         Returns:
             True if the toy acknowledged the command with "OK", False otherwise.
         """
-        level = max(0, min(max_level, level))
         command = f"{command_name}:{level}"
         response = await self._execute_command(command)
         return response == "OK"
