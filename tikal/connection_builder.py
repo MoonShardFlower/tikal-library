@@ -375,7 +375,7 @@ class BLEConnectionBuilder:
             Any exception that occurred during continuous scanning as described above.
 
         Returns:
-            List of ``ToyData`` objects with brand‑appropriate types. List is empty if continuous discovery is not running.
+            List of ``ToyData`` objects with brand‑appropriate types. The list is empty if continuous discovery is not running.
             This is a snapshot, not a continuous stream of updates.
         """
         # If an exception is pending and the user hasn't stopped the scan, raise it once
@@ -493,12 +493,23 @@ class BLEConnectionBuilder:
 
     async def _on_device_detected(self, device: BLEDevice, _):
         """Callback invoked by BleakScanner when a BLE advertisement is received"""
-        self._ble_devices[device.address] = device
-        self._all_seen_addresses.add(device.address)
+        addr = device.address
+        now = time.time()
+        self._ble_devices[addr] = device
+
+        # already discovered, so just refresh timestamp
+        existing = self._discovered.get(addr)
+        if existing:
+            td, _ = existing
+            self._discovered[addr] = (td, now)
+            return
+
+        # new device: identify + emit
+        self._all_seen_addresses.add(addr)
         for handler in self._handlers:
             if handler.handles_device(device):
-                toy_data = handler.create_toy_data(device)
-                self._discovered[device.address] = (toy_data, time.time())
+                td = handler.create_toy_data(device)
+                self._discovered[addr] = (td, now)
                 self._emit_snapshot()
                 break
 
