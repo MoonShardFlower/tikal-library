@@ -1,5 +1,4 @@
 from .connection_builder import BLEConnectionBuilder, StaleDeviceError
-from .legacy_connection_builder import LovenseConnectionBuilder, ToyConnectionBuilder
 from .toy import Lovense, Toy
 from .toy_cache import ToyCache
 from .toy_controller import LovenseController, ToyController
@@ -22,8 +21,6 @@ __all__ = [
     "ROTATION_TOY_NAMES",
     "BRANDS",
     "ToyCache",
-    "ToyConnectionBuilder",
-    "LovenseConnectionBuilder",
     "BLEConnectionBuilder",
     "Toy",
     "Lovense",
@@ -32,4 +29,4 @@ __all__ = [
     "LovenseController",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
