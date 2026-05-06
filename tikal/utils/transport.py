@@ -140,7 +140,7 @@ class BleTransport(Transport):
             await self._client.connect()
             self._tx_uuid, self._rx_uuid = await self._uuid_resolver(self._client)
         except Exception as e:
-            raise ConnectionError(f"Error connecting to toy at {self.toy_id}: {e!r}")
+            raise ConnectionError(f"Error connecting to toy at {self.toy_id}: {e!r}") from e
 
     @property
     def is_connected(self) -> bool:
@@ -164,7 +164,7 @@ class BleTransport(Transport):
         try:
             await self._client.connect()
         except Exception as e:
-            raise ConnectionError(f"Error connecting to toy at {self.toy_id}: {e!r}")
+            raise ConnectionError(f"Error connecting to toy at {self.toy_id}: {e!r}") from e
 
     async def send(self, data: bytes) -> None:
         """
@@ -179,7 +179,7 @@ class BleTransport(Transport):
         try:
             await self._client.write_gatt_char(self._tx_uuid, data, response=False)
         except Exception as e:
-            raise ConnectionError(f"Error sending data to toy at {self.toy_id}: {e!r}")
+            raise ConnectionError(f"Error sending data to toy at {self.toy_id}: {e!r}") from e
 
     async def start_notify(self, callback: Callable[[bytes], None]) -> None:
         """
@@ -193,7 +193,7 @@ class BleTransport(Transport):
         """
 
         # Bleak passes (handle, data: bytes); we only forward data.
-        async def _bleak_cb(_, data: bytes) -> None:
+        def _bleak_cb(_, data: bytes) -> None:
             callback(data)
 
         try:
@@ -201,7 +201,7 @@ class BleTransport(Transport):
         except Exception as e:
             raise ConnectionError(
                 f"Error starting notifications for toy at {self.toy_id}: {e!r}"
-            )
+            ) from e
 
     async def disconnect(self) -> None:
         """
