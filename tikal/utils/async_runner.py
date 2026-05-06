@@ -161,6 +161,20 @@ class AsyncRunner:
         Should be called before the AsyncRunner is destroyed to ensure clean cleanup of resources.
         """
         if self.loop and self.loop.is_running():
+
+            async def _cleanup():
+                tasks = [
+                    t for t in asyncio.all_tasks() if t is not asyncio.current_task()
+                ]
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+            future = asyncio.run_coroutine_threadsafe(_cleanup(), self.loop)
+            try:
+                future.result(timeout=2.0)
+            except Exception:
+                pass
+
             self.loop.call_soon_threadsafe(self.loop.stop)
         if self.loop_thread and self.loop_thread.is_alive():
             self.loop_thread.join(timeout=2.0)
