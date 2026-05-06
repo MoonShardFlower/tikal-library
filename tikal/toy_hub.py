@@ -212,6 +212,38 @@ class ToyHub:
         """
         self._power_off_callback = callback
 
+    def start_discovery(self, on_update: Callable[[list[ToyData]], Any]) -> None:
+        """
+        Starts the discovery process for toys and updates the provided callback whenever new toy data is discovered or an error occurs.
+
+        Args:
+            on_update (Callable[[list[ToyData]], Any]): Called with a list[ToyData] of ALL available toys whenever availability changes.
+                'ALL' includes toys that were previously discovered and are still available. Connected toys do not advertise and are not included.
+                Invoked with an empty list if an exception occurs.
+        Note:
+            Should any exception occur, it is provided to self.error_callback. Any exception stops discovery.
+        """
+
+        def callback(toys: list[ToyData] | Exception):
+            if isinstance(toys, Exception):
+                self._log.error(f"Discovery failed: {toys}")
+                self._error_callback(
+                    toys,
+                    "Toy Discovery process failed. Is the Bluetooth still on?",
+                    traceback.format_exc(),
+                )
+                on_update([])  # Clear any now stale toy
+                return
+            else:
+                for td in toys:
+                    td.model_name = self._toy_cache.get_model_name(td.name)
+                on_update(toys)
+
+        self._runner.run_async(self._ble_connection_builder.start_continuous(callback))
+
+    def stop_discovery(self) -> None:
+        self._runner.run_async(self._ble_connection_builder.stop_continuous())
+
     def discover_toys_blocking(self, timeout: float = 10.0) -> list[ToyData]:
         """
         Discover available toys synchronously (blocking call).
@@ -560,7 +592,7 @@ class ToyHub:
         """
         with self._lock:
             self._toy_controllers[controller.toy_id] = controller
-            controller.connected = True
+            controller.is_connected = True
             if len(self._toy_controllers) == 1:
                 self._start_communication_loop()
         # Trigger immediate battery update for new device
@@ -582,7 +614,7 @@ class ToyHub:
             if toy_id not in self._toy_controllers:
                 return
             toy_controller = self._toy_controllers[toy_id]
-            toy_controller.connected = False
+            toy_controller.is_connected = False
             del self._toy_controllers[toy_id]
             if len(self._toy_controllers) == 0:
                 self._stop_communication_loop()
