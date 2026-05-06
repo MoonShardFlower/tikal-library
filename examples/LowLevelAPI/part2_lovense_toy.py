@@ -1,29 +1,28 @@
 import asyncio
 from logging import INFO, Formatter, StreamHandler, getLogger
 
-from bleak import BleakClient
-
-from tikal import LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES, LovenseConnectionBuilder
+from tikal import LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES, BLEConnectionBuilder
 from tikal.mock import MockBleakClient, MockBleakScanner
+from tikal.utils import Transport
 
 # All classes use the logging module
 LOGGER_NAME = "toy"
 
 
-def on_disconnect(client: BleakClient):
+def on_disconnect(transport: Transport):
     """
     This function is invoked when a toy disconnects unexpectedly
     (Meaning that the disconnection was not initiated by you, and the toy did not send a POWEROFF message)
     """
-    print(f"Callback triggered: Disconnected {client.address}")
+    print(f"Callback triggered: Disconnected {transport.toy_id}")
 
 
-def on_power_off(bluetooth_address: str):
+def on_power_off(toy_id: str):
     """
     This function is invoked when a toy sends a POWEROFF message
     Some toys (not all) send this message when they are turned off by the user.
     """
-    print(f"Callback triggered: Powered off {bluetooth_address}")
+    print(f"Callback triggered: Powered off {toy_id}")
 
 
 def prepare_logger():
@@ -55,9 +54,9 @@ async def main():
     # Scanning and connecting to toys (see first example)
     # ------------------------------------------------------------------------------------------------------------------
 
-    builder = LovenseConnectionBuilder(
-        on_disconnect, on_power_off, LOGGER_NAME, MockBleakScanner, MockBleakClient
-    )  # type: ignore
+    builder = BLEConnectionBuilder(
+        on_disconnect, on_power_off, LOGGER_NAME, MockBleakScanner, MockBleakClient  # type: ignore
+    )
     lovense_data = await builder.discover_toys(10.0)
 
     # Because we used the MockBleakScanner I know the results
@@ -136,9 +135,9 @@ async def main():
     # The model name of the toy can be read via the model_name property.
     print(f"SolacePro model name: {solace.model_name}")
 
-    # Via properties, we can also retrieve the Bluetooth address and Bluetooth name of the toy.
+    # Via properties, we can also retrieve a unique identifier (bluetooth address) and human-readable identifier (bluetooth name) of the toy.
     print(
-        f"SolacePro Bluetooth address: {solace.address}, SolacePro Bluetooth name: {solace.name}"
+        f"SolacePro Bluetooth address: {solace.toy_id}, SolacePro Bluetooth name: {solace.name}"
     )
 
     # The most interesting information is likely the battery level
@@ -204,11 +203,10 @@ async def main():
     # This Mock toy sends a POWEROFF message 5 s after the first intensity command has been sent.
     await poweroff_gush.intensity1(0)
 
-    # Every time a toy disconnects unexpectedly, on_disconnect is called with the BleakClient as an argument.
-    # You could then try to reconnect via client.connect()
-    # (On windows at least the backend also tries to reestablish connection by itself,
-    # which is why toy.is_connected can change at any time)
-    # if you want to cleanly disconnect, call client.disconnect() here.
+    # Every time a toy disconnects unexpectedly, on_disconnect is called with the Transport as an argument.
+    # You could then try to reconnect via transport.reconnect()
+    # (On Windows at least the backend also tries to reestablish connection by itself, which is why toy.is_connected can change at any time)
+    # if you want to cleanly disconnect, call transport.disconnect() here.
 
     # This Mock toy disconnects 5 s after the first intensity command has been sent.
     await disconnect_gush.intensity1(0)
@@ -221,8 +219,7 @@ async def main():
 
     # To clean up, please call disconnect() on all toys you created. Doing this attempts to set the toys' intensities
     # to 0, followed by attempting to cleanly disconnect. If a connection failure occurred, some of these might fail.
-    # That is to be expected. The exceptions raised by connection failures are caught and logged. The disconnect
-    # method does not raise any exceptions.
+    # That is to be expected. The exceptions raised by connection failures are caught and logged. The disconnect method does not raise any exceptions.
     print("Cleaning up")
     await solace.disconnect()
     await gush.disconnect()

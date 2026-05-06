@@ -2,29 +2,28 @@ import asyncio
 from logging import INFO, Formatter, StreamHandler, getLogger
 from pathlib import Path
 
-from bleak import BleakClient
-
-from tikal import LovenseConnectionBuilder, ToyCache
+from tikal import BLEConnectionBuilder, ToyCache
 from tikal.mock import MockBleakClient, MockBleakScanner
+from tikal.utils import Transport
 
 # All classes use the logging module
 LOGGER_NAME = "toy"
 
 
-def on_disconnect(client: BleakClient):
+def on_disconnect(client: Transport):
     """
     This function is invoked when a toy disconnects unexpectedly
     (Meaning that the disconnection was not initiated by you, and the toy did not send a POWEROFF message)
     """
-    print(f"Callback triggered: Disconnected {client.address}")
+    print(f"Callback triggered: Disconnected {client.toy_id}")
 
 
-def on_power_off(bluetooth_address: str):
+def on_power_off(toy_id: str):
     """
     This function is invoked when a toy sends a POWEROFF message
     Some toys (not all) send this message when they are turned off by the user.
     """
-    print(f"Callback triggered: Powered off {bluetooth_address}")
+    print(f"Callback triggered: Powered off {toy_id}")
 
 
 def prepare_logger():
@@ -84,7 +83,7 @@ async def main():
     print(f"LVS-B12 is now of model {cache.get_model_name('LVS-B12')}")
 
     # Let's use the cache in combination with the mock toys
-    builder = LovenseConnectionBuilder(on_disconnect, on_power_off, LOGGER_NAME, MockBleakScanner, MockBleakClient)  # type: ignore
+    builder = BLEConnectionBuilder(on_disconnect, on_power_off, LOGGER_NAME, MockBleakScanner, MockBleakClient)  # type: ignore
     toy_data = await builder.discover_toys(10.0)
     gush_data = toy_data[1]
     model_name = cache.get_model_name(gush_data.name)

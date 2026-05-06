@@ -103,8 +103,8 @@ def main():
     # Some toys have a rotation capability. These toys can have their rotation direction changed
     nora.change_rotate_direction()
     time.sleep(1)
-    # You can call change_rotate_direction_available() to check if the toy supports this capability
-    print(f"Nora has a rotation capability: {nora.change_rotate_direction_available()}")
+    # You can look at change_rotate_direction_available to check if the toy supports this capability
+    print(f"Nora has a rotation capability: {nora.change_rotate_direction_available}")
 
     # You can retrieve the current battery level of a toy
     def on_battery_available(battery_level: int | None):
@@ -140,7 +140,7 @@ def main():
     # queue instead. The toy hub regularly (every 50ms) polls this queue and sends the command if the toy is connected.
     # If it isn't, the command will just remain in the queue until the connection is re-established. You can view the
     # connection status here
-    print(f"Gush is currently connected {gush.connected}")
+    print(f"Gush is currently connected {gush.is_connected}")
 
     # The names of the toys' capabilities and the maximal intensity level can be accessed as well
     # max intensity will always be 20 for lovense toys. This is future proofing for other toy brands that might be
@@ -149,7 +149,7 @@ def main():
         f"Solace has the capabilities: {solace.intensity_names[0]} and {solace.intensity_names[1]}"
     )
     print(f"Gush has only one capability: {gush.intensity_names[1] is None}")
-    print(f"Max intensity for lovense toys: {solace.intensity_max_value}")
+    print(f"Max intensity for lovense toys: {solace.max_intensity}")
 
     # ------------------------------------------------------------------------------------------------------------------
     # Patterns, blocking and pausing
