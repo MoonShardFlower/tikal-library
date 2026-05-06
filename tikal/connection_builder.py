@@ -333,16 +333,23 @@ class BLEConnectionBuilder:
         The method is idempotent. Calls to this method will be ignored if a continuous scan is already running.
 
         Args:
-            on_update: Optional callback. Called with a snapshot of all discovered Toys whenever the internal cache changes.
+            on_update: **Optional** callback. Called with a snapshot of all discovered Toys whenever the internal cache changes.
                 Called with an exception if the continuous scan encounters an error.
                 Can be seen as a push version of :meth:`retrieve_continuous`.
+                The first call to on_update reflects the clearing of the internal cache, meaning you'll always get an empty list first.
+                This serves to ensure any cache you might have made is cleaned too.
 
         Raises:
             Exception: Any exception raised by the BLE scanner (e.g., permission errors).
         """
-        self._on_update = on_update
         if self._continuous_task and not self._continuous_task.done():
             return
+        self._on_update = on_update
+        if self._on_update:
+            self._on_update(
+                []
+            )  # ensure any user cache is cleared. We'll clear our cache below
+
         # Reset internal state and start continuous scan
         self._continuous_exception = None
         self._stop_event = asyncio.Event()
@@ -520,13 +527,14 @@ class BLEConnectionBuilder:
                 break
 
     async def _cleanup_stale_devices(self):
-        """Remove devices that were not seen for more than 8 seconds."""
+        """Remove devices that were not seen for more than 5 seconds."""
         while not self._stop_event.is_set():
-            await asyncio.sleep(8.0)  # timeout for stale devices
+            await asyncio.sleep(5.0)  # timeout for stale devices
             now = time.time()
-            for addr, (_, ts) in self._discovered.items():
-                if now - ts > 8.0:
+            for addr, (_, ts) in list(self._discovered.items()):
+                if now - ts > 5.0:
                     del self._discovered[addr]
+                    print(f"Removed stale device {addr}")
                     self._emit_snapshot()
 
     def _emit_snapshot(self):
