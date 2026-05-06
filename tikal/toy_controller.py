@@ -460,7 +460,7 @@ class ToyController(ABC):
         self._pattern_handler.set_paused(True)
         self._schedule_command(_execute, callback)
 
-    def change_rotate_direction(
+    def change_rotation_direction(
         self, callback: Optional[Callable[[bool], None]] = None
     ) -> None:
         """
@@ -474,14 +474,14 @@ class ToyController(ABC):
 
         Example::
 
-                toy.change_rotate_direction(callback=lambda ok: print("Direction changed" if ok else "Failed"))
+                toy.change_rotation_direction(callback=lambda ok: print("Direction changed" if ok else "Failed"))
 
         Note:
-            You can use property:`change_rotate_direction_available` to check support before calling.
+            You can use property:`change_rotation_direction_available` to check support before calling.
         """
 
         async def _execute():
-            return await self._toy.rotate_change_direction()
+            return await self._toy.change_rotation_direction()
 
         self._schedule_command(_execute, callback)
 

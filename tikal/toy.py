@@ -193,10 +193,9 @@ class Toy(ABC):
         Set the primary capability of the toy to a specified level.
 
         The primary capability varies by toy model (e.g., vibration for Gush, thrusting for Solace).
-        For Lovense toys LOVENSE_TOY_NAMES provides details of the toys capabilities.
 
         Args:
-            level: Intensity level. The valid range is 0-20. Values outside this range are clamped.
+            level: Intensity level. The valid range is 0 - self.max_intensity. Values outside this range are clamped.
 
         Returns:
             True if the toy acknowledged the command, False otherwise.
@@ -219,7 +218,7 @@ class Toy(ABC):
         Not all toys have a secondary capability. Returns true and does nothing if the toy has no secondary capability.
 
         Args:
-            level: Intensity level. The valid range is 0-20. Values outside this range are clamped.
+            level: Intensity level. The valid range is 0 - self.max_intensity. Values outside this range are clamped.
 
         Returns:
             True if the toy acknowledged the command or the toy does not have a secondary capability, False otherwise.
@@ -246,7 +245,7 @@ class Toy(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def rotate_change_direction(self) -> bool:
+    async def change_rotation_direction(self) -> bool:
         """
         Change rotation direction.
 
@@ -269,7 +268,7 @@ class Toy(ABC):
         Retrieve the battery level of the connected device.
 
         Returns:
-            Battery level as a percentage (0-100), or None if an error occurred or the command timed out.
+            Battery level as a percentage (0-100), or None if an error occurred, the command timed out, or the toy has no battery.
 
         Example::
 
@@ -315,8 +314,7 @@ class Toy(ABC):
         """
         Wait for a response from the toy.
 
-        This internal method waits for the toy to send a response via the notification callback.
-        Responses are queued as they arrive.
+        This internal method waits for the toy to send a response via the notification callback. Responses are queued as they arrive.
 
         Args:
             timeout: Maximum time to wait in seconds. Defaults to 3.0.
@@ -535,7 +533,7 @@ class Lovense(Toy):
         result2 = await self.intensity2(0)
         return result1 and result2
 
-    async def rotate_change_direction(self) -> bool:
+    async def change_rotation_direction(self) -> bool:
         """
         Change rotation direction for toys with rotation capability.
 
