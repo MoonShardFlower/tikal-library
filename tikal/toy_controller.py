@@ -125,7 +125,7 @@ class ToyController(ABC):
         return self._connected
 
     @property
-    def change_rotate_direction_available(self) -> bool:
+    def change_rotation_direction_available(self) -> bool:
         """
         Check if the toy supports changing the rotation direction.
 
