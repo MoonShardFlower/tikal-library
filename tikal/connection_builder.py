@@ -92,7 +92,7 @@ class LovenseHandler(BLEBrandHandler):
 
     def __init__(
         self,
-        on_disconnect: Callable[[BleTransport], Any],
+        on_disconnect: Callable[[str], Any],
         on_power_off: Callable[[str], Any],
         logger_name: str = "tikal",
         client_class: Type[BleakClient] = BleakClient,
@@ -103,7 +103,7 @@ class LovenseHandler(BLEBrandHandler):
         Encapsulates all Lovense‑specific logic: identification, UUID resolution, connection, and notification setup.
 
         Args:
-            on_disconnect: Callback called when a toy disconnects unexpectedly. Receives the toy's ``BleTransport`` instance.
+            on_disconnect: Callback called when a toy disconnects unexpectedly. Receives the toy's toy_id.
             on_power_off: Callback called when the user powers off a toy via its physical button. Receives the toy id (address).
             logger_name: Name for the logger used by this handler. Defaults to 'tikal'.
             client_class BLE client class to use. Defaults to BleakClient. Can be overridden for testing.
@@ -231,7 +231,7 @@ class BLEConnectionBuilder:
 
     def __init__(
         self,
-        on_disconnect: Callable[[BleTransport], Any],
+        on_disconnect: Callable[[str], Any],
         on_power_off: Callable[[str], Any],
         logger_name: str,
         scanner_class: Type[BleakScanner] = BleakScanner,
@@ -243,7 +243,7 @@ class BLEConnectionBuilder:
         Part of the Low-Level API: Handles discovery and connection for Toys using Bluetooth Low Energy. Delegates
         brand-specific handling to instances of BLEBrandHandler
 
-        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives the toy's ``BleTransport`` instance. Not called for intentional disconnects.
+        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives the toy's toy_id. Not called for intentional disconnects.
         on_power_off: Callback invoked when the user powers off a toy via the physical power button. Receives the toy id.
         logger_name: Name of the logger to use. Use empty string for root logger.
         scanner_class: BLE scanner class to use. Defaults to BleakScanner. Can be overridden for testing.

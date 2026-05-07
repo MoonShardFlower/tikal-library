@@ -3,23 +3,22 @@ from logging import INFO, Formatter, StreamHandler, getLogger
 
 from tikal import LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES, BLEConnectionBuilder
 from tikal.mock import MockBleakClient, MockBleakScanner
-from tikal.utils import Transport
 
 # All classes use the logging module
 LOGGER_NAME = "toy"
 
 
-def on_disconnect(transport: Transport):
+def on_disconnect(toy_id: str):
     """
-    This function is invoked when a toy disconnects unexpectedly
-    (Meaning that the disconnection was not initiated by you, and the toy did not send a POWEROFF message)
+    This function is invoked when a toy disconnects unexpectedly.
+    (Meaning that the disconnection was not initiated by you, and the toy did not send a POWEROFF message).
     """
-    print(f"Callback triggered: Disconnected {transport.toy_id}")
+    print(f"Callback triggered: Disconnected {toy_id}")
 
 
 def on_power_off(toy_id: str):
     """
-    This function is invoked when a toy sends a POWEROFF message
+    This function is invoked when a toy sends a POWEROFF message.
     Some toys (not all) send this message when they are turned off by the user.
     """
     print(f"Callback triggered: Powered off {toy_id}")
@@ -171,7 +170,7 @@ async def main():
     )
 
     # Some toys have a Rotation capability. These toys can have their rotation direction changed
-    await nora.rotate_change_direction()
+    await nora.change_rotation_direction()
     print(
         f"List of toys that can have their rotation direction changed:\n{ROTATION_TOY_NAMES}"
     )

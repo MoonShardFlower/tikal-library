@@ -1,8 +1,6 @@
 import time
 from logging import INFO, Formatter, StreamHandler, getLogger
 
-from bleak import BleakClient
-
 from tikal import ToyHub
 from tikal.mock import MockBleakClient, MockBleakScanner
 
@@ -10,20 +8,20 @@ from tikal.mock import MockBleakClient, MockBleakScanner
 LOGGER_NAME = "toy"
 
 
-def on_disconnect(client: BleakClient):
+def on_disconnect(toy_id: str):
     """
     This function is invoked when a toy disconnects unexpectedly
     (Meaning that the disconnection was not initiated by you, and the toy did not send a POWEROFF message)
     """
-    print(f"Callback triggered: Disconnected {client.address}")
+    print(f"Callback triggered: Disconnected {toy_id}")
 
 
-def on_power_off(bluetooth_address: str):
+def on_power_off(toy_id: str):
     """
     This function is invoked when a toy sends a POWEROFF message
     Some toys (not all) send this message when they are turned off by the user.
     """
-    print(f"Callback triggered: Powered off {bluetooth_address}")
+    print(f"Callback triggered: Powered off {toy_id}")
 
 
 def prepare_logger():
@@ -101,10 +99,10 @@ def main():
     time.sleep(1)
 
     # Some toys have a rotation capability. These toys can have their rotation direction changed
-    nora.change_rotate_direction()
+    nora.change_rotation_direction()
     time.sleep(1)
-    # You can look at change_rotate_direction_available to check if the toy supports this capability
-    print(f"Nora has a rotation capability: {nora.change_rotate_direction_available}")
+    # You can look at change_rotation_direction_available to check if the toy supports this capability
+    print(f"Nora has a rotation capability: {nora.change_rotation_direction_available}")
 
     # You can retrieve the current battery level of a toy
     def on_battery_available(battery_level: int | None):

@@ -102,7 +102,7 @@ class BleTransport(Transport):
         device: The ``BLEDevice`` to connect to.
         uuid_resolver: Async callable that receives the connected ``BleakClient`` and returns ``(tx_uuid, rx_uuid)``.
             Invoked once inside :meth:`connect` while the link is already open, so it can inspect the GATT services.
-        on_disconnect: Optional callback is invoked with this ``BleTransport`` instance when the underlying BLE
+        on_disconnect: Optional callback is invoked with this self.toy_id when the underlying BLE
             connection drops unexpectedly. Not invoked for intentional disconnects via :meth:`disconnect`.
         client_class: ``BleakClient`` subclass to use. Defaults to ``BleakClient``; override for testing.
     """
@@ -111,7 +111,7 @@ class BleTransport(Transport):
         self,
         device: BLEDevice,
         uuid_resolver: Callable[[BleakClient], Awaitable[tuple[str, str]]],
-        on_disconnect: Callable[["BleTransport"], None] | None = None,
+        on_disconnect: Callable[[str], None] | None = None,
         client_class: Type[BleakClient] = BleakClient,
     ):
         super().__init__(toy_id=device.address, name=device.name or "")
@@ -122,7 +122,7 @@ class BleTransport(Transport):
 
         def _bleak_disconnect_cb(_: BleakClient) -> None:
             if not self._intentional_disconnect and on_disconnect:
-                on_disconnect(self)
+                on_disconnect(self.toy_id)
 
         self._client = client_class(device, disconnected_callback=_bleak_disconnect_cb)
 

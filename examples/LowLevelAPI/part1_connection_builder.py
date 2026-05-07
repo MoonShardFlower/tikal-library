@@ -3,18 +3,17 @@ from logging import INFO, Formatter, StreamHandler, getLogger
 
 from tikal import LOVENSE_TOY_NAMES, BLEConnectionBuilder, ValidationError
 from tikal.mock import MockBleakClient, MockBleakScanner
-from tikal.utils import Transport
 
 # All classes use the logging module
 LOGGER_NAME = "toy"
 
 
-def on_disconnect(client: Transport):
+def on_disconnect(toy_id: str):
     """
-    This function is invoked when a toy disconnects unexpectedly
-    (Meaning that the disconnection was not initiated by you, and the toy did not send a POWEROFF message)
+    This function is invoked when a toy disconnects unexpectedly.
+    (Meaning that the disconnection was not initiated by you, and the toy did not send a POWEROFF message).
     """
-    print(f"Callback triggered: Disconnected {client.toy_id}")
+    print(f"Callback triggered: Disconnected {toy_id}")
 
 
 def on_power_off(toy_id: str):

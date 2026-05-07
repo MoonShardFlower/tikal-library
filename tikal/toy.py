@@ -188,6 +188,18 @@ class Toy(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def reconnect(self) -> bool:
+        """
+
+        Does nothing if already connected. Use only after an unintended disconnect (ConnectionError).
+        If you disconnected via disconnect, use the ConnectionBuilder instead.
+
+        Returns:
+            True if the reconnection was successful, False otherwise.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def intensity1(self, level: int) -> bool:
         """
         Set the primary capability of the toy to a specified level.
@@ -431,6 +443,34 @@ class Lovense(Toy):
                 f"Valid names are: {list(LOVENSE_TOY_NAMES.keys())}"
             )
         self._model_name = model_name.title()
+
+
+    async def reconnect(self) -> bool:
+        """
+        Attempts to reconnect to the toy to after an unintentional disconnect.
+
+        Does nothing if already connected. Use only after an unintended disconnect (ConnectionError).
+        If you disconnected via disconnect, use the ConnectionBuilder instead.
+
+        Returns:
+            True if the reconnection was successful, False otherwise.
+        """
+        self._log.info(f"Reconnecting to {self._model_name} at {self._toy_id}")
+
+        # Give some time in hopes of the connection failure resolving itself
+        await asyncio.sleep(1.0)
+        if self._transport.is_connected:
+            return True
+
+        try:
+            await self._transport.reconnect()
+            self._log.info(f"Connected to {self._model_name} at {self._toy_id}")
+            return True
+        except Exception as e:
+            self._log.error(
+                f"Failed to reconnect to {self._model_name} at {self._toy_id}: {e} with details {traceback.format_exc()}"
+            )
+            return False
 
     async def disconnect(self) -> None:
         """

@@ -722,51 +722,43 @@ class ToyHub:
         # Execute all concurrently
         await asyncio.gather(*coroutines, return_exceptions=True)
 
-    def _handle_disconnect(self, transport: Transport) -> None:
+    def _handle_disconnect(self, toy_id: str) -> None:
         """
         Handle unexpected toy disconnection and attempt reconnection
 
         Args:
-            transport: Transport instance of the disconnected toy.
+            toy_id: Unique identifier of the disconnected toy.
         """
         self._log.warning(
-            f"Disconnected from {transport.name} at {transport.toy_id}. Will attempt to reconnect once."
+            f"Disconnected from {toy_id}. Will attempt to reconnect once."
         )
-        toy_controller = self._toy_controllers[transport.toy_id]
-        self._unregister_controller(transport.toy_id)
+        toy_controller = self._toy_controllers[toy_id]
+        self._unregister_controller(toy_id)
         if self._disconnect_callback:
-            self._disconnect_callback(transport.toy_id)
+            self._disconnect_callback(toy_id)
 
-        async def reconnect_task():
-            # Give some time in hopes of the connection failure resolving itself
-            await asyncio.sleep(1.0)
-            if not transport.is_connected:
-                await transport.reconnect()  # Try to reconnect
+        async def reconnect_task() -> bool:
+            return await toy_controller.toy.reconnect()
 
         def on_reconnect_complete(result):
             if isinstance(result, Exception):
                 self._log.error(
-                    f"Unable to recover connection to toy at address {transport.toy_id} due to {result!r}"
+                    f"Unable to recover connection to toy at address {toy_id} due to {result!r}"
                 )
                 if self._reconnection_failure_callback:
-                    self._reconnection_failure_callback(transport.toy_id)
+                    self._reconnection_failure_callback(toy_id)
                 try:
                     self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
                 except TimeoutError:
                     pass
-            elif result is None:
-                self._log.info(
-                    f"Reconnection successful for {transport.name} at {transport.toy_id}"
-                )
+            elif result:
+                self._log.info(f"Reconnection successful for {toy_id}")
                 self._register_controller(toy_controller)
                 if self._reconnection_success_callback:
-                    self._reconnection_success_callback(transport.toy_id)
+                    self._reconnection_success_callback(toy_id)
             else:
-                self._log.exception(
-                    f"Unexpected result type while trying to handle connection failure: {result!r}"
-                )
                 if self._reconnection_failure_callback:
-                    self._reconnection_failure_callback(transport.toy_id)
+                    self._reconnection_failure_callback(toy_id)
                 try:
                     self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
                 except TimeoutError:
