@@ -37,6 +37,34 @@ class ValidationError(Exception):
     pass
 
 
+class InvalidModelError(ValidationError):
+    """
+    Exception raised when a model_name is invalid.
+
+    This exception is raised when attempting to set a model name that is not recognized.
+    Can be raised during toy initialization or when setting a toy's model name.
+
+    Example:
+        ::
+
+            try:
+                toy.set_model_name("InvalidModel")
+            except InvalidModelError as e:
+                print(f"Invalid model: {e}")
+    """
+
+
+class BadModelError(ValidationError):
+    """
+    Exception raised when a model_name is valid, but its associated commands are not accepted by the toy.
+
+    This exception can mean two things:
+        1) A valid, but wrong model_name is being set
+        2) the commands being incorrect -> the Library does not handle this model correctly. Please contact the library maintainer in this case.
+    Can be raised during toy initialization or when setting a toy's model name.
+    """
+
+
 @dataclass
 class ToyData:
     """

@@ -3,9 +3,11 @@ from .toy import Lovense, Toy
 from .toy_cache import ToyCache
 from .toy_controller import LovenseController, ToyController
 from .toy_data import (
+    BRANDS,
     LOVENSE_TOY_NAMES,
     ROTATION_TOY_NAMES,
-    BRANDS,
+    BadModelError,
+    InvalidModelError,
     LovenseData,
     ToyData,
     ValidationError,
@@ -14,6 +16,8 @@ from .toy_hub import ToyHub
 
 __all__ = [
     "ValidationError",
+    "InvalidModelError",
+    "BadModelError",
     "StaleDeviceError",
     "ToyData",
     "LovenseData",
