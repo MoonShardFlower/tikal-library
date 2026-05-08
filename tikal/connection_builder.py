@@ -414,7 +414,8 @@ class BLEConnectionBuilder:
             - ``KeyError``: toy address was not found in the cache (i.e., :meth:`discover_toys` was not called first)
             - ``StaleDeviceError``: Subclass of ConnectionError: Device was discovered, but has since become stale. Retrieve a new snapshot i.e., via :meth:`discover_toys`
             - ``ConnectionError``: BLE connection or notification setup failed, e.g., the toy may have become unavailable
-            - ``ValidationError``: model_name is not a valid Lovense model name
+            - ``InvalidModelError``: If model_name is not valid for this toy brand.
+            - ``BadModelError``: If the model_name is valid, but commands still fail. See BadModelError for details
             - ``RuntimeError``: Developer error. I did not specify a handler for this subclass of ToyData. Should never happen.
             The order of results matches the order of the input list.
 
@@ -446,7 +447,8 @@ class BLEConnectionBuilder:
             - ``KeyError``: toy address was not found in the cache (i.e., :meth:`discover_toys` was not called first)
             - ``StaleDeviceError``: Subclass of ConnectionError: Device was discovered, but has since become stale. Retrieve a new snapshot i.e., via :meth:`discover_toys`
             - ``ConnectionError``: BLE connection or notification setup failed, e.g., the toy may have become unavailable
-            - ``ValidationError``: model_name is not a valid Lovense model name
+            - ``InvalidModelError``: If model_name is not valid for this toy brand.
+            - ``BadModelError``: If the model_name is valid, but commands still fail. See BadModelError for details
             - ``RuntimeError``: Developer error. I did not specify a handler for this subclass of ToyData. Should never happen.
 
         Example::
@@ -471,7 +473,9 @@ class BLEConnectionBuilder:
             )
         device = self._ble_devices[to_connect.toy_id]
         try:
-            return await handler.create_toy(to_connect, device)
+            toy = await handler.create_toy(to_connect, device)
+            await toy.set_model_name(to_connect.model_name)
+            return toy
         except Exception as e:
             return e
 

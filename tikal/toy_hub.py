@@ -550,7 +550,8 @@ class ToyHub:
 
         Returns:
             ToyController | BaseException: The updated controller if successful, or:
-                - ValidationError if the model name is invalid for the toy's brand.
+                - InvalidModelError: If model_name is not valid for this toy brand.
+                - BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details
                 - ValueError if the toy_id is unknown.
 
         Example:
@@ -571,8 +572,10 @@ class ToyHub:
             name = self._toy_controllers[toy_id].toy.name
             self._toy_cache.update({name: model_name})
             try:
-                self._toy_controllers[toy_id].toy.set_model_name(model_name)
-            except ValidationError as e:
+                self._runner.run_async(
+                    self._toy_controllers[toy_id].toy.set_model_name(model_name)
+                )
+            except Exception as e:
                 return e
             self._log.info(f"Updated model name for toy {toy_id} to {model_name}")
             return self._toy_controllers[toy_id]

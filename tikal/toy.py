@@ -30,7 +30,13 @@ from abc import ABC, abstractmethod
 from logging import getLogger
 from typing import Any, Callable, Optional
 
-from .toy_data import LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES, ValidationError
+from .toy_data import (
+    LOVENSE_TOY_NAMES,
+    ROTATION_TOY_NAMES,
+    BadModelError,
+    InvalidModelError,
+    ValidationError,
+)
 from .utils import BleTransport, UsbTransport
 
 
@@ -165,7 +171,7 @@ class Toy(ABC):
         return self._intensity1, self._intensity2
 
     @abstractmethod
-    def set_model_name(self, model_name: str) -> None:
+    async def set_model_name(self, model_name: str) -> None:
         """
         Set the model name of the toy.
 
@@ -176,7 +182,8 @@ class Toy(ABC):
             model_name: New model name. Must be a valid model for this toy brand.
 
         Raises:
-            ValidationError: If model_name is not valid for this toy brand.
+            InvalidModelError: If model_name is not valid for this toy brand.
+            BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details.
         """
         raise NotImplementedError
 
@@ -490,7 +497,7 @@ class Lovense(Toy):
 
     Implements the Lovense-specific protocol for communication with Lovense toys over Bluetooth Low Energy.
     Handles command formatting, response parsing, and Lovense-specific notifications (like power-off events).
-    You are not meant to instantiate these classes directly. :class:`LovenseConnectionBuilder` establishes connections
+    You are not meant to instantiate these classes directly. :class:`BLEConnectionBuilder` establishes connections
     to toys and returns instances of :class:`Lovense`
 
     Args:
@@ -498,9 +505,6 @@ class Lovense(Toy):
         model_name: Model name (e.g., "Nora", "Lush"). Must be a key in LOVENSE_TOY_NAMES.
         on_power_off: Callback invoked when the user powers off the toy via the physical power button. Receives the toy's Bluetooth address as a string argument.
         logger_name: Name of the logger to use. Use empty string for root logger.
-
-    Raises:
-        ValidationError: If model_name is not a valid Lovense model.
 
     Example::
 
@@ -523,7 +527,6 @@ class Lovense(Toy):
     ):
         super().__init__(transport, model_name, logger_name)
         self._on_power_off = on_power_off
-        self.set_model_name(model_name)
 
     @property
     def brand(self) -> str:
@@ -563,7 +566,7 @@ class Lovense(Toy):
         """
         return self._MAX_INTENSITY
 
-    def set_model_name(self, model_name: str) -> None:
+    async def set_model_name(self, model_name: str) -> None:
         """
         Set the model name of the toy.
 
@@ -571,7 +574,8 @@ class Lovense(Toy):
             model_name: New model name. Must be in LOVENSE_TOY_NAMES.keys() of module ToyData. Case Insensitive. Case Insensitive.
 
         Raises:
-            ValidationError: If model_name is not a valid Lovense model.
+            InvalidModelError: If model_name is not valid for this toy brand.
+            BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details.
 
         Example::
 
@@ -579,10 +583,30 @@ class Lovense(Toy):
                 toy.set_model_name("Nora")
         """
         if model_name.title() not in LOVENSE_TOY_NAMES:
-            raise ValidationError(
+            self._log.error(
+                f"Invalid model name '{model_name}' for lovense toy at address '{self._toy_id}'."
+            )
+            raise InvalidModelError(
                 f"Invalid model name '{model_name}' for lovense toy at address '{self._toy_id}'. "
                 f"Valid names are: '{list(LOVENSE_TOY_NAMES.keys())}'"
             )
+
+        # Check if the commands work
+        try:
+            i1, i2 = self.current_intensities
+            await self.strict_intensity1(i1)
+            await self.strict_intensity2(i2)
+        except Exception as e:
+            self._log.exception(
+                f"Failed to set model name for toy '{model_name}' at '{self._toy_id}': '{type(e)}' with details '{traceback.format_exc()}'."
+            )
+            raise BadModelError(
+                f"Model name '{model_name}' is valid, but commands failed. This exception can mean two things:"
+                f"\n1) A valid, but wrong model_name is being set."
+                f"\n2) the commands being incorrect -> the Library does not handle this model correctly. Please contact the library maintainer in this case."
+                f"Details: '{type(e)}' with details '{traceback.format_exc()}'"
+            ) from e
+
         self._model_name = model_name.title()
 
     # ========================================================================
