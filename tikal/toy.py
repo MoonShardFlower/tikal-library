@@ -34,6 +34,10 @@ from .toy_data import LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES, ValidationError
 from .utils import BleTransport, UsbTransport
 
 
+class UnexpectedToyResponse(ConnectionError):
+    """Raised when the toy responds with an unexpected message."""
+
+
 class Toy(ABC):
     """
     Abstract base class representing a low-level toy.
@@ -176,6 +180,10 @@ class Toy(ABC):
         """
         raise NotImplementedError
 
+    # ========================================================================
+    # Public non-strict Methods
+    # ========================================================================
+
     @abstractmethod
     async def disconnect(self) -> None:
         """
@@ -190,6 +198,7 @@ class Toy(ABC):
     @abstractmethod
     async def reconnect(self) -> bool:
         """
+        Attempts to reconnect to the toy to after an unintentional disconnect.
 
         Does nothing if already connected. Use only after an unintended disconnect (ConnectionError).
         If you disconnected via disconnect, use the ConnectionBuilder instead.
@@ -308,6 +317,112 @@ class Toy(ABC):
         """
         raise NotImplementedError
 
+    # ========================================================================
+    # Public Strict Methods
+    # ========================================================================
+
+    @abstractmethod
+    async def strict_reconnect(self) -> bool:
+        """
+        Similar to :meth: reconnect, but this methode does raise an exception if the reconnection fails.
+
+        Raises:
+            ConnectionError: The reconnection failed.
+            RuntimeError: The reconnection was attempted after intentionally disconnecting the toy.
+
+        Returns:
+            Always True.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def strict_disconnect(self) -> None:
+        """
+        Similar to :meth: disconnect, but this methode does raise an exception if the disconnect fails.
+        The exception is only for logging. The toy is still disconnected in the error case.
+        Raises:
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def strict_intensity1(self, level: int) -> bool:
+        """
+        Similar to :meth: intensity1, but this method raises an exception if the intensity command fails.
+        Raises:
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+        Returns:
+            Always true
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def strict_intensity2(self, level: int) -> bool:
+        """
+        Similar to :meth: intensity2, but this method raises an exception if the intensity command fails.
+
+        Raises:
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+
+        Returns:
+            True if the toy supports a secondary capability, False otherwise.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def strict_stop(self) -> bool:
+        """
+        Similar to :meth: stop, but this method raises an exception if the stop command fails.
+        Raises:
+            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+        Returns:
+            always True
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def strict_change_rotation_direction(self) -> bool:
+        """
+        Similar to :meth: rotate_change_direction, but this method raises an exception if the command fails.
+        Raises:
+            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+        Returns:
+            True if the toy supports rotation, False otherwise.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def strict_get_battery_level(self) -> Optional[int]:
+        """
+        Similar to :meth: get_battery_level, but this method raises an exception if the command fails.
+        Raises:
+            UnexpectedToyResponse: The toys' response was unexpected.
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+        Returns:
+            Battery level as a percentage (0-100), or None if the toy has no battery.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def strict_direct_command(self, command: str, timeout: float = 3.0) -> str:
+        """
+        Similar to :meth: direct_command, but this method raises an exception if the command fails.
+        Raises:
+            ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
+        Returns:
+            response string from the toy
+        """
+        raise NotImplementedError
+
+    # ========================================================================
+    # Private Methods
+    # ========================================================================
+
     def _clear_response_queue(self) -> None:
         """
         Clear the response queue to prepare for a new command.
@@ -335,12 +450,38 @@ class Toy(ABC):
             Response string from the toy, or None if timeout occurred.
         """
         try:
+            return await self._strict_wait_for_response(timeout)
+        except ConnectionError:
+            return None
+
+    async def _strict_wait_for_response(self, timeout: float = 3.0) -> str:
+        """
+        Wait for a response from the toy.
+
+        This internal method waits for the toy to send a response via the notification callback. Responses are queued as they arrive.
+
+        Args:
+            timeout: Maximum time to wait in seconds. Defaults to 3.0.
+
+        Raises:
+            ConnectionError: The toy did not respond within the provided timeout.
+
+        Returns:
+            Response string from the toy.
+        """
+        try:
             response = await asyncio.wait_for(
                 self._response_queue.get(), timeout=timeout
             )
+            self._log.debug(f"Received response from '{self._toy_id}': '{response}'")
             return response
-        except asyncio.TimeoutError:
-            return None
+        except asyncio.TimeoutError as e:
+            self._log.warning(
+                f"Timeout waiting for response from '{self._model_name}' at '{self._toy_id}'"
+            )
+            raise ConnectionError(
+                f"Timeout waiting for response from '{self._model_name}' at '{self._toy_id}'"
+            ) from e
 
 
 class Lovense(Toy):
@@ -439,11 +580,14 @@ class Lovense(Toy):
         """
         if model_name.title() not in LOVENSE_TOY_NAMES:
             raise ValidationError(
-                f"Invalid model name '{model_name}' for lovense toy at address {self._toy_id}. "
-                f"Valid names are: {list(LOVENSE_TOY_NAMES.keys())}"
+                f"Invalid model name '{model_name}' for lovense toy at address '{self._toy_id}'. "
+                f"Valid names are: '{list(LOVENSE_TOY_NAMES.keys())}'"
             )
         self._model_name = model_name.title()
 
+    # ========================================================================
+    # Public non-strict Methods
+    # ========================================================================
 
     async def reconnect(self) -> bool:
         """
@@ -455,7 +599,7 @@ class Lovense(Toy):
         Returns:
             True if the reconnection was successful, False otherwise.
         """
-        self._log.info(f"Reconnecting to {self._model_name} at {self._toy_id}")
+        self._log.info(f"Reconnecting to '{self._model_name}' at '{self._toy_id}'")
 
         # Give some time in hopes of the connection failure resolving itself
         await asyncio.sleep(1.0)
@@ -464,11 +608,11 @@ class Lovense(Toy):
 
         try:
             await self._transport.reconnect()
-            self._log.info(f"Connected to {self._model_name} at {self._toy_id}")
+            self._log.info(f"Connected to '{self._model_name}' at '{self._toy_id}'")
             return True
         except Exception as e:
             self._log.error(
-                f"Failed to reconnect to {self._model_name} at {self._toy_id}: {e} with details {traceback.format_exc()}"
+                f"Failed to reconnect to '{self._model_name}' at '{self._toy_id}': '{type(e)}' with details '{traceback.format_exc()}'"
             )
             return False
 
@@ -488,7 +632,7 @@ class Lovense(Toy):
 
         def log_disconnect_error(exception):
             self._log.warning(
-                f"Disconnect error for {self._model_name} at {self._toy_id}: {exception} with details {traceback.format_exc()}"
+                f"Disconnect error for '{self._model_name}' at '{self._toy_id}': '{exception}' with details '{traceback.format_exc()}'"
             )
 
         try:
@@ -497,7 +641,9 @@ class Lovense(Toy):
             log_disconnect_error(e)
         try:
             await self._transport.disconnect()
-            self._log.info(f"Disconnected from {self._model_name} at {self._toy_id}")
+            self._log.info(
+                f"Disconnected from '{self._model_name}' at '{self._toy_id}'"
+            )
         except Exception as e:
             log_disconnect_error(e)
 
@@ -550,11 +696,12 @@ class Lovense(Toy):
             return True  # No secondary capability, return success
 
         # Special case: Air:Level takes values 0-5 instead of 0-20
+        adjusted_level = level
         if intensity2_cmd == "Air:Level":
-            level = int(level / 4)
+            adjusted_level = int(level / 4)
 
         self._intensity2 = level
-        return await self._execute_level_command(intensity2_cmd, level)
+        return await self._execute_level_command(intensity2_cmd, adjusted_level)
 
     async def stop(self) -> bool:
         """
@@ -615,7 +762,7 @@ class Lovense(Toy):
         response = await self._execute_command("Battery")
         if not response:
             self._log.warning(
-                f"Failed to retrieve battery for {self._model_name} at {self._toy_id}"
+                f"Failed to retrieve battery for '{self._model_name}' at '{self._toy_id}'"
             )
             return None
         try:
@@ -624,7 +771,7 @@ class Lovense(Toy):
             return int(response)
         except ValueError:
             self._log.warning(
-                f"Invalid battery response for {self._model_name} at {self._toy_id}: {response}"
+                f"Invalid battery response for '{self._model_name}' at '{self._toy_id}': '{response}'"
             )
             return None
 
@@ -686,14 +833,14 @@ class Lovense(Toy):
         response = await self._execute_command("Status:1")
         if not response:
             self._log.warning(
-                f"Failed to retrieve status for {self._model_name} at {self._toy_id}"
+                f"Failed to retrieve status for '{self._model_name}' at '{self._toy_id}'"
             )
             return None
         try:
             return int(response)
         except ValueError:
             self._log.warning(
-                f"Invalid status response for {self._model_name} at {self._toy_id}: {response}"
+                f"Invalid status response for '{self._model_name}' at '{self._toy_id}': '{response}'"
             )
             return None
 
@@ -731,6 +878,231 @@ class Lovense(Toy):
         return response == "OK"
 
     # ========================================================================
+    # Public Strict Methods
+    # ========================================================================
+
+    async def strict_reconnect(self) -> bool:
+        """
+        Similar to :meth: reconnect, but this methode does raise an exception if the reconnection fails.
+
+        Raises:
+            ConnectionError: The reconnection failed.
+            RuntimeError: The reconnection was attempted after intentionally disconnecting the toy.
+
+        Returns:
+            Always True.
+        """
+        try:
+            self._log.info(f"Reconnecting to '{self._model_name}' at '{self._toy_id}'")
+
+            # Give some time in hopes of the connection failure resolving itself
+            await asyncio.sleep(1.0)
+            if self._transport.is_connected:
+                return True
+
+            await self._transport.reconnect()
+            self._log.info(f"Connected to '{self._model_name}' at '{self._toy_id}'")
+            return True
+        except Exception as e:
+            self._log.exception(
+                f"Failed to reconnect to '{self._model_name}' at '{self._toy_id}': {type(e)} with details {traceback.format_exc()}"
+            )
+            raise e
+
+    async def strict_disconnect(self) -> None:
+        """
+        Similar to :meth: disconnect, but this methode does raise an exception if the disconnect fails.
+        The exception is only for logging. The toy is still disconnected in the error case.
+        Raises:
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+        """
+        exc = None
+        try:
+            await self.strict_stop()
+        except Exception as e:
+            exc = e
+        try:
+            await self._transport.disconnect()
+            self._log.info(
+                f"Disconnected from '{self._model_name}' at '{self._toy_id}'."
+            )
+        except Exception as e:
+            self._log.exception(
+                f"Failed to disconnect from '{self._model_name}' at '{self._toy_id}': {type(e)} with details {traceback.format_exc()}"
+            )
+            exc = e
+        if isinstance(exc, Exception):
+            raise ConnectionError(
+                f"Failed to cleanly disconnect from '{self._model_name}' at '{self._toy_id}'. Toy is still disconnected."
+            ) from exc
+
+    async def strict_intensity1(self, level: int) -> bool:
+        """
+        Similar to :meth: intensity1, but this method raises an exception if the intensity command fails.
+        Raises:
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+        Returns:
+            Always true
+        """
+        level = max(0, min(self._MAX_INTENSITY, level))
+        intensity1_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity1_command
+        await self._strict_execute_level_command(intensity1_cmd, level)
+        self._intensity1 = level
+        return True
+
+    async def strict_intensity2(self, level: int) -> bool:
+        """
+        Similar to :meth: intensity2, but this method raises an exception if the intensity command fails.
+
+        Raises:
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+
+        Returns:
+            True if the toy supports a secondary capability, False otherwise.
+        """
+        level = max(0, min(self._MAX_INTENSITY, level))
+        intensity2_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity2_command
+
+        # Special case: Air:Level takes values 0-5 instead of 0-20
+        adjusted_level = level
+        if intensity2_cmd == "Air:Level":
+            adjusted_level = int(level / 4)
+
+        await self._strict_execute_level_command(intensity2_cmd, adjusted_level)
+        self._intensity2 = level
+        return True
+
+    async def strict_stop(self) -> bool:
+        """
+        Similar to :meth: stop, but this method raises an exception if the stop command fails.
+        Raises:
+            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+        Returns:
+            Always True.
+        """
+        await self.strict_intensity1(0)
+        await self.strict_intensity2(0)
+        return True
+
+    async def strict_change_rotation_direction(self) -> bool:
+        """
+        Similar to :meth: rotate_change_direction, but this method raises an exception if the command fails.
+        Raises:
+            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+        Returns:
+            True if the toy supports rotation, False otherwise. Does not raise if the toy does not support rotation.
+        """
+        if not self.model_name in ROTATION_TOY_NAMES:
+            return False
+        response = await self._strict_execute_command("RotateChange")
+        if not response == "OK":
+            self._log.error(
+                f"Failed to change rotation direction of '{self._model_name}' at '{self._toy_id}': Unexpected response: '{response}'"
+            )
+            raise UnexpectedToyResponse(
+                f"Unexpected response '{response}' for command 'RotateChange' from toy '{self._model_name}' at {self._toy_id}'."
+            )
+        return True
+
+    async def strict_get_battery_level(self) -> int:
+        """
+        Similar to :meth: get_battery_level, but this method raises an exception if the command fails.
+        Raises:
+            UnexpectedToyResponse: The toys' response was unexpected.
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+        Returns:
+            Battery level as a percentage (0-100).
+        """
+        response = await self._strict_execute_command("Battery")
+        try:
+            # Quirk: If reconnected after disconnect, the battery reports as "s<value>"
+            response = response.strip("s")
+            return int(response)
+        except ValueError:
+            self._log.error(
+                f"Failed to retrieve battery level of '{self._model_name}' at '{self._toy_id}': Unexpected response: '{response}'"
+            )
+            raise UnexpectedToyResponse(
+                f"Unexpected response '{response}' for command 'Battery' from toy '{self._model_name}' at '{self._toy_id}'."
+            )
+
+    async def strict_direct_command(self, command: str, timeout: float = 3.0) -> str:
+        """
+        Similar to :meth: direct_command, but this method raises an exception if the command fails.
+        Raises:
+            ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
+        Returns:
+            response string from the toy
+        """
+        return await self._strict_execute_command(command, timeout)
+
+    async def strict_get_device_type(self) -> str:
+        """
+        Similar to :meth: get_device_type, but this method raises an exception if the command fails.
+        Raises:
+            ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
+        Note:
+            does not raise UnexpectedToyResponse as the response is not verified.
+        """
+        return await self._strict_execute_command("DeviceType")
+
+    async def strict_get_status(self) -> int:
+        """
+        Similar to :meth: get_status, but this method raises an exception if the command fails.
+        Raises:
+            ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
+            UnexpectedToyResponse: The toys' response was unexpected, in this case any string containing non-digit characters.
+        """
+        response = await self._strict_execute_command("Status:1")
+        try:
+            return int(response)
+        except ValueError:
+            self._log.error(
+                f"Failed to retrieve status of '{self._model_name}' at '{self._toy_id}': Unexpected response: '{response}'"
+            )
+            raise UnexpectedToyResponse(
+                f"Unexpected response '{response}' for command 'Status' from toy '{self._model_name}' at '{self._toy_id}'"
+            )
+
+    async def strict_get_batch_number(self) -> str:
+        """
+        Similar to :meth: get_batch_number, but this method raises an exception if the command fails.
+        Raises:
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            UnexpectedToyResponse: The toys' response was unexpected.
+        """
+        response = await self._strict_execute_command("GetBatch")
+        if not response.isdigit():
+            self._log.error(
+                f"Failed to retrieve batch number of '{self._model_name}' at '{self._toy_id}': Unexpected response: '{response}'"
+            )
+            raise UnexpectedToyResponse(
+                f"Unexpected response '{response}' for command 'GetBatch' from toy '{self._model_name}' at '{self._toy_id}'"
+            )
+        return response
+
+    async def strict_power_off(self) -> bool:
+        """
+        Similar to :meth: power_off, but this method raises an exception if the command fails.
+        Raises:
+            UnexpectedToyResponse: The toys' response was unexpected.
+            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+        """
+        response = await self._strict_execute_command("PowerOff")
+        if not response == "OK":
+            self._log.error(
+                f"Failed to power off '{self._model_name}' at '{self._toy_id}': Unexpected response: '{response}'"
+            )
+            raise UnexpectedToyResponse(
+                f"Unexpected response '{response}' for command 'PowerOff' from toy '{self._model_name}' at '{self._toy_id}'"
+            )
+        return True
+
+    # ========================================================================
     # Private Methods
     # ========================================================================
 
@@ -741,7 +1113,7 @@ class Lovense(Toy):
         This method is called by the ConnectionBuilder during connection setup and should not be called manually.
 
         Raises:
-            RuntimeError: See :meth `start_notifications` of :class: `BleTransport` for details.
+            ConnectionError: Failed to start notifications.
         """
         await self._transport.start_notify(self._notification_callback)
 
@@ -754,7 +1126,6 @@ class Lovense(Toy):
 
         Args:
             data: Raw response bytes from the toy.
-
         """
         try:
             msg = data.decode("utf-8").rstrip(";")
@@ -768,22 +1139,27 @@ class Lovense(Toy):
                 self._on_power_off(self._toy_id)
 
         except Exception as e:
-            self._log.warning(
-                f"Error decoding notification for {self._model_name} at {self._toy_id}: {e} with details {traceback.format_exc()}"
+            self._log.exception(
+                f"Failed to decode a notification for '{self._model_name}' at '{self._toy_id}': {type(e)} with details {traceback.format_exc()}"
             )
 
-    async def _send_command(self, command: str) -> bool:
+    async def _send_command(self, command: str):
         """
         Encode and send a command to the toy via the TX characteristic.
 
         Args:
             command: Command string in UTF-8 format. A semicolon terminator will be added if not already present.
 
-        Returns:
-            True if successfully sent, False if the client is not connected or an error occurred.
+        Raises:
+            ConnectionError: If the command could not be sent.
         """
         if not self._transport.is_connected:
-            return False
+            self._log.error(
+                f"Failed to send command '{command}' to '{self._model_name}' at '{self._toy_id}': Currently disconnected."
+            )
+            raise ConnectionError(
+                f"Failed to send command {command} to toy '{self._model_name}' at '{self._toy_id}': Currently disconnected. Use Toy.reconnect() if the problem persists."
+            )
         try:
             cmd_bytes = (
                 (command + ";").encode("utf-8")
@@ -791,15 +1167,16 @@ class Lovense(Toy):
                 else command.encode("utf-8")
             )
             await self._transport.send(cmd_bytes)
-            self._log.info(
+            self._log.debug(
                 f"Sent command to {self._model_name} {self._toy_id}: {command.strip(';')}"
             )
-            return True
         except Exception as e:
-            self._log.warning(
-                f"Error sending command to {self._model_name} at {self._toy_id}: {e} with details {traceback.format_exc()}"
+            self._log.exception(
+                f"Failed to send command '{command}' to toy '{self._model_name}' at '{self._toy_id}': {type(e)} with details {traceback.format_exc()}"
             )
-            return False
+            raise ConnectionError(
+                f"Error sending command '{command}' to toy '{self._toy_id}'"
+            ) from e
 
     async def _execute_command(
         self, command: str, timeout: float = 3.0
@@ -817,31 +1194,33 @@ class Lovense(Toy):
         Returns:
             Response string from toy (with semicolon stripped), or None if notifications aren't started, send failed,
             or timeout occurred.
-
         """
-        self._log.debug(
-            f"Sending command {command} to {self._model_name} at {self._toy_id}"
-        )
+        try:
+            return await self._strict_execute_command(command, timeout)
+        except ConnectionError:
+            return None
+
+    async def _strict_execute_command(self, command: str, timeout: float = 3.0) -> str:
+        """
+        Execute a command and wait for the response.
+
+        This internal method handles the command execution.
+        It ensures sequential execution, clears the response queue, sends the command, and waits for the response with a timeout.
+
+        Args:
+            command: Command string (UTF-8). Semicolon added automatically.
+            timeout: Response timeout in seconds. Defaults to 3.0.
+
+        Raises:
+            ConnectionError: If the command could not be sent, or the response timed out.
+
+        Returns:
+            Response string from toy (with semicolon stripped)
+        """
         async with self._command_lock:  # Prevent response mixing
             self._clear_response_queue()
-
-            if not await self._send_command(command):
-                self._log.warning(
-                    f"Failed to send command {command} to {self._model_name} at {self._toy_id}"
-                )
-                return None
-
-            response = await self._wait_for_response(timeout)
-            if response is None:
-                self._log.warning(
-                    f"Timeout waiting for response from {self._model_name} at {self._toy_id}"
-                )
-                return None
-
-            self._log.debug(
-                f"Received response from {self._model_name} at {self._toy_id}: {response}"
-            )
-            return response
+            await self._send_command(command)
+            return await self._strict_wait_for_response(timeout)
 
     async def _execute_level_command(self, command_name: str, level: int) -> bool:
         """
@@ -859,3 +1238,27 @@ class Lovense(Toy):
         command = f"{command_name}:{level}"
         response = await self._execute_command(command)
         return response == "OK"
+
+    async def _strict_execute_level_command(self, command_name: str, level: int):
+        """
+        Execute a command with a level parameter.
+
+        This internal helper method formats and executes level-based commands (e.g., "Vibrate:15", "Rotate:10").
+
+        Args:
+            command_name: Command string without the level parameter (e.g., "Vibrate", "Rotate").
+            level: Intensity level.
+
+        Raises:
+            ConnectionError: If the command could not be sent, or the response timed out.
+            UnexpectedToyResponse: If the response is not 'OK' e.g. 'ERROR'.
+        """
+        command = f"{command_name}:{level}"
+        response = await self._strict_execute_command(command)
+        if not response == "OK":
+            self._log.error(
+                f"Failed to execute command '{command}' for {self._model_name} at {self._toy_id}: Unexpected response: {response}"
+            )
+            raise UnexpectedToyResponse(
+                f"Unexpected response '{response}' for command '{command_name}' from toy '{self._model_name}' at '{self._toy_id}'"
+            )
