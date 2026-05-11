@@ -50,13 +50,12 @@ from typing import Any, Callable, Optional
 
 from bleak import BleakClient, BleakScanner
 
-from . import ValidationError
 from .connection_builder import BLEConnectionBuilder
 from .toy import Lovense
 from .toy_cache import ToyCache
 from .toy_controller import LovenseController, ToyController
-from .toy_data import LovenseData, ToyData
-from .utils import AsyncRunner, Transport
+from .toy_data import ToyData
+from .utils import AsyncRunner
 
 
 class ToyHub:
@@ -375,7 +374,7 @@ class ToyHub:
         cache_updates = {}
 
         # TODO: Future, separate by connection method, e.g. BLE, serial... Not needed now, as we only support Lovense (BLE)
-        lovense_data = [data for data in to_connect if isinstance(data, LovenseData)]
+        lovense_data = [data for data in to_connect if data.brand == "Lovense"]
         lovense_toys = self._runner.run_async(
             self._ble_connection_builder.create_toys(lovense_data), timeout
         )
@@ -431,7 +430,7 @@ class ToyHub:
             controllers: list["ToyController | BaseException"] = []
             cache_updates = {}
             lovense_data = [
-                data for data in to_connect if isinstance(data, LovenseData)
+                data for data in to_connect if data.brand == "Lovense"
             ]
             lovense_toys = await self._ble_connection_builder.create_toys(lovense_data)
             for data, toy in zip(lovense_data, lovense_toys):

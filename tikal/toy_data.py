@@ -78,6 +78,7 @@ class ToyData:
         name: Read-only human-readable identifier for the toy. For Bluetooth toys, this is the Bluetooth name (e.g., "LVS-B12").
         toy_id: Read-only unique identifier for the toy. For Bluetooth toys, this is the Bluetooth address (e.g., "DC:F5:05:A3:6D:1E").
         model_name: Model name of the toy (e.g., "Lush"). For Lovense toys, this is empty and must be set manually.
+        brand: Read-only brand name of the toy (e.g., "Lovense").
 
     Example:
         ::
@@ -93,7 +94,8 @@ class ToyData:
 
     _name: str
     _toy_id: str
-    _model_name: str = field(default="", repr=False)
+    _model_name: str
+    _brand: str
 
     def __post_init__(self):
         if not isinstance(self._name, str):
@@ -102,6 +104,8 @@ class ToyData:
             raise TypeError("toy_id must be str")
         if not isinstance(self._model_name, str):
             raise TypeError("model_name must be str")
+        if not isinstance(self._brand, str):
+            raise TypeError("brand must be str")
 
     @property
     def name(self) -> str:
@@ -123,40 +127,7 @@ class ToyData:
 
     @property
     def brand(self) -> str:
-        return ""
-
-
-@dataclass
-class LovenseData(ToyData):
-    """
-    Lovense-specific toy discovery data.
-
-    Extends ToyData with Lovense-specific semantics. Does currently not contain any additional fields or methods.
-    You shouldn't need to instantiate this class yourself. ``ConnectionBuilder.discover_toys()`` creates instances of
-    this class for you. In these instances name and toy_id are set automatically. You must set model_name before
-    handing instances to ``ConnectionBuilder.create_toys()``.
-
-    Attributes:
-        name: Bluetooth name of the toy, serving as a human-readable identifier. Lovense toys have names starting with "LVS-" (e.g., "LVS-Z36D").
-        toy_id: Bluetooth address of the toy, serving as its unique identifier (e.g., "DC:F5:05:A3:6D:1E").
-        model_name: Model name of the toy (e.g., "Lush", "Nora"). Must be a key in the LOVENSE_TOY_NAMES dictionary. You have to set the correct model name before connecting.
-        brand: Always "lovense".
-
-    Example:
-        ::
-
-            # Created during discovery
-            print(lovense_data.name)  # "LVS-Z36D"
-            print(lovense_data.toy_id)  # "DC:F5:05:A3:6D:1E"
-            print(lovense_data.model_name)  # ""
-
-            # User selects model
-            lovense_data.model_name = "Nora"
-    """
-
-    @property
-    def brand(self) -> str:
-        return "Lovense"
+        return self._brand
 
 
 @dataclass

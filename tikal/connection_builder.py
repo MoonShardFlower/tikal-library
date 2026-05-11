@@ -30,7 +30,7 @@ from typing import Any, Callable, Type
 from bleak import BleakClient, BleakScanner, BLEDevice
 
 from .toy import Lovense, Toy
-from .toy_data import LOVENSE_TOY_NAMES, LovenseData, ToyData, ValidationError
+from .toy_data import LOVENSE_TOY_NAMES, ToyData, ValidationError
 from .utils import BleTransport
 
 
@@ -123,15 +123,15 @@ class LovenseHandler(BLEBrandHandler):
     @staticmethod
     def handles_toy(toy_data: ToyData) -> bool:
         """Return ``True`` if the given ``ToyData`` represents a Lovense toy."""
-        return isinstance(toy_data, LovenseData)
+        return toy_data.brand == "Lovense"
 
     @staticmethod
-    def create_toy_data(device: BLEDevice) -> LovenseData:
+    def create_toy_data(device: BLEDevice) -> ToyData:
         """Create a ``LovenseData`` instance (inherits from ``ToyData``) from a BLE device representing a Lovense toy."""
         name = device.name if device.name else "unknown"
-        return LovenseData(name, device.address, "")
+        return ToyData(name, device.address, "", "Lovense")
 
-    async def create_toy(self, toy_data: LovenseData, device: BLEDevice) -> Toy:
+    async def create_toy(self, toy_data: ToyData, device: BLEDevice) -> Toy:
         """
         Connect to a single Lovense toy.
 
