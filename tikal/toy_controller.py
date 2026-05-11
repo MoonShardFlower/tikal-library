@@ -305,6 +305,47 @@ class ToyController(ABC):
             self._is_blocked = False
             return False
 
+    def set_paused(self, pause: bool):
+        """
+        Set the pattern playback pause state.
+
+        When paused:
+        - If a pattern is active, it stops advancing.
+        - Toy intensities are set to zero, but manual commands can override this.
+        - Block state is cleared if active (toy cannot be paused and blocked at the same time)
+        Args:
+            pause: If true will be paused, if false will be unpaused.
+        """
+        if pause == self._pattern_handler.is_paused:
+            return
+        self._log.info(f"ToyController set paused: {self.toy_id} to {pause}")
+        self._pattern_handler.set_paused(pause)
+        if pause:
+            self.stop()
+            self._is_blocked = False  # I don't want to pause and block at the same time
+
+    def set_blocked(self, block: bool):
+        """
+        Set the block state.
+
+        When blocked:
+            - All intensity commands are rejected (return False via callback)
+            - Toy intensities are forced to zero
+            - Pattern continues advancing but doesn't control the toy
+            - Pause state is cleared if active (toy cannot be paused and blocked at the same time)
+        Args:
+            block: If true will be blocked, if false will be unblocked.
+        """
+        if block == self._is_blocked:
+            return
+        self._log.info(f"ToyController set blocked: {self.toy_id} to {block}")
+        self._is_blocked = block
+        if block:
+            self.stop()
+            self._pattern_handler.set_paused(
+                False
+            )  # I don't want to pause and block at the same time
+
     def set_pattern(
         self,
         pattern: list[tuple[int, int, int]],
