@@ -8,7 +8,6 @@ from .toy_data import (
     ROTATION_TOY_NAMES,
     BadModelError,
     InvalidModelError,
-    LovenseData,
     ToyData,
     ValidationError,
 )
@@ -20,7 +19,6 @@ __all__ = [
     "BadModelError",
     "StaleDeviceError",
     "ToyData",
-    "LovenseData",
     "LOVENSE_TOY_NAMES",
     "ROTATION_TOY_NAMES",
     "BRANDS",
