@@ -988,6 +988,8 @@ class Lovense(Toy):
         """
         level = max(0, min(self._MAX_INTENSITY, level))
         intensity2_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity2_command
+        if not intensity2_cmd:
+            return False
 
         # Special case: Air:Level takes values 0-5 instead of 0-20
         adjusted_level = level

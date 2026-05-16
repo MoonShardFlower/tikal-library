@@ -15,7 +15,7 @@ Constants:
     ROTATION_TOY_NAMES (list[str]): List of Lovense toy model names that support rotation direction changes.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 class ValidationError(Exception):
