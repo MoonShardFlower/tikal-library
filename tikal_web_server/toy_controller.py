@@ -186,7 +186,7 @@ class ToyController:
         Toggle pattern playback pause state.
 
         When paused:
-        - if a pattern is active, it stops advancing.
+        - If a pattern is active, it stops advancing.
         - Toy intensities are set to zero, but manual commands can override this.
         - Block state is cleared if active (toy cannot be paused and blocked at the same time)
 
@@ -364,10 +364,9 @@ class ToyController:
         -  `name` (str) human-readable identifier of the toy, e.g., Bluetooth advertisement name
         -  `model_name` (str) model name of the toy. Typically, not retrieved from the toy itself but set by you when adding the toy. This returns this set name.
         -  `brand` (str) brand of the toy, e.g., Lovense
-        -  `intensity_names` (list of str). Two human-readable strings. The second string is "None" if the toy only has one intensity.
+        -  `intensity_names` (list of str). Two human-readable strings. The second string is empty if the toy only has one intensity.
         -  `supports_rotation` (bool) whether the toy supports changing the rotation direction
         -  `max_intensity` (int) maximum intensity value
-        -  `battery` (int) battery level (0-100) or "None" if the toy has no battery.
 
         Args:
             full: If True, returns all available info (making requests to the toy). Otherwise, returns only the "cheap" info described above.
@@ -385,7 +384,7 @@ class ToyController:
         """
         intensity1, intensity2 = self._toy.intensity_names
         if intensity2 is None:
-            intensity2 = "None"
+            intensity2 = ""
         result = dict(
             toy_id=self._toy.toy_id,
             name=self._toy.name,
@@ -394,7 +393,6 @@ class ToyController:
             intensity_names=[intensity1, intensity2],
             supports_rotation=self._toy.change_rotation_direction_available,
             max_intensity=self._toy.max_intensity,
-            battery=self._battery,
         )
         return result
 
@@ -500,7 +498,6 @@ class ToyController:
         try:
             new_battery = await self._toy.strict_get_battery_level()
         except Exception:
-            # Log at debug level if desired; keep old battery
             return None
         if new_battery != self._battery:
             self._battery = new_battery
@@ -566,10 +563,9 @@ class LovenseController(ToyController):
         -  `name` (str) human-readable identifier of the toy, e.g., Bluetooth advertisement name
         -  `model_name` (str) model name of the toy. Typically, not retrieved from the toy itself but set by you when adding the toy. This returns this set name.
         -  `brand` (str) brand of the toy, e.g., Lovense
-        -  `intensity_names` (list of str). Two human-readable strings. The second string is "None" if the toy only has one intensity.
+        -  `intensity_names` (list of str). Two human-readable strings. The second string is empty if the toy only has one intensity.
         -  `supports_rotation` (bool) whether the toy supports changing the rotation direction
         -  `max_intensity` (int) maximum intensity value
-        -  'battery' (int): Battery percentage (e.g., 85)
         Additional info if `full` is true:
         - 'status' (str): Status code ("2" for normal)
         - 'batch_number' (str): Manufacturing batch (e.g., "241015")
