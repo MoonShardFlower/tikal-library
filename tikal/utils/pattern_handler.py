@@ -45,14 +45,21 @@ class PatternHandler:
         reset_time: bool = True,
     ) -> None:
         """
-        Internal: Set pattern data and update state.
-        (Logging, stop() call, and block clearing happen in ToyController.)
+        Set a new pattern for playback.
+
+        Args:
+            pattern: List of pattern segments as tuples (duration_ms, intensity1, intensity2).
+            wraparound: If True, the pattern loops indefinitely, else it stops after one playthrough.
+            reset_time: If True, restart the pattern from the beginning, if False, start from the current elapsed time.
         """
         self._pattern = pattern
         self._pattern_wraparound = wraparound
         self._pattern_version += 1
         if reset_time:
             self._restart_pattern()
+        # Set paused to False if pattern is cleared
+        if not self._pattern and self._is_paused:
+            self._is_paused = False
 
     def set_paused(self, paused: bool) -> None:
         """
@@ -81,7 +88,12 @@ class PatternHandler:
             self._segment_start_time = time() * 1000
 
     def get_pattern_time(self) -> float:
-        """Get elapsed time in the current pattern (Time spent paused does not count toward elapsed time)."""
+        """
+        Get elapsed time in the current pattern (Time spent paused does not count toward elapsed time).
+
+        Returns:
+            elapsed_time: Time elapsed in the pattern in milliseconds.
+        """
         if self._is_paused:
             # When paused, return the frozen elapsed time
             return self._pattern_elapsed_time
@@ -97,7 +109,15 @@ class PatternHandler:
         return self._pattern_elapsed_time + segment_elapsed
 
     def get_pattern_values(self, pattern_time: float) -> tuple[int, int]:
-        """Get intensity values at a specific time in the pattern."""
+        """
+        Get intensity values at a specific time in the pattern.
+
+        Args:
+            pattern_time: Time position in the pattern (milliseconds).
+
+        Returns:
+            tuple: (intensity1, intensity2) at the specified time.
+        """
         pattern = self._pattern
         if not pattern:
             return 0, 0
@@ -125,7 +145,18 @@ class PatternHandler:
         return pattern[-1][1], pattern[-1][2]
 
     def get_pattern_data(self) -> tuple[list[tuple[int, int, int]], bool, bool, float]:
-        """Gets the complete pattern state for visualization."""
+        """
+        Gets the complete pattern state for visualization.
+
+        Pattern state consists of:
+        - pattern: List of tuples (duration_ms, intensity1, intensity2) defining the pattern segments.
+        - wraparound: Whether the pattern repeats from the beginning after completing the last segment. If False, both Intensities are 0 after the last segment.
+        - is_paused: Whether the pattern is currently paused. Paused patterns do not advance
+        - elapsed_time: Time elapsed since the start of the pattern or last wraparound in ms
+
+        Returns:
+            tuple: (pattern, wraparound, is_paused, elapsed_time).
+        """
         return (
             self._pattern.copy(),
             self._pattern_wraparound,

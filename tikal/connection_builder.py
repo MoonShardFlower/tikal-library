@@ -391,6 +391,7 @@ class BLEConnectionBuilder:
             List of ``ToyData`` objects with brand‑appropriate types. The list is empty if continuous discovery is not running.
             This is a snapshot, not a continuous stream of updates.
         """
+        self._log.debug("Retrieving snapshot of discovered Toys.")
         # If an exception is pending and the user hasn't stopped the scan, raise it once
         if self._continuous_exception is not None:
             exc = self._continuous_exception
@@ -460,14 +461,17 @@ class BLEConnectionBuilder:
         """
         handler = next((h for h in self._handlers if h.handles_toy(to_connect)), None)
         if handler is None:
+            self._log.error("No handler for data type: %s", type(to_connect).__name__)
             return RuntimeError(
                 f"No handler for data type: {type(to_connect).__name__}"
             )
         if to_connect.toy_id not in self._all_seen_addresses:
+            self._log.error("Device %s was never discovered. Run meth: discover_toys first.", to_connect.toy_id)
             return KeyError(
                 f"Device {to_connect.toy_id} was never discovered. Run meth: discover_toys first."
             )
         if to_connect.toy_id not in self._ble_devices:
+            self._log.error("Device %s is stale. Run meth: discover_toys first.", to_connect.toy_id)
             return StaleDeviceError(
                 f"Device {to_connect.toy_id} is stale. Run meth: discover_toys first."
             )
@@ -475,6 +479,7 @@ class BLEConnectionBuilder:
         try:
             toy = await handler.create_toy(to_connect, device)
             await toy.set_model_name(to_connect.model_name)
+            self._log.info(f"Connected to {to_connect.toy_id} as {to_connect.model_name}")
             return toy
         except Exception as e:
             return e
@@ -538,7 +543,7 @@ class BLEConnectionBuilder:
             for addr, (_, ts) in list(self._discovered.items()):
                 if now - ts > 5.0:
                     del self._discovered[addr]
-                    print(f"Removed stale device {addr}")
+                    self._log.debug(f"Removed stale device {addr}")
                     self._emit_snapshot()
 
     def _emit_snapshot(self):

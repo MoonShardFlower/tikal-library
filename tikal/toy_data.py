@@ -53,6 +53,8 @@ class InvalidModelError(ValidationError):
                 print(f"Invalid model: {e}")
     """
 
+    pass
+
 
 class BadModelError(ValidationError):
     """
@@ -63,6 +65,8 @@ class BadModelError(ValidationError):
         2) the commands being incorrect -> the Library does not handle this model correctly. Please contact the library maintainer in this case.
     Can be raised during toy initialization or when setting a toy's model name.
     """
+
+    pass
 
 
 @dataclass
@@ -222,7 +226,14 @@ LOVENSE_TOY_NAMES = {
     ),  # Has 2 independent vibrators, no idea how to independently control them
 }
 
-#: List of Lovense toy model names that support rotation direction changes.
+#: Mapping of brands to all their toy models
+#: This dictionary defines all valid model_names (list[str]) for each brand (str)
+BRANDS = {
+    "Lovense": [toy for toy in LOVENSE_TOY_NAMES.keys()],
+}
+
+
+#: List of toys (by model_name) that support rotation direction changes.
 #:
 #: Toys in this list can use the ``rotate_change_direction()`` method to toggle their rotation direction.
 #:
@@ -235,7 +246,3 @@ LOVENSE_TOY_NAMES = {
 #:         if toy.model_name in ROTATION_TOY_NAMES:
 #:             await toy.rotate_change_direction()
 ROTATION_TOY_NAMES = ["Nora", "Ridge"]
-
-BRANDS = {
-    "Lovense": [toy for toy in LOVENSE_TOY_NAMES.keys()],
-}
