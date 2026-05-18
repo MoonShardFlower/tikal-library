@@ -22,7 +22,7 @@ from tikal import InvalidModelError as LowLevelInvalidModelError
 from tikal import Lovense, ToyCache, ToyData
 from tikal.mock import MockBleakClient, MockBleakScanner
 
-from .toy_controller import LovenseController, ToyController
+from tikal_web_server.toy_controller import LovenseController, ToyController
 
 _RETRY_DELAY = 0.05  # seconds,
 _PROCESS_INTERVAL = 0.05  # seconds
@@ -36,15 +36,14 @@ from enum import Enum, auto
 
 class ToyStatus(Enum):
     """Represents the connection status of a toy managed by ToyCore."""
-
-    CONNECTED = (
-        auto()
-    )  # reconnection succeeded. Always preceded by a toy_state_change event (so clients stay synchronized with the ToyCore state)
-    RECONNECTING = (
-        auto()
-    )  # on_disconnect fired, command failed. Reconnection is automatically attempted
-    LOST = auto()  # reconnect failed, toy will be removed automatically
-    POWERED_OFF = auto()  # toy powered off, toy will be removed automatically
+    # reconnection succeeded. Always preceded by a toy_state_change event (so clients stay synchronized with the ToyCore state)
+    CONNECTED = auto()
+    # on_disconnect fired, command failed. Reconnection is automatically attempted
+    RECONNECTING = auto()
+    # reconnect failed, toy will be removed automatically
+    LOST = auto()
+    # toy powered off, toy will be removed automatically
+    POWERED_OFF = auto()
 
 
 class UndiscoveredToyError(ValueError):
@@ -117,35 +116,6 @@ class DiscoveryError(ConnectionError):
         self.tb = tb
 
 
-async def _process_one(toy: ToyController, log: logging.Logger) -> None:
-    """
-    Run process_communication for a single toy with one automatic retry.
-    Errors after the retry are logged but not re-raised so the loop stays alive.
-        Args:
-        toy: The toy controller whose process_communication method will be called.
-        log: Logger for error messages.
-    """
-    try:
-        try:
-            await toy.process_communication()
-        except ConnectionError:
-            await asyncio.sleep(_RETRY_DELAY)
-            await toy.process_communication()
-    except ConnectionError as e:
-        log.warning(
-            "process_communication failed for toy %s after retry: %s",
-            toy.toy_id,
-            e,
-        )
-    except Exception as e:
-        log.error(
-            "Unexpected error in process_communication for toy %s: %s",
-            toy.toy_id,
-            e,
-            exc_info=True,
-        )
-
-
 async def _retry(fn, *args):
     """Call ``await fn(*args)``. On a *first* ConnectionError, wait _RETRY_DELAY seconds and try once more. A second ConnectionError propagates to the caller."""
     try:
@@ -153,44 +123,6 @@ async def _retry(fn, *args):
     except ConnectionError:
         await asyncio.sleep(_RETRY_DELAY)
         return await fn(*args)
-
-
-async def _create_toy(
-    builder: BLEConnectionBuilder, toy_data: ToyData
-) -> ToyController:
-    """
-    Adapter that converts BLEConnectionBuilder's result‑type errors to raised exceptions.
-
-    Args:
-        builder: The BLE connection builder.
-        toy_data: Data describing the toy to create.
-
-    Returns:
-        A high-level ToyController instance.
-
-    Raises:
-        InvalidModelError: Model name not valid for the brand.
-        BadModelError: Model name is valid, but toy commands still fail. Either the wrong model or developer error.
-        ToyConnectionError: Connection failed.
-        RuntimeError: Unexpected result from create_toy (developer error).
-    """
-    result = await builder.create_toy(toy_data)
-    if isinstance(result, Lovense):
-        try:
-            # Unstable connection if the first command already fails. Treat as unable to connect.
-            battery = await result.strict_get_battery_level()
-        except Exception as e:
-            raise ToyConnectionError(toy_data.toy_id, toy_data.model_name) from e
-        return LovenseController(result, battery)
-    if isinstance(result, LowLevelInvalidModelError):
-        raise InvalidModelError(
-            toy_data.toy_id, toy_data.model_name, toy_data.brand
-        ) from result
-    if isinstance(result, LowLevelBadModelError):
-        raise BadModelError(toy_data.toy_id, toy_data.model_name) from result
-    if isinstance(result, ConnectionError):
-        raise ToyConnectionError(toy_data.toy_id, toy_data.model_name) from result
-    raise RuntimeError(f"Unexpected result from create_toy: {result!r}")
 
 
 class ToyCore:
@@ -225,6 +157,7 @@ class ToyCore:
             mock_toys: If true, uses MockBleakScanner and MockBleakClient instead of BleakScanner and BleakClient (For testing).
         """
         self._log = logging.getLogger(log_name)
+        self._log.info(f"Initializing ToyCore with toy_cache_path={toy_cache_path} and mock_toys={mock_toys}")
 
         # Toy state
         self._toy_cache = ToyCache(toy_cache_path, default_model, log_name)
@@ -259,8 +192,11 @@ class ToyCore:
             scanner = BleakScanner
             client = BleakClient
 
+        def on_disconnect_helper(toy_id: str):
+            asyncio.create_task(self._on_disconnect(toy_id))
+
         self._ble_builder = BLEConnectionBuilder(
-            self._on_disconnect, self._on_power_off, log_name, scanner, client
+            on_disconnect_helper, self._on_power_off, log_name, scanner, client
         )
 
         # Background loop tasks
@@ -276,6 +212,7 @@ class ToyCore:
 
     async def startup(self) -> None:
         """Start the background processing and battery polling loops. Call before using ToyCore. Idempotent."""
+        self._log.info("Starting ToyCore.")
         self._shutting_down = False
         if self._process_task is None or self._process_task.done():
             self._process_task = asyncio.get_running_loop().create_task(
@@ -288,6 +225,7 @@ class ToyCore:
 
     async def shutdown(self) -> None:
         """Stop the background processing and battery polling loops. Disconnects all toys. Call when finished using ToyCore. Idempotent."""
+        self._log.info("Shutting down ToyCore.")
         self._shutting_down = True
 
         # Idempotent. Safe to call even when no scan is running
@@ -333,6 +271,7 @@ class ToyCore:
             DiscoveryStartError: The scan could not be started (e.g., Bluetooth not available)
             RuntimeError: Could not get the asyncio event loop. Developer Error
         """
+        self._log.info("Starting toy discovery")
         loop = asyncio.get_running_loop()
 
         def on_discovery(update: Exception | list[ToyData]):
@@ -349,6 +288,7 @@ class ToyCore:
 
     async def stop_scan(self):
         """Stop continuous background discovery of Toys. After this call, the callback provided to `start_scan` will no longer be invoked."""
+        self._log.info("Stopping toy discovery")
         async with self._toy_lock:
             self._toy_data.clear()
         await self._ble_builder.stop_continuous()
@@ -384,6 +324,7 @@ class ToyCore:
                     )
                     for data in update
                 ]
+        self._log.debug("Discovery update: %s", result)
         await self._fire_callback(callback, result)
 
     async def _set_toy_status(self, toy_id: str, new_status: ToyStatus) -> None:
@@ -394,6 +335,7 @@ class ToyCore:
             toy_id: Identifier of the toy.
             new_status: New status to set.
         """
+        self._log.debug("Setting status of %s to %s", toy_id, new_status.value)
         async with self._toy_lock:
             old_status = self._toy_status.get(toy_id)
             if old_status == new_status:
@@ -476,7 +418,34 @@ class ToyCore:
             cmd_lock: The toy's command lock.
         """
         async with cmd_lock:
-            await _process_one(toy, self._log)
+            await self._process_one(toy)
+
+    async def _process_one(self, toy: ToyController) -> None:
+        """
+        Run process_communication for a single toy with one automatic retry.
+        Errors after the retry are logged but not re-raised so the loop stays alive.
+        Args:
+            toy: The toy controller whose process_communication method will be called.
+        """
+        try:
+            try:
+                await toy.process_communication()
+            except ConnectionError:
+                await asyncio.sleep(_RETRY_DELAY)
+                await toy.process_communication()
+        except ConnectionError as e:
+            self._log.warning(
+                "process_communication failed for toy %s after retry: %s",
+                toy.toy_id,
+                e,
+            )
+        except Exception as e:
+            self._log.error(
+                "Unexpected error in process_communication for toy %s: %s",
+                toy.toy_id,
+                e,
+                exc_info=True,
+            )
 
     async def _handle_command_failure(self, toy: ToyController) -> None:
         """
@@ -685,6 +654,44 @@ class ToyCore:
         if updates:
             await self._fire_callback(self._on_battery_change, updates)
 
+    async def _create_toy(
+            self, builder: BLEConnectionBuilder, toy_data: ToyData
+    ) -> ToyController:
+        """
+        Adapter that converts BLEConnectionBuilder's result‑type errors to raised exceptions.
+
+        Args:
+            builder: The BLE connection builder.
+            toy_data: Data describing the toy to create.
+
+        Returns:
+            A high-level ToyController instance.
+
+        Raises:
+            InvalidModelError: Model name not valid for the brand.
+            BadModelError: Model name is valid, but toy commands still fail. Either the wrong model or developer error.
+            ToyConnectionError: Connection failed.
+            RuntimeError: Unexpected result from create_toy (developer error).
+        """
+        self._log.info(f"Creating new toy with parameters toy_id={toy_data.toy_id}, model_name={toy_data.model_name})")
+        result = await builder.create_toy(toy_data)
+        if isinstance(result, Lovense):
+            try:
+                # Unstable connection if the first command already fails. Treat as unable to connect.
+                battery = await result.strict_get_battery_level()
+            except Exception as e:
+                raise ToyConnectionError(toy_data.toy_id, toy_data.model_name) from e
+            return LovenseController(result, battery)
+        if isinstance(result, LowLevelInvalidModelError):
+            raise InvalidModelError(
+                toy_data.toy_id, toy_data.model_name, toy_data.brand
+            ) from result
+        if isinstance(result, LowLevelBadModelError):
+            raise BadModelError(toy_data.toy_id, toy_data.model_name) from result
+        if isinstance(result, ConnectionError):
+            raise ToyConnectionError(toy_data.toy_id, toy_data.model_name) from result
+        raise RuntimeError(f"Unexpected result from create_toy: {result!r}")
+
     # ------------------------------
     # Toy Modification
     # ------------------------------
@@ -706,6 +713,7 @@ class ToyCore:
             ToyConnectionError: Proper connection failed.
             RuntimeError: Unexpected result from create_toy. Development error.
         """
+        self._log.info(f"Adding toy at {toy_id} as {model_name}.")
         async with self._toy_lock:
             if toy_id in self._toys or toy_id in self._pending_toy_ids:
                 raise ToyAlreadyAddedError(toy_id, model_name)
@@ -721,7 +729,7 @@ class ToyCore:
             self._pending_toy_ids.add(toy_id)
 
         try:
-            toy = await _create_toy(self._ble_builder, toy_data)
+            toy = await self._create_toy(self._ble_builder, toy_data)
         except Exception as e:
             async with self._toy_lock:
                 self._pending_toy_ids.discard(toy_id)
@@ -747,6 +755,7 @@ class ToyCore:
             UnknownToyError: The toy was not added before.
             ToyConnectionError: Proper disconnect failed. Only for info purposes. Toy is still removed.
         """
+        self._log.info(f"Removing {toy_id}")
         async with self._toy_lock:
             toy = self._toys.get(toy_id)
             if toy is None:
@@ -772,6 +781,7 @@ class ToyCore:
             InvalidModelError: the model name is not valid for the toy brand.
             BadModelError: the model name is valid, but the toy still does not respond correctly to commands.
         """
+        self._log.info(f"Setting model of {toy_id} to {model_name})")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
             try:
@@ -793,6 +803,7 @@ class ToyCore:
         Raises:
             UnknownToyError: The toy was not added before.
         """
+        self._log.info(f"Stopping toy at {toy_id}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
             await self._run_toy_command(toy, toy.stop)
@@ -812,6 +823,7 @@ class ToyCore:
         Raises:
             UnknownToyError: The toy was not added before.
         """
+        self._log.info(f"Setting intensity1 of {toy_id} to {intensity}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
             level = max(0, min(intensity, toy.max_intensity))
@@ -832,6 +844,7 @@ class ToyCore:
         Raises:
             UnknownToyError: The toy was not added before.
         """
+        self._log.info(f"Setting intensity2 of {toy_id} to {intensity}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
             level = max(0, min(intensity, toy.max_intensity))
@@ -851,6 +864,7 @@ class ToyCore:
         Raises:
             UnknownToyError: The toy was not added before.
         """
+        self._log.info(f"Toggling pause of {toy_id}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
             await self._run_toy_command(toy, toy.toggle_pause)
@@ -870,6 +884,7 @@ class ToyCore:
         Raises:
             UnknownToyError: The toy was not added before.
         """
+        self._log.info(f"Toggling block of {toy_id}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
             await self._run_toy_command(toy, toy.toggle_block)
@@ -889,6 +904,7 @@ class ToyCore:
         Raises:
             UnknownToyError: The toy was not added before.
         """
+        self._log.info(f"Setting pause of {toy_id} to {pause}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
             # Check and act inside the same lock section, making this atomic wrt. other commands on this toy (e.g., a concurrent set_paused from a second client).
@@ -901,9 +917,8 @@ class ToyCore:
         """
         Set the block state.
 
-        When blocked, all intensity commands are rejected, toy intensities are forced to zero,
-        any set pattern continues advancing but doesn't control the toy, and the pause state is cleared
-        (toy cannot be paused and blocked at the same time)
+        When blocked, all intensity commands are rejected, toy intensities are forced to zero, any set pattern continues
+        advancing but doesn't control the toy, and the pause state is cleared (toy cannot be paused and blocked at the same time)
 
         Args:
             toy_id: Identifier of the toy to set the block state for
@@ -912,6 +927,7 @@ class ToyCore:
         Raises:
             UnknownToyError: The toy was not added before.
         """
+        self._log.info(f"Setting block of {toy_id} to {block}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
             # Same check-then-act guard as set_paused above.
@@ -949,6 +965,7 @@ class ToyCore:
         Note:
             Any manual intensity command will automatically pause pattern playback. Use `toggle_pause()` or `set_paused()` to resume.
         """
+        self._log.info(f"Setting pattern of {toy_id} to {pattern}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
             await self._run_toy_command(
@@ -1031,10 +1048,9 @@ class ToyCore:
         -  `name` (str) human-readable identifier of the toy, e.g., Bluetooth advertisement name
         -  `model_name` (str) model name of the toy. Typically, not retrieved from the toy itself but set by you when adding the toy. This returns this set name.
         -  `brand` (str) brand of the toy, e.g., Lovense
-        -  `intensity_names` (list of str). Two human-readable strings. The second string is "None" if the toy only has one intensity.
+        -  `intensity_names` (list of str). Two human-readable strings. The second string is empty if the toy only has one intensity.
         -  `supports_rotation` (bool) whether the toy supports changing the rotation direction
         -  `max_intensity` (int) maximum intensity value
-        -  `battery` (int) battery level (0-100) or None if the toy has no battery.
 
         Args:
             toy_id: Unique identifier of the toy that you want to gather info about.
@@ -1102,6 +1118,7 @@ class ToyCore:
         Note:
             Do not use this method to change any tracked state (intensity1, intensity2, etc.) as this method bypasses the ToyCore's state tracking.
         """
+        self._log.info(f"Sending direct command to {toy_id}: {command}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
             try:
