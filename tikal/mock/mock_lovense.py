@@ -49,6 +49,7 @@ class MockBleakScanner:
     """
 
     _connected_addresses: set[str] = set()
+    _SCAN_INTERVAL = 2.0  # seconds between simulated advertisement reports
 
     @classmethod
     def register_connection(cls, address: str) -> None:
@@ -65,24 +66,70 @@ class MockBleakScanner:
         """Reset all connection tracking (useful for tests)"""
         cls._connected_addresses.clear()
 
+    def __init__(self, detection_callback: Optional[Callable[[MockBLEDevice, Any], None]] = None):
+        """
+        Initialize the scanner.
+
+        Args:
+            detection_callback: Optional callback that receives (device, advertisement_data)
+                                when a device is detected during continuous scanning.
+                                The second argument is None in this mock implementation.
+        """
+        self._detection_callback = detection_callback
+        self._stop_event: Optional[asyncio.Event] = None
+        self._scan_task: Optional[asyncio.Task] = None
+        self._is_started = False
+
+    async def start(self) -> None:
+        """
+        Start continuous scanning.
+
+        Raises:
+            RuntimeError: If already scanning or no detection callback was provided.
+        """
+        if self._is_started:
+            return
+        if self._detection_callback is None:
+            raise RuntimeError("MockBleakScanner: detection_callback required for continuous scanning")
+        self._stop_event = asyncio.Event()
+        self._scan_task = asyncio.create_task(self._scan_loop())
+        self._is_started = True
+
+    async def stop(self) -> None:
+        """Stop continuous scanning."""
+        if not self._is_started:
+            return
+        self._stop_event.set()
+        if self._scan_task:
+            await self._scan_task
+        self._scan_task = None
+        self._stop_event = None
+        self._is_started = False
+
+    async def _scan_loop(self) -> None:
+        """
+        Background loop that periodically reports all non-connected devices.
+        Simulates receiving advertisement packets at regular intervals.
+        """
+        while not self._stop_event.is_set():
+            # Simulate scanning delay (real scanner would be continuous, but we batch reports)
+            await asyncio.sleep(self._SCAN_INTERVAL)
+
+            # Get the list of all possible devices (same as in discover())
+            all_devices = self._get_all_devices()
+
+            # Report each non-connected device to the callback
+            for device in all_devices:
+                if device.address not in self._connected_addresses:
+                    # Simulate advertisement detection
+                    task = self._detection_callback(device, None)
+                    if asyncio.iscoroutine(task):
+                        await task
+
     @staticmethod
-    async def discover(timeout: float) -> list[MockBLEDevice]:
-        """
-        Returns a list of mock devices with specific behaviors encoded in their names.
-        Only returns devices that are not currently connected.
-
-        Returns devices simulating:
-        - Solace: Normal Solace toy (Thrusting and Depth commands)
-        - Gush: Normal Gush toy (Vibrate command)
-        - Nora: Normal Nora toy (Rotate command)
-        - Gush connection_failure: Gush that stops responding 5 s after the first intensity command
-        - Gush POWEROFF: Gush that sends POWEROFF 5 s after the first intensity command
-        """
-        await asyncio.sleep(
-            timeout * 0.1
-        )  # Simulate scan time (Actual scan time would be exactly timeout-seconds-long)
-
-        all_devices = [
+    def _get_all_devices() -> list[MockBLEDevice]:
+        """Return the full list of mock devices (same as in discover())."""
+        return [
             MockBLEDevice("LVS-Solace", "00:00:00:00:00:01"),
             MockBLEDevice("LVS-Gush", "00:00:00:00:00:02"),
             MockBLEDevice("LVS-Nora", "00:00:00:00:00:03"),
@@ -90,12 +137,21 @@ class MockBleakScanner:
             MockBLEDevice("LVS-Gush POWEROFF", "00:00:00:00:00:05"),
         ]
 
-        # Filter out devices that are currently connected
-        return [
-            device
-            for device in all_devices
-            if device.address not in MockBleakScanner._connected_addresses
-        ]
+    @staticmethod
+    async def discover(timeout: float) -> list[MockBLEDevice]:
+        """
+        One-shot discovery: returns a list of mock devices that are not currently connected.
+
+        Args:
+            timeout: Simulated scan duration (ignored except for a small delay).
+
+        Returns:
+            List of MockBLEDevice objects for non-connected toys.
+        """
+        await asyncio.sleep(timeout * 0.1)  # Real scan time will be exactly timeout seconds, we speed it up.
+
+        all_devices = MockBleakScanner._get_all_devices()
+        return [device for device in all_devices if device.address not in MockBleakScanner._connected_addresses]
 
 
 class MockBleakClient:
