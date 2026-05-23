@@ -31,19 +31,19 @@ _BATTERY_UPDATE_INTERVAL = 120.0  # seconds
 T = TypeVar("T")
 
 
-from enum import Enum, auto
+from enum import StrEnum
 
 
-class ToyStatus(Enum):
+class ToyStatus(StrEnum):
     """Represents the connection status of a toy managed by ToyCore."""
     # reconnection succeeded. Always preceded by a toy_state_change event (so clients stay synchronized with the ToyCore state)
-    CONNECTED = auto()
+    CONNECTED = "connected"
     # on_disconnect fired, command failed. Reconnection is automatically attempted
-    RECONNECTING = auto()
+    RECONNECTING = "reconnecting"
     # reconnect failed, toy will be removed automatically
-    LOST = auto()
+    LOST = "lost"
     # toy powered off, toy will be removed automatically
-    POWERED_OFF = auto()
+    POWERED_OFF = "powered_off"
 
 
 class UndiscoveredToyError(ValueError):
@@ -320,7 +320,7 @@ class ToyCore:
                         toy_id=data.toy_id,
                         name=data.name,
                         brand=data.brand,
-                        model_name=data.model_name,
+                        model_name=self._toy_cache.get_model_name(data.name),
                     )
                     for data in update
                 ]
@@ -740,6 +740,7 @@ class ToyCore:
             self._toys[toy_id] = toy
             self._toy_cmd_locks[toy_id] = asyncio.Lock()
             self._toy_status[toy_id] = ToyStatus.CONNECTED
+            self._toy_cache.update({toy.name: toy.model_name})
             ids_snapshot = list(self._toys.keys())
 
         await self._fire_callback(self._on_toy_ids_change, ids_snapshot)
@@ -790,7 +791,9 @@ class ToyCore:
                 raise InvalidModelError(toy_id, model_name, toy.brand) from e
             except LowLevelBadModelError as e:
                 raise BadModelError(toy_id, model_name) from e
+            self._toy_cache.update({toy.name: model_name})
         change = dict(toy_id=toy_id, model_name=model_name)
+
         await self._fire_callback(self._on_model_change, change)
 
     async def stop(self, toy_id: str) -> None:
@@ -855,8 +858,10 @@ class ToyCore:
         """
         Toggle the pause state.
 
-        When paused: if a pattern is active, it stops advancing. Toy intensities are set to zero, but manual commands can override this.
-        Block state is cleared (toy cannot be paused and blocked at the same time).
+        Pausing freezes the pattern timer and sets both intensities to zero.
+        Resuming continues playback from the elapsed time at the point of pausing.
+        Pausing is only possible when a pattern is active. If no pattern is active, the command has no effect.
+        Pausing a blocked toy clears its blocked state (A toy cannot be both paused and blocked simultaneously).
 
         Args:
             toy_id: Identifier of the toy to toggle the pause state of.
@@ -875,8 +880,8 @@ class ToyCore:
         Toggle the block state.
 
         When blocked, all intensity commands are rejected, toy intensities are forced to zero,
-        any set pattern continues advancing but doesn't control the toy, and the pause state is cleared .
-        (toy cannot be paused and blocked at the same time).
+        any set pattern continues advancing but doesn't control the toy. Unblocking restores normal operation.
+        Blocking a paused toy clears its pause state (a toy cannot be both paused and blocked simultaneously).
 
         Args:
             toy_id: Identifier of the toy to toggle the block state of.
@@ -894,8 +899,10 @@ class ToyCore:
         """
         Set the pause state.
 
-        When paused: if a pattern is active, it stops advancing. Toy intensities are set to zero, but manual commands can override this.
-        Block state is cleared (toy cannot be paused and blocked at the same time).
+        When paused: if a pattern is active, it stops advancing.
+        Resuming continues playback from the elapsed time at the point of pausing.
+        Pausing is only possible when a pattern is active. If no pattern is active, the command has no effect.
+        Pausing a blocked toy clears its blocked state (A toy cannot be both paused and blocked simultaneously).
 
         Args:
             toy_id: Identifier of the toy to set the paused state for.
@@ -918,7 +925,8 @@ class ToyCore:
         Set the block state.
 
         When blocked, all intensity commands are rejected, toy intensities are forced to zero, any set pattern continues
-        advancing but doesn't control the toy, and the pause state is cleared (toy cannot be paused and blocked at the same time)
+        advancing but doesn't control the toy. Unblocking restores normal operation.
+        Blocking a paused toy clears its pause state (a toy cannot be both paused and blocked simultaneously).
 
         Args:
             toy_id: Identifier of the toy to set the block state for
@@ -1076,7 +1084,7 @@ class ToyCore:
 
     async def get_all(self, toy_id: str, full: bool) -> dict:
         """
-        Combines get_info, get_state, and get_status.
+        Combines get_info, get_state, get_status, get_battery.
 
         The returned dict contains all keys from both methods.
         If full is True, it will return additional brand-dependent information. See self.get_info
@@ -1098,7 +1106,7 @@ class ToyCore:
                     await self._handle_command_failure(toy)
                     return {}
         state = toy.get_state()
-        merged = {**state, **info, "connection_status": status}
+        merged = {**state, **info, "connection_status": status, "battery": toy.battery}
         return merged
 
     async def direct_command(self, toy_id: str, command: str) -> str:
