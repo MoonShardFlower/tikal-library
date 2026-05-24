@@ -3,7 +3,7 @@ Private
 
 Defines the ToyController class, which extends the low-level Toy class with additional methods for pattern playback and toy control.
 Comparable to the ToyController class of the tikal library, but offering async methods instead of sync.
-Meant to be consumed by ToyCore, which in turn is consumed by ToyServer. ToyServer defines a public API.
+Meant to be consumed by ToyHub, which in turn is consumed by ToyServer. ToyServer defines a public API.
 """
 
 from tikal import Lovense, Toy
@@ -115,7 +115,7 @@ class ToyController:
     @property
     def battery(self) -> int | None:
         """
-        Get the current battery level of the toy (from memory, automatically updated by ToyCore)
+        Get the current battery level of the toy (from memory, automatically updated by ToyHub)
 
         Returns:
             Current battery level (0-100) or None if the toy has no battery.

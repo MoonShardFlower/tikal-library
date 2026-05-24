@@ -3,7 +3,7 @@ Private
 
 Contains all the ToyManagement logic needed by ToyServer so ToyServer can focus on defining the public API alone.
 Comparable to ToyHub of the tikal library but is mostly async instead of sync. Makes use of private ToyControllers, which
-unlike ToyHub are not exposed to users -> all logic routed through ToyCore instead.
+unlike the tikal ToyHub are not exposed to users -> all logic routed through ToyHub instead.
 """
 
 import asyncio
@@ -34,9 +34,9 @@ from enum import StrEnum
 
 
 class ToyStatus(StrEnum):
-    """Represents the connection status of a toy managed by ToyCore."""
+    """Represents the connection status of a toy managed by ToyHub."""
 
-    # reconnection succeeded. Always preceded by a toy_state_change event (so clients stay synchronized with the ToyCore state)
+    # reconnection succeeded. Always preceded by a toy_state_change event (so clients stay synchronized with the ToyHub state)
     CONNECTED = "connected"
     # on_disconnect fired, command failed. Reconnection is automatically attempted
     RECONNECTING = "reconnecting"
@@ -55,7 +55,7 @@ class UndiscoveredToyError(ValueError):
 
 
 class UnknownToyError(ValueError):
-    """Raised when trying to interact with a toy that is not known to ToyCore."""
+    """Raised when trying to interact with a toy that is not known to ToyHub."""
 
     def __init__(self, toy_id: str):
         self.toy_id = toy_id
@@ -134,7 +134,7 @@ async def _retry(fn, *args):
         return await fn(*args)
 
 
-class ToyCore:
+class ToyHub:
 
     def __init__(
         self,
@@ -167,7 +167,7 @@ class ToyCore:
         """
         self._log = logging.getLogger(log_name)
         self._log.info(
-            f"Initializing ToyCore with toy_cache_path={toy_cache_path} and mock_toys={mock_toys}"
+            f"Initializing ToyHub with toy_cache_path={toy_cache_path} and mock_toys={mock_toys}"
         )
 
         # Toy state
@@ -222,8 +222,8 @@ class ToyCore:
     # -------------------------------------------------------------------------
 
     async def startup(self) -> None:
-        """Start the background processing and battery polling loops. Call before using ToyCore. Idempotent."""
-        self._log.info("Starting ToyCore.")
+        """Start the background processing and battery polling loops. Call before using ToyHub. Idempotent."""
+        self._log.info("Starting ToyHub.")
         self._shutting_down = False
         if self._process_task is None or self._process_task.done():
             self._process_task = asyncio.get_running_loop().create_task(
@@ -235,8 +235,8 @@ class ToyCore:
             )
 
     async def shutdown(self) -> None:
-        """Stop the background processing and battery polling loops. Disconnects all toys. Call when finished using ToyCore. Idempotent."""
-        self._log.info("Shutting down ToyCore.")
+        """Stop the background processing and battery polling loops. Disconnects all toys. Call when finished using ToyHub. Idempotent."""
+        self._log.info("Shutting down ToyHub.")
         self._shutting_down = True
 
         # Idempotent. Safe to call even when no scan is running
@@ -379,7 +379,7 @@ class ToyCore:
         """
         Handle a toy power‑off event.
 
-        Sets ToyStatus to POWERED_OFF and removes the Toy from ToyCore.
+        Sets ToyStatus to POWERED_OFF and removes the Toy from ToyHub.
 
         Args:
             toy_id: Identifier of the toy that powered off.
@@ -1036,10 +1036,10 @@ class ToyCore:
 
     async def get_toy_ids(self) -> list[str]:
         """
-        Retrieve a list of all toy_ids currently managed by ToyCore
+        Retrieve a list of all toy_ids currently managed by ToyHub
 
         Returns:
-            A list of toy_ids currently managed by ToyCore. Snapshot, the list will not update automatically.
+            A list of toy_ids currently managed by ToyHub. Snapshot, the list will not update automatically.
         """
         async with self._toy_lock:
             return list(self._toys.keys())
@@ -1072,7 +1072,7 @@ class ToyCore:
 
     async def get_battery(self, toy_id: str) -> int | None:
         """
-        Get the current battery level of the toy (from memory, automatically updated by ToyCore).
+        Get the current battery level of the toy (from memory, automatically updated by ToyHub).
 
         Args:
             toy_id: Identifier of the toy to get the battery level of.
@@ -1162,7 +1162,7 @@ class ToyCore:
 
     async def direct_command(self, toy_id: str, command: str) -> str:
         """
-        Send a raw command directly to the toy. Allows accessing functionalities that are not exposed by the ToyCore API.
+        Send a raw command directly to the toy. Allows accessing functionalities that are not exposed by the ToyHub API.
 
         Args:
             toy_id: Unique identifier of the toy that you want to send the command to.
@@ -1176,7 +1176,7 @@ class ToyCore:
             toy response string. Empty string if the command could not be delivered.
 
         Note:
-            Do not use this method to change any tracked state (intensity1, intensity2, etc.) as this method bypasses the ToyCore's state tracking.
+            Do not use this method to change any tracked state (intensity1, intensity2, etc.) as this method bypasses the ToyHub's state tracking.
         """
         self._log.info(f"Sending direct command to {toy_id}: {command}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
