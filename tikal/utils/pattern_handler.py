@@ -66,7 +66,11 @@ class PatternHandler:
                 self._segment_start_time = None
         else:
             # Keep current elapsed time, but ensure segment timer is consistent
-            if not self._is_paused and self.has_active_pattern and self._segment_start_time is None:
+            if (
+                not self._is_paused
+                and self.has_active_pattern
+                and self._segment_start_time is None
+            ):
                 # Should only happen when resuming after having no pattern
                 self._segment_start_time = time() * 1000
 
