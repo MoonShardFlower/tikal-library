@@ -466,12 +466,17 @@ class BLEConnectionBuilder:
                 f"No handler for data type: {type(to_connect).__name__}"
             )
         if to_connect.toy_id not in self._all_seen_addresses:
-            self._log.error("Device %s was never discovered. Run meth: discover_toys first.", to_connect.toy_id)
+            self._log.error(
+                "Device %s was never discovered. Run meth: discover_toys first.",
+                to_connect.toy_id,
+            )
             return KeyError(
                 f"Device {to_connect.toy_id} was never discovered. Run meth: discover_toys first."
             )
         if to_connect.toy_id not in self._ble_devices:
-            self._log.error("Device %s is stale. Run meth: discover_toys first.", to_connect.toy_id)
+            self._log.error(
+                "Device %s is stale. Run meth: discover_toys first.", to_connect.toy_id
+            )
             return StaleDeviceError(
                 f"Device {to_connect.toy_id} is stale. Run meth: discover_toys first."
             )
@@ -479,7 +484,9 @@ class BLEConnectionBuilder:
         try:
             toy = await handler.create_toy(to_connect, device)
             await toy.set_model_name(to_connect.model_name)
-            self._log.info(f"Connected to {to_connect.toy_id} as {to_connect.model_name}")
+            self._log.info(
+                f"Connected to {to_connect.toy_id} as {to_connect.model_name}"
+            )
             return toy
         except Exception as e:
             return e

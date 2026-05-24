@@ -66,7 +66,9 @@ class MockBleakScanner:
         """Reset all connection tracking (useful for tests)"""
         cls._connected_addresses.clear()
 
-    def __init__(self, detection_callback: Optional[Callable[[MockBLEDevice, Any], None]] = None):
+    def __init__(
+        self, detection_callback: Optional[Callable[[MockBLEDevice, Any], None]] = None
+    ):
         """
         Initialize the scanner.
 
@@ -90,7 +92,9 @@ class MockBleakScanner:
         if self._is_started:
             return
         if self._detection_callback is None:
-            raise RuntimeError("MockBleakScanner: detection_callback required for continuous scanning")
+            raise RuntimeError(
+                "MockBleakScanner: detection_callback required for continuous scanning"
+            )
         self._stop_event = asyncio.Event()
         self._scan_task = asyncio.create_task(self._scan_loop())
         self._is_started = True
@@ -148,10 +152,16 @@ class MockBleakScanner:
         Returns:
             List of MockBLEDevice objects for non-connected toys.
         """
-        await asyncio.sleep(timeout * 0.1)  # Real scan time will be exactly timeout seconds, we speed it up.
+        await asyncio.sleep(
+            timeout * 0.1
+        )  # Real scan time will be exactly timeout seconds, we speed it up.
 
         all_devices = MockBleakScanner._get_all_devices()
-        return [device for device in all_devices if device.address not in MockBleakScanner._connected_addresses]
+        return [
+            device
+            for device in all_devices
+            if device.address not in MockBleakScanner._connected_addresses
+        ]
 
 
 class MockBleakClient:

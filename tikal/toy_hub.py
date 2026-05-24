@@ -429,9 +429,7 @@ class ToyHub:
         async def connection_task():
             controllers: list["ToyController | BaseException"] = []
             cache_updates = {}
-            lovense_data = [
-                data for data in to_connect if data.brand == "Lovense"
-            ]
+            lovense_data = [data for data in to_connect if data.brand == "Lovense"]
             lovense_toys = await self._ble_connection_builder.create_toys(lovense_data)
             for data, toy in zip(lovense_data, lovense_toys):
                 if isinstance(toy, Lovense):
