@@ -55,37 +55,49 @@ class PatternHandler:
         self._pattern = pattern
         self._pattern_wraparound = wraparound
         self._pattern_version += 1
+
         if reset_time:
-            self._restart_pattern()
-        # Set paused to False if pattern is cleared
-        if not self._pattern and self._is_paused:
-            self._is_paused = False
+            # Reset elapsed time to zero, but don't start the segment timer if paused
+            self._pattern_elapsed_time = 0.0
+            self._pause_segment_elapsed = 0.0
+            if not self._is_paused and self.has_active_pattern:
+                self._segment_start_time = time() * 1000
+            else:
+                self._segment_start_time = None
+        else:
+            # Keep current elapsed time, but ensure segment timer is consistent
+            if not self._is_paused and self.has_active_pattern and self._segment_start_time is None:
+                # Should only happen when resuming after having no pattern
+                self._segment_start_time = time() * 1000
 
     def set_paused(self, paused: bool) -> None:
         """
-        Set the paused state. While paused patterns do not progress. Does nothing if there is no active pattern.
+        Set the paused state. While paused patterns do not progress.
+
         Args:
             paused: True to pause, False to resume
         """
         if paused == self._is_paused:
             return
 
-        if not self.has_active_pattern:
-            return
-
         self._is_paused = paused
         self._pattern_version += 1
+
         if paused:
-            # Entering pause: freeze elapsed time
-            if self._segment_start_time is not None:
+            # Entering pause: freeze elapsed time if a pattern is playing
+            if self.has_active_pattern and self._segment_start_time is not None:
                 current_time = time() * 1000
                 segment_elapsed = current_time - self._segment_start_time
                 self._pattern_elapsed_time += segment_elapsed
                 self._pause_segment_elapsed = segment_elapsed
                 self._segment_start_time = None
+            # If no pattern, there is nothing to freeze, just store the paused state
         else:
-            # Exiting pause: resume timing from now
-            self._segment_start_time = time() * 1000
+            # Exiting pause: resume timing if a pattern exists
+            if self.has_active_pattern:
+                self._segment_start_time = time() * 1000
+            else:
+                self._segment_start_time = None
 
     def get_pattern_time(self) -> float:
         """
@@ -150,8 +162,8 @@ class PatternHandler:
 
         Pattern state consists of:
         - pattern: List of tuples (duration_ms, intensity1, intensity2) defining the pattern segments.
-        - wraparound: Whether the pattern repeats from the beginning after completing the last segment. If False, both Intensities are 0 after the last segment.
-        - is_paused: Whether the pattern is currently paused. Paused patterns do not advance
+        - wraparound: Whether the pattern repeats from the beginning after completing the last segment.
+        - is_paused: Whether the pattern is currently paused.
         - elapsed_time: Time elapsed since the start of the pattern or last wraparound in ms
 
         Returns:
@@ -163,9 +175,3 @@ class PatternHandler:
             self._is_paused,
             self.get_pattern_time(),
         )
-
-    def _restart_pattern(self) -> None:
-        """Restart pattern playback from the beginning."""
-        self._pattern_elapsed_time = 0.0
-        self._segment_start_time = time() * 1000
-        self._pause_segment_elapsed = 0.0
