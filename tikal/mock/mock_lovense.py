@@ -405,7 +405,7 @@ class MockBleakClient:
 
         # Nora supports Rotate
         if self._model_name == "Nora":
-            if command.startswith("Rotate:"):
+            if command.startswith("Rotate:") or command.startswith("Vibrate:"):
                 return b"OK;"
             return b"err;"
 
