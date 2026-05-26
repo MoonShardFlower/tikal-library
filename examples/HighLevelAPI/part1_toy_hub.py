@@ -93,7 +93,7 @@ def main():
     # valid model names can be found in LOVENSE_TOY_NAMES.keys(). Invalid model names will raise a
     # ValidationError, which is caught by the connect method and returned as an unsuccessful result
     print("valid model names:\n", LOVENSE_TOY_NAMES.keys())
-    solace_data.model_name = "Ridge"  # valid but incorrect model
+    solace_data.model_name = "Sex Machine"  # valid but incorrect model
     nora_data.model_name = "Nora"
 
     # Similar to toy discovery, the connect method also has a callback version
