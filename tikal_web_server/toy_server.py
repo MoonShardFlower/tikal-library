@@ -671,6 +671,7 @@ class ToyServer:
         """Start the WebSocket server and block until it shuts itself down."""
         self._server = await serve(self._handle_connection, self._host, self._port)
         self._log.info("ToyServer listening on ws://%s:%d", self._host, self._port)
+        self._shutdown_task = asyncio.create_task(self._idle_shutdown())
         await self._server.wait_closed()
         await self._hub.shutdown()
         self._log.info("ToyServer stopped.")
