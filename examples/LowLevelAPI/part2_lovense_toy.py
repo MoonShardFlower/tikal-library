@@ -1,7 +1,13 @@
 import asyncio
 from logging import INFO, Formatter, StreamHandler, getLogger
 
-from tikal import LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES, BLEConnectionBuilder
+from tikal import (
+    LOVENSE_TOY_NAMES,
+    ROTATION_TOY_NAMES,
+    BadModelError,
+    BLEConnectionBuilder,
+    ValidationError,
+)
 from tikal.mock import MockBleakClient, MockBleakScanner
 
 # All classes use the logging module
@@ -156,18 +162,22 @@ async def main():
     # ------------------------------------------------------------------------------------------------------------------
 
     # If you set the model_name to the wrong model, you can change it later.
-    # Note that invalid names will still raise a ValidationError.
-    gush.set_model_name("Solace")  # valid, but wrong model
-    print(
-        f"Gush changed to: {gush.model_name}. "
-        f"This causes the intensity command to fail, so the following is now false: {await gush.intensity1(5)}"
-    )
+    # In most cases the validation catches the wrong model:
+    # - tikal.ValidationError if the model name is not valid for the toy brand
+    # - tikal.BadModelError if the model name is valid, but commands fail (Warning: this means either the wrong model is assigned, or the commands being, which is a developer issue)
 
-    gush.set_model_name("Gush")
-    print(
-        f"Gush changed back to: {gush.model_name}. "
-        f"This causes the intensity command to succeed: {await gush.intensity1(5)}"
-    )
+    try:
+        await gush.set_model_name("bla")  # invalid model
+    except ValidationError:
+        print("Changing Gush to bla does not work")
+
+    try:
+        await gush.set_model_name("Solace")  # valid, but wrong model
+    except BadModelError:
+        print("Changing Gush to Solace is caught as well")
+
+    # works, because a) Sex Machine is a valid model, and b) it uses the same commands as Solace
+    await solace.set_model_name("Sex Machine")
 
     # Some toys have a Rotation capability. These toys can have their rotation direction changed
     await nora.change_rotation_direction()
