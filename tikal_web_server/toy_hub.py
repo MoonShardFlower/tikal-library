@@ -722,7 +722,7 @@ class ToyHub:
 
         Raises:
             ToyAlreadyAddedError: The toy was already added.
-            UnknownToyError: The toy was not discovered before.
+            UndiscoveredToyError: The toy was not discovered before.
             UnavailableToyError: The toy was discovered at some point but is not available anymore.
             InvalidModelError: The model name is not valid for the toy brand.
             BadModelError: The model name is valid, but the toy still does not respond correctly to commands.
@@ -791,7 +791,9 @@ class ToyHub:
             self._log.warning(
                 "Failed to disconnect toy %s: %s", toy_id, e, exc_info=True
             )
+            await self._fire_callback(self._on_toy_ids_change, ids_snapshot)
             raise ToyConnectionError(toy_id, toy.model_name, "remove") from e
+
         await self._fire_callback(self._on_toy_ids_change, ids_snapshot)
 
     async def set_model(self, toy_id: str, model_name: str) -> None:
@@ -818,7 +820,6 @@ class ToyHub:
                 raise BadModelError(toy_id, model_name) from e
             self._toy_cache.update({toy.name: model_name})
         change = dict(toy_id=toy_id, model_name=model_name)
-
         await self._fire_callback(self._on_model_change, change)
 
     async def stop(self, toy_id: str) -> None:
@@ -858,7 +859,7 @@ class ToyHub:
         async with cmd_lock:
             level = max(0, min(intensity, toy.max_intensity))
             result = await self._run_toy_command(
-                toy, "intensity2", toy.intensity1, level
+                toy, "intensity1", toy.intensity1, level
             )
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
         return result
@@ -1114,7 +1115,6 @@ class ToyHub:
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         if not full:
             return await toy.get_info(full=False)
-
         async with cmd_lock:
             return await self._run_toy_command(toy, "get_info", toy.get_info, True)
 
