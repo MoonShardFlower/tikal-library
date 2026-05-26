@@ -10,6 +10,11 @@ offers some advantages:
 This module is the entry point to the ToyServer command-line-interface.
 """
 
+# nuitka-project: --msvc=latest
+# nuitka-project: --mode=onefile
+# nuitka-project: --include-windows-runtime-dlls=yes
+# nuitka-project: --windows-console-mode=disable
+
 import argparse
 import asyncio
 import logging

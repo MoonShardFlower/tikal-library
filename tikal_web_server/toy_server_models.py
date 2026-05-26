@@ -6,10 +6,9 @@ error payloads, and specific request payload structures for commands related to 
 Each model is built with Pydantic for data validation and serialization purposes.
 """
 
-from typing import Optional, Any
+from typing import Any, Optional
 
-from pydantic import BaseModel, field_validator, model_validator, Field
-
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # -----------------------------------------------------------------------------
 # Protocol envelopes
@@ -113,6 +112,7 @@ class ErrorData(BaseModel):
     toy_id: Optional[str] = None
     model_name: Optional[str] = None
     brand: Optional[str] = None
+
 
 # -----------------------------------------------------------------------------
 # Request models
