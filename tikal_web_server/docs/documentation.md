@@ -12,14 +12,14 @@ I suggest reading the documentation in the following order:
 The server can be started with the command `python3 -m tikal_web_server.toy_server`.
 
 Optional arguments are:
-- `--host <host>`: defaults to `localhost` and defines the host to bind to. 
+- `--host <host>`: defaults to `localhost` and defines the host to bind to.
 No authentication is performed, so I strongly disadvise choosing a different host.
 - `--port <port>`: defaults to `8142` and defines the port to bind to.
-- `--toy-cache-path <path_to_cache_file>`: defaults to `./data/toy_cache.json` and defines the path and name of the toy cache file. 
+- `--toy-cache-path <path_to_cache_file>`: defaults to `./data/toy_cache.json` and defines the path and name of the toy cache file.
 If set to the empty string, the cache degrades to in-memory only (No persistence)
 If the file does not exist, it will be created. If the path up to the file does not exist, it will be created.
 - `--log-level <level>`: defaults to `ERROR` and defines the log level. Must be one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.
-- `--log-file <path_to_log_file>`: defaults to `"./data/tikal_ws.log"` and defines the path and name of the log file. 
+- `--log-file <path_to_log_file>`: defaults to `"./data/tikal_ws.log"` and defines the path and name of the log file.
 If set to the empty string, no log file is used. If the file does not exist, it will be created. The path up to the file must exist.
 
 Example including all arguments:
@@ -36,7 +36,7 @@ Assume case sensitivity for all strings (unless otherwise specified)
 ### Request Envelope
 Every request from the client must contain the keys `request` (str), `id` (str) and `data` (dict). No additional keys are allowed.
 The server does not care about the value of `id`, just that it is a string and present. It serves for you to match replies to your requests.
-All possible requests and their necessary data can be found **actions.md**. 
+All possible requests and their necessary data can be found **actions.md**.
 
 ```json
 {
@@ -81,7 +81,7 @@ The data dictionary will in this case contain the keys `error` (str) and `messag
 
 
 ### Event Envelope
-Changes to the server state that are not a result of a request are communicated via events instead of replies. 
+Changes to the server state that are not a result of a request are communicated via events instead of replies.
 Events contain the keys `event` (str) holding the name of the event, `success` (bool) and `data` (dict).
 `data` contains event-specific keys. See **events.md** for all possible events.
 
@@ -93,7 +93,7 @@ Events contain the keys `event` (str) holding the name of the event, `success` (
 }
 ```
 
-If an error occurs, `data` will contain the keys `error` (str) and `message` (str). 
+If an error occurs, `data` will contain the keys `error` (str) and `message` (str).
 Similar to the above, data` can contain additional keys depending on the event.
 
 ```json

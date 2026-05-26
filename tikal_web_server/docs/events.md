@@ -124,7 +124,7 @@ One or more toys reported a new battery level. Battery values are updated in the
 ---
 
 ### 6. `on_scan_update`
-One or more new toys are discovered or no longer available. 
+One or more new toys are discovered or no longer available.
 This event is sent only to clients that have started a scan (sent a `start_scan` request and not yet stopped it). Each event contains all currently discovered toys.
 
 
