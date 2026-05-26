@@ -89,10 +89,32 @@ from tikal_web_server.toy_hub import (
     UndiscoveredToyError,
     UnknownToyError,
 )
-from tikal_web_server.toy_server_models import _EmptyData, ToyIdData, GetInfoData, DirectCommandData, AddRequestData, \
-    SetModelData, IntensityData, SetPausedData, SetBlockedData, SetPatternData, BrandsData, ToyIdsData, ToyStateData, \
-    BatteryResponseData, ConnectionStatusResponseData, InfoResponseData, GetAllResponseData, DirectCommandResponseData, \
-    AckData, RequestEnvelope, ResponseEnvelope, ErrorData, _ErrMsg, EventEnvelope
+from tikal_web_server.toy_server_models import (
+    AckData,
+    AddRequestData,
+    BatteryResponseData,
+    BrandsData,
+    ConnectionStatusResponseData,
+    DirectCommandData,
+    DirectCommandResponseData,
+    ErrorData,
+    EventEnvelope,
+    GetAllResponseData,
+    GetInfoData,
+    InfoResponseData,
+    IntensityData,
+    RequestEnvelope,
+    ResponseEnvelope,
+    SetBlockedData,
+    SetModelData,
+    SetPatternData,
+    SetPausedData,
+    ToyIdData,
+    ToyIdsData,
+    ToyStateData,
+    _EmptyData,
+    _ErrMsg,
+)
 
 # How long (seconds) to wait after the last client disconnects before shutting down.
 _SHUTDOWN_DELAY = 3.0
@@ -723,6 +745,7 @@ class ToyServer:
             ws: The WebSocket connection object of the client that sent the message.
             raw_msg: The raw message string received from the client.
         """
+
         # 1. Parse and validate the outer envelope.
         try:
             envelope = RequestEnvelope.model_validate_json(raw_msg)
@@ -777,7 +800,7 @@ class ToyServer:
                 req_id,
                 cmd,
                 ErrorData(
-                    error="Validation Error",
+                    error="Invalid Data",
                     message=_ErrMsg.INVALID_DATA.format(cmd=cmd, detail=tb),
                     traceback=tb,
                 ).model_dump(),
@@ -928,6 +951,7 @@ class ToyServer:
                     ),
                     traceback=tb,
                     toy_id=e.toy_id,
+                    model_name=e.model_name,
                 ).model_dump(),
                 success=False,
             )
@@ -1102,5 +1126,5 @@ class ToyServer:
             )
         else:
             await self._broadcast_to_subscribers(
-                "on_scan_update", dict(discovered=update), success=True
+                "scan_update", dict(discovered=update), success=True
             )
