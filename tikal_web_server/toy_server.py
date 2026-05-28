@@ -120,10 +120,6 @@ from tikal_web_server.toy_server_models import (
     _ErrMsg,
 )
 
-# How long (seconds) to wait after the last client disconnects before shutting down.
-_SHUTDOWN_DELAY = 3.0
-
-
 # -----------------------------------------------------------------------------
 # Handler functions
 # -----------------------------------------------------------------------------
@@ -640,6 +636,7 @@ class ToyServer:
         toy_cache_path: Path = Path(),
         host: str = "localhost",
         port: int = 8142,
+        idle_shutdown_delay: float = 3.0,
         mock_toys: bool = False,
         log_name: str = "tikal_ws",
     ) -> None:
@@ -651,6 +648,7 @@ class ToyServer:
             host:           Network interface to bind the WebSocket server to. Defaults to "localhost".
                             There are no security measures, so using anything other than localhost is not recommended.
             port:           TCP port to listen on. Defaults to 8142.
+            idle_shutdown_delay:  How long to wait for clients to disconnect before shutting down the server. Defaults to 3 seconds. If 0, the Server does not shut down automatically.
             mock_toys:      If True, ToyHub uses mock toys instead of real toys.
             log_name:       Name of the Python logger used by both the server and the underlying ToyHub instance. Defaults to "tikal_ws".
         """
@@ -665,7 +663,8 @@ class ToyServer:
         self._scan_subscribers: set[ServerConnection] = set()
         # Lock that serializes start_scan/stop_scan calls.
         self._scan_lock = asyncio.Lock()
-        # Task that fires _SHUTDOWN_DELAY seconds after the last client leaves.
+        # Task that fires idle_shutdown_delay seconds after the last client leaves and shuts down the server.
+        self.idle_shutdown_delay = idle_shutdown_delay
         self._shutdown_task: asyncio.Task | None = None
         # The underlying websockets server object; set in serve().
         self._server: websockets.Server | None = None
@@ -703,14 +702,14 @@ class ToyServer:
         self._log.info("ToyServer stopped.")
 
     async def _idle_shutdown(self) -> None:
-        """Sleep for _SHUTDOWN_DELAY, then tear down ToyHub and close the server."""
+        """Sleep for self.idle_shutdown_delay, then tear down ToyHub, and close the server."""
         self._log.info("Entering IdleShutdown")
         try:
-            await asyncio.sleep(_SHUTDOWN_DELAY)
+            await asyncio.sleep(self.idle_shutdown_delay)
         except asyncio.CancelledError:
             return
         self._log.info(
-            "No clients connected for %.1fs. Shutting down.", _SHUTDOWN_DELAY
+            "No clients connected for %.1fs. Shutting down.", self.idle_shutdown_delay
         )
         await self._shutdown()
 

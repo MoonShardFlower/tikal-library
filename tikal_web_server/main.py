@@ -48,6 +48,13 @@ def main() -> None:
         "--port", type=int, default=8142, help="Port to listen on (default: 8142)"
     )
     parser.add_argument(
+        "--timeout",
+        type=int,
+        default=3,
+        help="If no client is connected for this many seconds, the server will shut down automatically (default: 3 seconds). Set to 0 to disable auto-shutdown.",
+    )
+
+    parser.add_argument(
         "--toy-cache-path",
         type=Path,
         default=Path("./data/toy_cache.json"),
@@ -92,6 +99,7 @@ def main() -> None:
         toy_cache_path=toy_cache_path,
         host=args.host,
         port=args.port,
+        idle_shutdown_delay=args.timeout,
         mock_toys=args.mock_toys,
     )
 
