@@ -65,6 +65,8 @@ They are handled by dedicated methods flagged via CommandEntry.is_scan.
 """
 
 import asyncio
+import datetime
+import http
 import logging
 import traceback
 from dataclasses import dataclass
@@ -74,6 +76,8 @@ from typing import Callable
 import websockets
 from pydantic import BaseModel, ValidationError
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.datastructures import Headers
+from websockets.http11 import Response
 
 from tikal_web_server.toy_hub import (
     AddConnectionError,
@@ -544,6 +548,14 @@ async def _cmd_scan_noop(hub: ToyHub, data: _EmptyData) -> dict:  # pragma: no c
     return {"ack": True}
 
 
+async def _cmd_shutdown(hub: ToyHub, data: _EmptyData) -> dict:  # pragma: no cover
+    """
+    Prepare the server to shut down as soon as the requesting client disconnects.
+    The actual shutdown is triggered in _handle_connection after the client leaves.
+    """
+    return {"ack": True, "toy_id": None}
+
+
 # -----------------------------------------------------------------------------
 # Command registry
 # -----------------------------------------------------------------------------
@@ -558,17 +570,20 @@ class CommandEntry:
     a Pydantic model to validate and serialize the outgoing result, and the async handler that performs the actual work.
 
     Attributes:
-        req_model:  The Pydantic model used to validate (and coerce) the data field of the incoming RequestEnvelope.
-        resp_model: The Pydantic model used to validate the dict returned by the handler before it is serialized into the ResponseEnvelope.
-        handler:    Async callable with the signature (hub: ToyHub, data: req_model) -> dict that performs the command and returns a result dict.
-        is_scan:    If True, the command is a scan subscription command (start_scan / stop_scan) and routed to _handle_scan
-                    instead of the generic dispatcher. Handler is unused in that case.
+        req_model:      The Pydantic model used to validate (and coerce) the data field of the incoming RequestEnvelope.
+        resp_model:     The Pydantic model used to validate the dict returned by the handler before it is serialized into the ResponseEnvelope.
+        handler:        Async callable with the signature (hub: ToyHub, data: req_model) -> dict that performs the command and returns a result dict.
+        is_scan:        If True, the command is a scan subscription command (start_scan / stop_scan) and routed to _handle_scan
+                        instead of the generic dispatcher. Handler is unused in that case.
+        is_shutdown:    If True, the command is a shutdown command and routed to _handle_shutdown instead of the generic dispatcher.
+                        Handler is unused in that case.
     """
 
     req_model: type[BaseModel]
     resp_model: type[BaseModel]
     handler: Callable
     is_scan: bool = False
+    is_shutdown: bool = False
 
 
 _COMMAND_REGISTRY: dict[str, CommandEntry] = {
@@ -603,6 +618,8 @@ _COMMAND_REGISTRY: dict[str, CommandEntry] = {
     # Scan subscription commands
     "start_scan": CommandEntry(_EmptyData, AckData, _cmd_scan_noop, is_scan=True),
     "stop_scan": CommandEntry(_EmptyData, AckData, _cmd_scan_noop, is_scan=True),
+    # Shutdown
+    "shutdown": CommandEntry(_EmptyData, AckData, _cmd_shutdown, is_shutdown=True),
 }
 
 
@@ -653,6 +670,9 @@ class ToyServer:
         # The underlying websockets server object; set in serve().
         self._server: websockets.Server | None = None
 
+        self._start_time: datetime.datetime | None = None
+        self._shutdown_initiated = False
+
         self._hub = ToyHub(
             on_status_change=self._on_status_change,
             on_toy_ids_change=self._on_toy_ids_change,
@@ -669,7 +689,13 @@ class ToyServer:
 
     async def serve(self) -> None:
         """Start the WebSocket server and block until it shuts itself down."""
-        self._server = await serve(self._handle_connection, self._host, self._port)
+        self._start_time = datetime.datetime.now()
+        self._server = await serve(
+            self._handle_connection,
+            self._host,
+            self._port,
+            process_request=self._handle_http_request,
+        )
         self._log.info("ToyServer listening on ws://%s:%d", self._host, self._port)
         self._shutdown_task = asyncio.create_task(self._idle_shutdown())
         await self._server.wait_closed()
@@ -678,6 +704,7 @@ class ToyServer:
 
     async def _idle_shutdown(self) -> None:
         """Sleep for _SHUTDOWN_DELAY, then tear down ToyHub and close the server."""
+        self._log.info("Entering IdleShutdown")
         try:
             await asyncio.sleep(_SHUTDOWN_DELAY)
         except asyncio.CancelledError:
@@ -685,7 +712,14 @@ class ToyServer:
         self._log.info(
             "No clients connected for %.1fs. Shutting down.", _SHUTDOWN_DELAY
         )
-        await self._hub.shutdown()
+        await self._shutdown()
+
+    async def _shutdown(self) -> None:
+        """Tear down ToyHub and lose the server."""
+        await self._hub.shutdown()  # idempotent
+        if self._shutdown_initiated:
+            return
+        self._shutdown_initiated = True
         if self._server is not None:
             self._server.close()
 
@@ -731,12 +765,17 @@ class ToyServer:
                     except Exception:
                         pass
 
-            self._log.debug("Client disconnected (%d remaining).", len(self._clients))
-
-            if not self._clients:
-                self._shutdown_task = asyncio.get_running_loop().create_task(
-                    self._idle_shutdown(), name="idle-shutdown"
+            if getattr(ws, "shutdown_requested", False):
+                await self._shutdown()
+                self._log.info("Client disconnected (shutdown requested).")
+            else:
+                self._log.info(
+                    "Client disconnected (%d remaining).", len(self._clients)
                 )
+                if not self._clients:
+                    self._shutdown_task = asyncio.get_running_loop().create_task(
+                        self._idle_shutdown(), name="idle-shutdown"
+                    )
 
     async def _handle_message(self, ws: ServerConnection, raw_msg: str) -> None:
         """
@@ -814,6 +853,16 @@ class ToyServer:
             if entry.is_scan:
                 await self._handle_scan(ws, req_id, cmd, entry.resp_model)
                 return
+
+            if entry.is_shutdown:
+                ws.shutdown_requested = True
+                await self._send_response(
+                    ws,
+                    req_id,
+                    cmd,
+                    entry.resp_model(ack=True).model_dump(),
+                    success=True,
+                )
 
             result = await entry.handler(self._hub, data)
             await self._send_response(
@@ -1035,6 +1084,89 @@ class ToyServer:
         await self._send_response(
             ws, req_id, cmd, resp_model(ack=True).model_dump(), success=True
         )
+
+    async def _handle_http_request(self, _, request) -> Response | None:
+        """
+        Intercept plain HTTP requests and serve a status page.
+        WebSocket upgrade requests (Upgrade: websocket) are passed through by returning None.
+        """
+        if request.headers.get("upgrade", "").lower() == "websocket":
+            return None
+
+        try:
+            toy_ids = await self._hub.get_toy_ids()
+        except Exception:
+            toy_ids = []
+
+        body = self._build_status_html(toy_ids).encode("utf-8")
+        headers = Headers(
+            [
+                ("Content-Type", "text/html; charset=utf-8"),
+                ("Content-Length", str(len(body))),
+                ("Connection", "close"),
+            ]
+        )
+        return Response(
+            status_code=http.HTTPStatus.OK.value,
+            reason_phrase=http.HTTPStatus.OK.phrase,
+            headers=headers,
+            body=body,
+        )
+
+    def _build_status_html(self, toy_ids: list[str]) -> str:
+        """Render a simple HTML status page."""
+        uptime = "unknown"
+        if self._start_time is not None:
+            delta = datetime.datetime.now() - self._start_time
+            h, remainder = divmod(int(delta.total_seconds()), 3600)
+            m, s = divmod(remainder, 60)
+            uptime = f"{h}h {m}m {s}s"
+
+        toy_rows = (
+            "".join(
+                f"<tr><td>{i + 1}</td><td><code>{toy_id}</code></td></tr>"
+                for i, toy_id in enumerate(toy_ids)
+            )
+            or "<tr><td colspan='2'>None</td></tr>"
+        )
+
+        return f"""<!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta http-equiv="refresh" content="5">
+      <title>ToyServer Status</title>
+      <style>
+        body {{ font-family: sans-serif; max-width: 600px; margin: 2rem auto; color: #222; }}
+        h1 {{ font-size: 1.4rem; margin-bottom: 1.5rem; }}
+        table {{ border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }}
+        th, td {{ text-align: left; padding: 0.4rem 0.75rem; border: 1px solid #ddd; }}
+        th {{ background: #f5f5f5; font-weight: 600; }}
+        .badge {{ display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px;
+                  background: #d4edda; color: #155724; font-weight: 600; }}
+        footer {{ font-size: 0.8rem; color: #888; }}
+      </style>
+    </head>
+    <body>
+      <h1>ToyServer Status</h1>
+      <table>
+        <tr><th>Property</th><th>Value</th></tr>
+        <tr><td>Status</td><td><span class="badge">Running</span></td></tr>
+        <tr><td>Uptime</td><td>{uptime}</td></tr>
+        <tr><td>Address</td><td><code>ws://{self._host}:{self._port}</code></td></tr>
+        <tr><td>Connected clients</td><td>{len(self._clients)}</td></tr>
+        <tr><td>Connected toys</td><td>{len(toy_ids)}</td></tr>
+      </table>
+
+      <h2 style="font-size:1.1rem">Toys</h2>
+      <table>
+        <tr><th>#</th><th>Toy ID</th></tr>
+        {toy_rows}
+      </table>
+
+      <footer>Page refreshes every 5 seconds &mdash; {datetime.datetime.now().strftime("%H:%M:%S")}</footer>
+    </body>
+    </html>"""
 
     # Messaging helpers
 
