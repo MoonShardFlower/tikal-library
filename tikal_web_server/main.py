@@ -11,7 +11,7 @@ This module is the entry point to the ToyServer command-line-interface.
 """
 
 # nuitka-project: --msvc=latest
-# nuitka-project: --mode=onefile
+# nuitka-project: --mode=standalone
 # nuitka-project: --include-windows-runtime-dlls=yes
 # nuitka-project: --windows-console-mode=disable
 
@@ -51,7 +51,7 @@ def main() -> None:
         "--toy-cache-path",
         type=Path,
         default=Path("./data/toy_cache.json"),
-        help="Path to toy cache file (default: ./data/toy_cache.json). If empty uses in-memory cache only.",
+        help="Path to toy cache file (default: ./data/toy_cache.json). If the string 'None' is passed uses in-memory cache only.",
     )
     parser.add_argument(
         "--mock-toys",
@@ -61,7 +61,7 @@ def main() -> None:
     parser.add_argument(
         "--log-path",
         default="./data/tikal_ws.log",
-        help="File to write the log to (default: ./data/tikal_ws.log). If empty disables logging.",
+        help="File to write the log to (default: ./data/tikal_ws.log). If the string 'None' is passed disables logging.",
     )
     parser.add_argument(
         "--log-level",
@@ -75,7 +75,7 @@ def main() -> None:
         "%(asctime)s [%(levelname)s] : %(module)s.%(funcName)s reports: %(message)s"
     )
     logger = logging.getLogger("tikal_ws")
-    if args.log_path != "":
+    if args.log_path != "None":
         log_path = Path(args.log_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(Path(args.log_path), "w", "utf-8")
@@ -85,8 +85,11 @@ def main() -> None:
         logger.addHandler(file_handler)
 
     logger.info("Starting ToyServer")
+    toy_cache_path = (
+        Path(args.toy_cache_path) if args.toy_cache_path != "None" else Path()
+    )
     server = ToyServer(
-        toy_cache_path=Path(args.toy_cache_path),
+        toy_cache_path=toy_cache_path,
         host=args.host,
         port=args.port,
         mock_toys=args.mock_toys,

@@ -16,11 +16,11 @@ Optional arguments are:
 No authentication is performed, so I strongly disadvise choosing a different host.
 - `--port <port>`: defaults to `8142` and defines the port to bind to.
 - `--toy-cache-path <path_to_cache_file>`: defaults to `./data/toy_cache.json` and defines the path and name of the toy cache file.
-If set to the empty string, the cache degrades to in-memory only (No persistence)
+If set to the string "None", the cache degrades to in-memory only (No persistence)
 If the file does not exist, it will be created. If the path up to the file does not exist, it will be created.
 - `--log-level <level>`: defaults to `ERROR` and defines the log level. Must be one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.
 - `--log-file <path_to_log_file>`: defaults to `"./data/tikal_ws.log"` and defines the path and name of the log file.
-If set to the empty string, no log file is used. If the file does not exist, it will be created. The path up to the file must exist.
+If set to the string "None", no log file is used. If the file does not exist, it will be created. If the path up to the file does not exist, it will be created.
 
 Example including all arguments:
 `python3 -m tikal_web_server.toy_server --host 0.0.0.0 --port 8081  --toy_cache_path ./pretty/cache.json --log-level DEBUG --log-file ./important/log.txt`
