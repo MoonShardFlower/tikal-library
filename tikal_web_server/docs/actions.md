@@ -698,3 +698,26 @@ Disconnect a toy and remove it from the server.
 - Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
 
 ---
+
+### 22 `shutdown`
+Shut down the server. Any toys still connected will be automatically stopped and disconnected.
+The command is acknowledged right away. 
+However, the actual shutdown is only triggered once the client who made the request has closed its Websocket connection.
+
+**Request data**
+```json
+{}
+```
+
+**Response data**
+```json
+{
+"ack": true,
+"toy_id": null
+}
+```
+
+**Possible errors**
+- Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
+- Invalid Data: Your request data is wrong, meaning not the empty dict.
+- Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
