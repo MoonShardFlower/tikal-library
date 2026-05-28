@@ -1215,7 +1215,7 @@ class ToyServer:
     async def _on_status_change(self, toy_id: str, status: ToyStatus) -> None:
         """Broadcast a ``connection_status_changed`` event to all connected clients when a toy's connection status changes."""
         await self._broadcast(
-            "connection_status_changed", dict(toy_id=toy_id, status=status.name)
+            "connection_status_changed", dict(toy_id=toy_id, status=status.value)
         )
 
     async def _on_toy_ids_change(self, toy_ids: list[str]) -> None:
