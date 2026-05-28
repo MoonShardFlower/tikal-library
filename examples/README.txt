@@ -11,3 +11,7 @@ just LovenseController) to control the toy.
 The 'Low Level' API provides BLEConnectionBuilder to scan and connect to toys. BLEConnectionBuilder produces and hands over an Implementation of
 the abstract Toy (currently just Lovense) to control the toy. Both classes are mostly async.
 You can use ToyCache to remember toy model names in-between sessions.
+
+
+Additionally, there is also a Websocket API that you can use.
+I provide both an executable for windows (see releases) and the Python files (see ../tikal_web_server/)
