@@ -1,2 +1,6 @@
 sphinx==9.1.0
 sphinx-rtd-theme==3.1.0
+bleak~=2.1.1
+pyserial-asyncio-fast~=0.16
+pydantic~=2.13.4
+websockets~=16.0
