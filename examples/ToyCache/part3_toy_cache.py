@@ -2,9 +2,9 @@ import asyncio
 from logging import INFO, Formatter, StreamHandler, getLogger
 from pathlib import Path
 
-from tikal import BLEConnectionBuilder, ToyCache
+from tikal.high_level import ToyCache
+from tikal.low_level import BLEConnectionBuilder, Transport
 from tikal.mock import MockBleakClient, MockBleakScanner
-from tikal.utils import Transport
 
 # All classes use the logging module
 LOGGER_NAME = "toy"
