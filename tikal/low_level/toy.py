@@ -35,9 +35,8 @@ from .toy_data import (
     ROTATION_TOY_NAMES,
     BadModelError,
     InvalidModelError,
-    ValidationError,
 )
-from .utils import BleTransport, UsbTransport
+from .transport import BleTransport, UsbTransport
 
 
 class UnexpectedToyResponse(ConnectionError):
@@ -347,6 +346,7 @@ class Toy(ABC):
         """
         Similar to :meth: disconnect, but this methode does raise an exception if the disconnect fails.
         The exception is only for logging. The toy is still disconnected in the error case.
+
         Raises:
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
@@ -357,6 +357,7 @@ class Toy(ABC):
     async def strict_intensity1(self, level: int) -> bool:
         """
         Similar to :meth: intensity1, but this method raises an exception if the intensity command fails.
+
         Raises:
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
@@ -383,9 +384,11 @@ class Toy(ABC):
     async def strict_stop(self) -> bool:
         """
         Similar to :meth: stop, but this method raises an exception if the stop command fails.
+
         Raises:
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+
         Returns:
             always True
         """
@@ -407,9 +410,11 @@ class Toy(ABC):
     async def strict_get_battery_level(self) -> Optional[int]:
         """
         Similar to :meth: get_battery_level, but this method raises an exception if the command fails.
+
         Raises:
             UnexpectedToyResponse: The toys' response was unexpected.
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+
         Returns:
             Battery level as a percentage (0-100), or None if the toy has no battery.
         """
@@ -419,8 +424,10 @@ class Toy(ABC):
     async def strict_direct_command(self, command: str, timeout: float = 3.0) -> str:
         """
         Similar to :meth: direct_command, but this method raises an exception if the command fails.
+
         Raises:
             ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
+
         Returns:
             response string from the toy
         """
@@ -937,6 +944,7 @@ class Lovense(Toy):
         """
         Similar to :meth: disconnect, but this methode does raise an exception if the disconnect fails.
         The exception is only for logging. The toy is still disconnected in the error case.
+
         Raises:
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
         """
@@ -963,9 +971,11 @@ class Lovense(Toy):
     async def strict_intensity1(self, level: int) -> bool:
         """
         Similar to :meth: intensity1, but this method raises an exception if the intensity command fails.
+
         Raises:
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+
         Returns:
             Always true
         """
@@ -1003,9 +1013,11 @@ class Lovense(Toy):
     async def strict_stop(self) -> bool:
         """
         Similar to :meth: stop, but this method raises an exception if the stop command fails.
+
         Raises:
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+
         Returns:
             Always True.
         """
@@ -1016,9 +1028,11 @@ class Lovense(Toy):
     async def strict_change_rotation_direction(self) -> bool:
         """
         Similar to :meth: rotate_change_direction, but this method raises an exception if the command fails.
+
         Raises:
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+
         Returns:
             True if the toy supports rotation, False otherwise. Does not raise if the toy does not support rotation.
         """
@@ -1037,9 +1051,11 @@ class Lovense(Toy):
     async def strict_get_battery_level(self) -> int:
         """
         Similar to :meth: get_battery_level, but this method raises an exception if the command fails.
+
         Raises:
             UnexpectedToyResponse: The toys' response was unexpected.
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+
         Returns:
             Battery level as a percentage (0-100).
         """
@@ -1059,8 +1075,10 @@ class Lovense(Toy):
     async def strict_direct_command(self, command: str, timeout: float = 3.0) -> str:
         """
         Similar to :meth: direct_command, but this method raises an exception if the command fails.
+
         Raises:
             ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
+
         Returns:
             response string from the toy
         """
@@ -1069,8 +1087,13 @@ class Lovense(Toy):
     async def strict_get_device_type(self) -> str:
         """
         Similar to :meth: get_device_type, but this method raises an exception if the command fails.
+
         Raises:
             ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
+
+        Returns:
+            String in format "DeviceType:FirmwareVersion:Address" (e.g., "C:11:0082059AD3BD")
+
         Note:
             does not raise UnexpectedToyResponse as the response is not verified.
         """
@@ -1079,9 +1102,13 @@ class Lovense(Toy):
     async def strict_get_status(self) -> int:
         """
         Similar to :meth: get_status, but this method raises an exception if the command fails.
+
         Raises:
             ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
             UnexpectedToyResponse: The toys' response was unexpected, in this case any string containing non-digit characters.
+
+        Returns:
+            Status code (2 = Normal operation)
         """
         response = await self._strict_execute_command("Status:1")
         try:
@@ -1097,9 +1124,13 @@ class Lovense(Toy):
     async def strict_get_batch_number(self) -> str:
         """
         Similar to :meth: get_batch_number, but this method raises an exception if the command fails.
+
         Raises:
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
             UnexpectedToyResponse: The toys' response was unexpected.
+
+        Returns:
+            Batch number string (e.g., "241015" for October 15, 2024)
         """
         response = await self._strict_execute_command("GetBatch")
         if not response.isdigit():
@@ -1114,9 +1145,13 @@ class Lovense(Toy):
     async def strict_power_off(self) -> bool:
         """
         Similar to :meth: power_off, but this method raises an exception if the command fails.
+
         Raises:
             UnexpectedToyResponse: The toys' response was unexpected.
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+
+        Returns:
+            Always True.
         """
         response = await self._strict_execute_command("PowerOff")
         if not response == "OK":

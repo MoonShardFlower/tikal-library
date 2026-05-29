@@ -1,21 +1,32 @@
 """
-WebSocket JSON-based server that exposes ToyHub to connected clients.
+WebSocket JSON-based server that exposes _ToyHub to connected clients.
 Offers an alternative to the Low-Level / High-Level API defined by the tikal library.
 Here information is exchanged via a websocket. Significantly harder to use than the Low-Level / High-Level APIs but
 offers some advantages:
+
 - Process separation
 - Service can be used in applications written in other programming languages (assuming websockets are supported)
 - Multiple clients can modify the same state (experimental, untested)
 
 **Protocol**
+
 Request  (client -> server):
+
+.. code-block:: json
+
     {"request": "some_command", "id": "some_id", "data": {...}}
 
 Response (server -> client):
+
+.. code-block:: json
+
     {"reply": "some_command", "id": "some_id", "success": true,  "data": { ... }}
     {"reply": "some_command", "id": "some_id", "success": false, "data": {"error": "...", "message": "...", ...}}
 
 Event (server -> all clients / scan subscribers):
+
+.. code-block:: json
+
     {"event": "some_event", "success": true,  "data": {...}}
     {"event": "some_event", "success": false, "data": {"error": "...", "message": "..."}}
 
@@ -24,40 +35,53 @@ The success field lets you branch between error handling / normal operation with
 **Examples**:
 
 Request:
-{
-    "request": "get_battery",
-    "id": "some_id",
-    "data": {"toy_id": "some_toy_id"}
-}
+
+.. code-block:: json
+
+    {
+        "request": "get_battery",
+        "id": "some_id",
+        "data": {"toy_id": "some_toy_id"}
+    }
 
 Response:
-{
-    "reply": "get_battery",
-    "id": "some_id",
-    "success": True,
-    "data": {"battery": 85, "toy_id": "some_toy_id"}
-}
+
+.. code-block:: json
+
+    {
+        "reply": "get_battery",
+        "id": "some_id",
+        "success": True,
+        "data": {"battery": 85, "toy_id": "some_toy_id"}
+    }
 
 Error response:
-{
-    "reply": "get_battery",
-    "id": "some_id",
-    "success": False,
-    "data": {"error": "UnknownToyError", "message": "Unable to execute 'get_battery' on 'some_toy_id'. Please add the toy first."}
-}
+
+.. code-block:: json
+
+    {
+        "reply": "get_battery",
+        "id": "some_id",
+        "success": False,
+        "data": {"error": "UnknownToyError", "message": "Unable to execute 'get_battery' on 'some_toy_id'. Please add the toy first."}
+    }
 
 Event:
-{
-    "event": "on_status_change",
-    "success": True,
-    "data": {"toy_id": "some_toy_id", "status": "RECONNECTING"}
-}
+
+.. code-block:: json
+
+    {
+        "event": "on_status_change",
+        "success": True,
+        "data": {"toy_id": "some_toy_id", "status": "RECONNECTING"}
+    }
 
 **Architecture**
+
 Each command is described by a CommandEntry dataclass that bundles:
-  - Request_model   :Pydantic model that validates the incoming data object.
-  - Response_model  :Pydantic model that validates (and serializes) the outgoing data.
-  - Handler         :async callable(hub: ToyHub, data: req_model) -> dict that performs the actual work and returns the raw result dict.
+  - Request_model   : Pydantic model that validates the incoming data object.
+  - Response_model  : Pydantic model that validates (and serializes) the outgoing data.
+  - Handler         : async callable(hub: _ToyHub, data: req_model) -> dict that performs the actual work and returns the raw result dict.
 
 _handle_message is a *generic* dispatcher: validate -> look up entry -> validate inner data -> call handler -> validate response -> send.
 The commands start_scan / stop_scan are a special case as they require a reference to the per-client WebSocket connection.
@@ -79,7 +103,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.datastructures import Headers
 from websockets.http11 import Response
 
-from tikal_web_server.toy_hub import (
+from ._toy_hub import (
     AddConnectionError,
     BadModelError,
     DiscoveryError,
@@ -87,13 +111,13 @@ from tikal_web_server.toy_hub import (
     InvalidModelError,
     ToyAlreadyAddedError,
     ToyConnectionError,
-    ToyHub,
     ToyStatus,
     UnavailableToyError,
     UndiscoveredToyError,
     UnknownToyError,
+    _ToyHub,
 )
-from tikal_web_server.toy_server_models import (
+from .toy_server_models import (
     AckData,
     AddRequestData,
     BatteryResponseData,
@@ -125,12 +149,12 @@ from tikal_web_server.toy_server_models import (
 # -----------------------------------------------------------------------------
 
 
-async def _cmd_get_brands(hub: ToyHub, _: _EmptyData) -> dict:
+async def _cmd_get_brands(hub: _ToyHub, _: _EmptyData) -> dict:
     """
-    Return the full brand -> model-name mapping from ToyHub.
+    Return the full brand -> model-name mapping from _ToyHub.
 
     Args:
-        hub: ToyHub instance.
+        hub: _ToyHub instance.
         _: Unused empty data payload.
 
     Returns:
@@ -139,12 +163,12 @@ async def _cmd_get_brands(hub: ToyHub, _: _EmptyData) -> dict:
     return {"brands": await hub.get_brands()}
 
 
-async def _cmd_get_toy_ids(hub: ToyHub, _: _EmptyData) -> dict:
+async def _cmd_get_toy_ids(hub: _ToyHub, _: _EmptyData) -> dict:
     """
     Return a snapshot of all toy identifiers currently managed by the Server.
 
     Args:
-        hub: ToyHub instance.
+        hub: _ToyHub instance.
         _: Unused empty data payload.
 
     Returns:
@@ -153,7 +177,7 @@ async def _cmd_get_toy_ids(hub: ToyHub, _: _EmptyData) -> dict:
     return {"toy_ids": await hub.get_toy_ids()}
 
 
-async def _cmd_get_state(hub: ToyHub, data: ToyIdData) -> dict:
+async def _cmd_get_state(hub: _ToyHub, data: ToyIdData) -> dict:
     """
     Returns the current state of a toy. This is an inexpensive in-memory read (no BLE communication).
 
@@ -167,7 +191,7 @@ async def _cmd_get_state(hub: ToyHub, data: ToyIdData) -> dict:
     -  `is_paused` (bool) Whether the toy is currently paused (patterns do not advance)
     -  `elapsed` (float) Time elapsed since the start of the pattern or last wraparound in ms
     Args:
-        hub: ToyHub instance managing the toy
+        hub: _ToyHub instance managing the toy
         data: Validated ToyIdData instance, containing the toy_id
 
     Raises:
@@ -179,12 +203,12 @@ async def _cmd_get_state(hub: ToyHub, data: ToyIdData) -> dict:
     return await hub.get_state(data.toy_id)
 
 
-async def _cmd_get_connection_status(hub: ToyHub, data: ToyIdData) -> dict:
+async def _cmd_get_connection_status(hub: _ToyHub, data: ToyIdData) -> dict:
     """
     Return the current connection status of a toy.
 
     Args:
-        hub: ToyHub instance.
+        hub: _ToyHub instance.
         data: Validated ToyIdData containing the toy_id.
 
     Raises:
@@ -199,11 +223,11 @@ async def _cmd_get_connection_status(hub: ToyHub, data: ToyIdData) -> dict:
     }
 
 
-async def _cmd_get_battery(hub: ToyHub, data: ToyIdData) -> dict:
+async def _cmd_get_battery(hub: _ToyHub, data: ToyIdData) -> dict:
     """
     Retrieve the in-memory battery level for a toy. No communication to the toy is performed. Kept up to date in the background
     Args:
-        hub: ToyHub instance managing the toy
+        hub: _ToyHub instance managing the toy
         data: Validated ToyIdData instance, containing the toy_id
 
     Raises:
@@ -215,7 +239,7 @@ async def _cmd_get_battery(hub: ToyHub, data: ToyIdData) -> dict:
     }
 
 
-async def _cmd_get_info(hub: ToyHub, data: GetInfoData) -> dict:
+async def _cmd_get_info(hub: _ToyHub, data: GetInfoData) -> dict:
     """
     Gather information about the toy.
 
@@ -229,7 +253,7 @@ async def _cmd_get_info(hub: ToyHub, data: GetInfoData) -> dict:
     -  `max_intensity` (int) maximum intensity value
 
     Args:
-        hub:   ToyHub instance managing the toy
+        hub:   _ToyHub instance managing the toy
         data:   Validated GetInfoData instance, containing the toy_id and full flag.
                 If full is True, additional brand-dependent information is returned.
 
@@ -243,18 +267,18 @@ async def _cmd_get_info(hub: ToyHub, data: GetInfoData) -> dict:
     return await hub.get_info(data.toy_id, data.full)
 
 
-async def _cmd_get_all(hub: ToyHub, data: GetInfoData) -> dict:
+async def _cmd_get_all(hub: _ToyHub, data: GetInfoData) -> dict:
     """Return combined state, info, connection status, get_battery for a toy."""
     return await hub.get_all(data.toy_id, data.full)
 
 
-async def _cmd_direct_command(hub: ToyHub, data: DirectCommandData) -> dict:
+async def _cmd_direct_command(hub: _ToyHub, data: DirectCommandData) -> dict:
     """
     Send a raw command string directly to a toy. Use this to access toy functionality not exposed by the API.
-    Do not use it to change the tracked state (e.g., intensities) as ToyHub will not be aware of the resulting state change.
+    Do not use it to change the tracked state (e.g., intensities) as _ToyHub will not be aware of the resulting state change.
 
     Args:
-        hub: ToyHub instance managing the toy.
+        hub: _ToyHub instance managing the toy.
         data: Validated DirectCommandData containing toy_id and the raw command string.
 
     Raises:
@@ -270,12 +294,12 @@ async def _cmd_direct_command(hub: ToyHub, data: DirectCommandData) -> dict:
     }
 
 
-async def _cmd_change_rotation_direction(hub: ToyHub, data: ToyIdData) -> dict:
+async def _cmd_change_rotation_direction(hub: _ToyHub, data: ToyIdData) -> dict:
     """
     Toggle the rotation direction of a toy if the toy supports it.
 
     Args:
-        hub: ToyHub instance managing the toy.
+        hub: _ToyHub instance managing the toy.
         data: Validated ToyIdData containing the target toy_id.
 
     Raises:
@@ -291,12 +315,12 @@ async def _cmd_change_rotation_direction(hub: ToyHub, data: ToyIdData) -> dict:
     }
 
 
-async def _cmd_add(hub: ToyHub, data: AddRequestData) -> dict:
+async def _cmd_add(hub: _ToyHub, data: AddRequestData) -> dict:
     """
     Connect to a discovered toy and register it on the Server.
 
     Args:
-        hub: ToyHub instance.
+        hub: _ToyHub instance.
         data: Validated AddRequestData containing toy_id and model_name.
 
     Raises:
@@ -314,12 +338,12 @@ async def _cmd_add(hub: ToyHub, data: AddRequestData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_remove(hub: ToyHub, data: ToyIdData) -> dict:
+async def _cmd_remove(hub: _ToyHub, data: ToyIdData) -> dict:
     """
     Disconnect a toy, then deregister it from the Server.
 
     Args:
-        hub: ToyHub instance.
+        hub: _ToyHub instance.
         data: Validated ToyIdData containing the target toy_id.
 
     Raises:
@@ -333,12 +357,12 @@ async def _cmd_remove(hub: ToyHub, data: ToyIdData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_set_model(hub: ToyHub, data: SetModelData) -> dict:
+async def _cmd_set_model(hub: _ToyHub, data: SetModelData) -> dict:
     """
     Change the model name assigned to an already-added toy.
 
     Args:
-        hub: ToyHub instance.
+        hub: _ToyHub instance.
         data: Validated SetModelData containing toy_id and the new model_name.
 
     Raises:
@@ -351,12 +375,12 @@ async def _cmd_set_model(hub: ToyHub, data: SetModelData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_stop(hub: ToyHub, data: ToyIdData) -> dict:
+async def _cmd_stop(hub: _ToyHub, data: ToyIdData) -> dict:
     """
     Stop the toy by setting both intensities to zero and pausing any active pattern.
 
     Args:
-        hub: ToyHub instance managing the toy.
+        hub: _ToyHub instance managing the toy.
         data: Validated ToyIdData containing the target toy_id.
 
     Raises:
@@ -370,12 +394,12 @@ async def _cmd_stop(hub: ToyHub, data: ToyIdData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_intensity1(hub: ToyHub, data: IntensityData) -> dict:
+async def _cmd_intensity1(hub: _ToyHub, data: IntensityData) -> dict:
     """
     Set the primary intensity of a toy and pause any active pattern.
 
     Args:
-        hub: ToyHub instance managing the toy.
+        hub: _ToyHub instance managing the toy.
         data: Validated IntensityData containing toy_id and intensity (0 – max_intensity). Automatically clamped.
 
     Raises:
@@ -392,12 +416,12 @@ async def _cmd_intensity1(hub: ToyHub, data: IntensityData) -> dict:
     return {"ack": ack, "toy_id": data.toy_id}
 
 
-async def _cmd_intensity2(hub: ToyHub, data: IntensityData) -> dict:
+async def _cmd_intensity2(hub: _ToyHub, data: IntensityData) -> dict:
     """
     Set the secondary intensity of a toy and pause any active pattern. For single-intensity toys, this command has no effect.
 
     Args:
-        hub: ToyHub instance managing the toy.
+        hub: _ToyHub instance managing the toy.
         data: Validated IntensityData containing toy_id and intensity (0 – max_intensity). Automatically clamped.
 
     Raises:
@@ -414,7 +438,7 @@ async def _cmd_intensity2(hub: ToyHub, data: IntensityData) -> dict:
     return {"ack": ack, "toy_id": data.toy_id}
 
 
-async def _cmd_toggle_pause(hub: ToyHub, data: ToyIdData) -> dict:
+async def _cmd_toggle_pause(hub: _ToyHub, data: ToyIdData) -> dict:
     """
     Toggle the pause state of a toy's pattern playback.
 
@@ -423,7 +447,7 @@ async def _cmd_toggle_pause(hub: ToyHub, data: ToyIdData) -> dict:
     Pausing a blocked toy clears its blocked state (A toy cannot be both paused and blocked simultaneously).
 
     Args:
-        hub: ToyHub instance managing the toy.
+        hub: _ToyHub instance managing the toy.
         data: Validated ``ToyIdData`` containing the target ``toy_id``.
 
     Raises:
@@ -437,7 +461,7 @@ async def _cmd_toggle_pause(hub: ToyHub, data: ToyIdData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_toggle_block(hub: ToyHub, data: ToyIdData) -> dict:
+async def _cmd_toggle_block(hub: _ToyHub, data: ToyIdData) -> dict:
     """
     Toggle the blocked state of a toy.
 
@@ -446,7 +470,7 @@ async def _cmd_toggle_block(hub: ToyHub, data: ToyIdData) -> dict:
     Unblocking restores normal operation.
 
     Args:
-        hub: ToyHub instance managing the toy.
+        hub: _ToyHub instance managing the toy.
         data: Validated ToyIdData containing the target toy_id.
 
     Raises:
@@ -460,7 +484,7 @@ async def _cmd_toggle_block(hub: ToyHub, data: ToyIdData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_set_paused(hub: ToyHub, data: SetPausedData) -> dict:
+async def _cmd_set_paused(hub: _ToyHub, data: SetPausedData) -> dict:
     """
     Set the paused state of a toy's pattern playback.
 
@@ -469,7 +493,7 @@ async def _cmd_set_paused(hub: ToyHub, data: SetPausedData) -> dict:
     Pausing a blocked toy clears its blocked state (A toy cannot be both paused and blocked simultaneously).
 
     Args:
-        hub: ToyHub instance managing the toy.
+        hub: _ToyHub instance managing the toy.
         data: Validated SetPausedData containing toy_id and pause (True to pause, False to resume).
 
     Raises:
@@ -483,7 +507,7 @@ async def _cmd_set_paused(hub: ToyHub, data: SetPausedData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_set_blocked(hub: ToyHub, data: SetBlockedData) -> dict:
+async def _cmd_set_blocked(hub: _ToyHub, data: SetBlockedData) -> dict:
     """
     Set the blocked state of a toy.
 
@@ -491,7 +515,7 @@ async def _cmd_set_blocked(hub: ToyHub, data: SetBlockedData) -> dict:
     manual commands. Blocking a paused toy clears its pause state (a toy cannot be both paused and blocked simultaneously).
 
     Args:
-        hub: ToyHub instance managing the toy.
+        hub: _ToyHub instance managing the toy.
         data: Validated SetBlockedData containing toy_id and block (True to block, False to unblock).
 
     Raises:
@@ -505,7 +529,7 @@ async def _cmd_set_blocked(hub: ToyHub, data: SetBlockedData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_set_pattern(hub: ToyHub, data: SetPatternData) -> dict:
+async def _cmd_set_pattern(hub: _ToyHub, data: SetPatternData) -> dict:
     """
     Load a new intensity pattern onto a toy and start playback.
 
@@ -514,7 +538,7 @@ async def _cmd_set_pattern(hub: ToyHub, data: SetPatternData) -> dict:
     If wraparound is True, the pattern loops back to the first segment upon completing the last segment; else both intensities are set to zero and playback stops.
 
     Args:
-        hub: ToyHub instance managing the toy.
+        hub: _ToyHub instance managing the toy.
         data: Validated SetPatternData containing:
             - toy_id: Identifier of the target toy.
             - pattern: Sequence of (intensity1, intensity2, duration_ms) tuples.
@@ -533,7 +557,7 @@ async def _cmd_set_pattern(hub: ToyHub, data: SetPatternData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_scan_noop(hub: ToyHub, data: _EmptyData) -> dict:  # pragma: no cover
+async def _cmd_scan_noop(hub: _ToyHub, data: _EmptyData) -> dict:  # pragma: no cover
     """
     Placeholder handler for scan commands (start_scan / stop_scan).
 
@@ -544,7 +568,7 @@ async def _cmd_scan_noop(hub: ToyHub, data: _EmptyData) -> dict:  # pragma: no c
     return {"ack": True}
 
 
-async def _cmd_shutdown(hub: ToyHub, data: _EmptyData) -> dict:  # pragma: no cover
+async def _cmd_shutdown(hub: _ToyHub, data: _EmptyData) -> dict:  # pragma: no cover
     """
     Prepare the server to shut down as soon as the requesting client disconnects.
     The actual shutdown is triggered in _handle_connection after the client leaves.
@@ -568,7 +592,7 @@ class CommandEntry:
     Attributes:
         req_model:      The Pydantic model used to validate (and coerce) the data field of the incoming RequestEnvelope.
         resp_model:     The Pydantic model used to validate the dict returned by the handler before it is serialized into the ResponseEnvelope.
-        handler:        Async callable with the signature (hub: ToyHub, data: req_model) -> dict that performs the command and returns a result dict.
+        handler:        Async callable with the signature (hub: _ToyHub, data: req_model) -> dict that performs the command and returns a result dict.
         is_scan:        If True, the command is a scan subscription command (start_scan / stop_scan) and routed to _handle_scan
                         instead of the generic dispatcher. Handler is unused in that case.
         is_shutdown:    If True, the command is a shutdown command and routed to _handle_shutdown instead of the generic dispatcher.
@@ -626,9 +650,9 @@ _COMMAND_REGISTRY: dict[str, CommandEntry] = {
 
 class ToyServer:
     """
-    WebSocket server that wraps a ToyHub instance.
+    WebSocket server that wraps a _ToyHub instance.
 
-    The server owns the ToyHub and wires itself up as all of its callbacks. Create it, then await self.serve() to start accepting connections.
+    The server owns the _ToyHub and wires itself up as all of its callbacks. Create it, then await self.serve() to start accepting connections.
     """
 
     def __init__(
@@ -641,16 +665,16 @@ class ToyServer:
         log_name: str = "tikal_ws",
     ) -> None:
         """
-        Initialize the server and wire it up to a new ToyHub instance. Call await self.serve() to begin accepting connections.
+        Initialize the server and wire it up to a new _ToyHub instance. Call await self.serve() to begin accepting connections.
 
         Args:
-            toy_cache_path: Path to the toy-cache file used by ToyHub to persist previously added toys across restarts. If empty, no persistent cache is used.
+            toy_cache_path: Path to the toy-cache file used by _ToyHub to persist previously added toys across restarts. If empty, no persistent cache is used.
             host:           Network interface to bind the WebSocket server to. Defaults to "localhost".
                             There are no security measures, so using anything other than localhost is not recommended.
             port:           TCP port to listen on. Defaults to 8142.
             idle_shutdown_delay:  How long to wait for clients to disconnect before shutting down the server. Defaults to 3 seconds. If 0, the Server does not shut down automatically.
-            mock_toys:      If True, ToyHub uses mock toys instead of real toys.
-            log_name:       Name of the Python logger used by both the server and the underlying ToyHub instance. Defaults to "tikal_ws".
+            mock_toys:      If True, _ToyHub uses mock toys instead of real toys.
+            log_name:       Name of the Python logger used by both the server and the underlying _ToyHub instance. Defaults to "tikal_ws".
         """
 
         self._host = host
@@ -672,7 +696,7 @@ class ToyServer:
         self._start_time: datetime.datetime | None = None
         self._shutdown_initiated = False
 
-        self._hub = ToyHub(
+        self._hub = _ToyHub(
             on_status_change=self._on_status_change,
             on_toy_ids_change=self._on_toy_ids_change,
             on_toy_state_change=self._on_toy_state_change,
@@ -702,7 +726,7 @@ class ToyServer:
         self._log.info("ToyServer stopped.")
 
     async def _idle_shutdown(self) -> None:
-        """Sleep for self.idle_shutdown_delay, then tear down ToyHub, and close the server."""
+        """Sleep for self.idle_shutdown_delay, then tear down _ToyHub, and close the server."""
         self._log.info("Entering IdleShutdown")
         try:
             await asyncio.sleep(self.idle_shutdown_delay)
@@ -714,7 +738,7 @@ class ToyServer:
         await self._shutdown()
 
     async def _shutdown(self) -> None:
-        """Tear down ToyHub and lose the server."""
+        """Tear down _ToyHub and lose the server."""
         await self._hub.shutdown()  # idempotent
         if self._shutdown_initiated:
             return
@@ -726,7 +750,7 @@ class ToyServer:
         """
         Manage the full lifecycle of a single WebSocket client connection.
 
-        On connect: Cancels any pending idle-shutdown timer, registers the client in _clients, and calls ToyHub.startup().
+        On connect: Cancels any pending idle-shutdown timer, registers the client in _clients, and calls _ToyHub.startup().
 
         While connected: Reads messages from the client in a loop, spawning a new task per message, so slow commands don't block later ones.
 
@@ -1210,7 +1234,7 @@ class ToyServer:
             *(ws.send(msg) for ws in subscribers), return_exceptions=True
         )
 
-    # ToyHub callbacks -> event broadcasts
+    # _ToyHub callbacks -> event broadcasts
 
     async def _on_status_change(self, toy_id: str, status: ToyStatus) -> None:
         """Broadcast a ``connection_status_changed`` event to all connected clients when a toy's connection status changes."""

@@ -1,5 +1,5 @@
 """
-WebSocket JSON-based server that exposes ToyHub to connected clients.
+WebSocket JSON-based server that exposes _ToyHub to connected clients.
 Offers an alternative to the Low-Level / High-Level API defined by the tikal library.
 Here information is exchanged via a websocket. Significantly harder to use than the Low-Level / High-Level APIs but
 offers some advantages:
@@ -39,7 +39,7 @@ import logging
 import traceback
 from pathlib import Path
 
-from tikal_web_server.toy_server import ToyServer
+from .toy_server import ToyServer
 
 
 def main() -> None:
@@ -58,7 +58,7 @@ def main() -> None:
         --log-level: Logging verbosity: DEBUG, INFO, WARNING, or ERROR (default: INFO).
     """
 
-    parser = argparse.ArgumentParser(description="WebSocket server for ToyHub")
+    parser = argparse.ArgumentParser(description="WebSocket server for _ToyHub")
     parser.add_argument(
         "--host", default="localhost", help="Host to bind to (default: localhost)"
     )

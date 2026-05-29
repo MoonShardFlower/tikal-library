@@ -30,8 +30,8 @@ from typing import Any, Callable, Type
 from bleak import BleakClient, BleakScanner, BLEDevice
 
 from .toy import Lovense, Toy
-from .toy_data import LOVENSE_TOY_NAMES, ToyData, ValidationError
-from .utils import BleTransport
+from .toy_data import LOVENSE_TOY_NAMES, InvalidModelError, ToyData, ValidationError
+from .transport import BleTransport
 
 
 class StaleDeviceError(ConnectionError):
@@ -143,14 +143,12 @@ class LovenseHandler(BLEBrandHandler):
             A connected, ready to use ``Lovense`` instance.
 
         Raises:
-            ValidationError: The model_name in ``toy_data`` is invalid. Valid model_names are in LOVENSE_TOY_NAMES.keys() of module toy_data
+            ValidationError: The ``toy_data`` contains an invalid model name.
             ConnectionError: The BLE connection, UUID resolution, or notification setup failed.
         """
-        model_name = toy_data.model_name
-        if model_name not in LOVENSE_TOY_NAMES:
-            raise ValidationError(
-                f"Invalid model_name '{model_name}' for address {device.address}. "
-                f"Valid model_names are: {list(LOVENSE_TOY_NAMES.keys())}"
+        if toy_data.model_name.title() not in LOVENSE_TOY_NAMES:
+            raise InvalidModelError(
+                f"Invalid model name '{toy_data.model_name}' for lovense toy at address '{device.address}'."
             )
 
         transport = BleTransport(
@@ -161,12 +159,17 @@ class LovenseHandler(BLEBrandHandler):
         )
         try:
             await transport.connect()
-            toy = Lovense(transport, model_name, self._on_power_off, self._log.name)
+            toy = Lovense(
+                transport, toy_data.model_name, self._on_power_off, self._log.name
+            )
             await toy.start_notifications()
+        except ValidationError:
+            await transport.disconnect()
+            raise
         except Exception as e:
             await transport.disconnect()
             raise ConnectionError(
-                f"Error connecting to {model_name} at {device.address}: {e}."
+                f"Error connecting to {toy_data.model_name} at {device.address}: {e}."
             )
         return toy
 
@@ -292,7 +295,8 @@ class BLEConnectionBuilder:
         Returns:
             List of ``ToyData`` objects with brand‑appropriate types. This is a snapshot, not a continuous stream of updates.
 
-        Examples:
+        Examples::
+
             toys = await builder.discover_toys(timeout=5.0)
             print(f"Found {len(toys)} Lovense devices")
             for toy in toys:
@@ -418,6 +422,7 @@ class BLEConnectionBuilder:
             - ``InvalidModelError``: If model_name is not valid for this toy brand.
             - ``BadModelError``: If the model_name is valid, but commands still fail. See BadModelError for details
             - ``RuntimeError``: Developer error. I did not specify a handler for this subclass of ToyData. Should never happen.
+
             The order of results matches the order of the input list.
 
         Example::

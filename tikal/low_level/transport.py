@@ -1,6 +1,6 @@
 """
-Provides the transport layer for toy communication. You are not meant to instantiate any of these classes yourself.
-Objects of these classes are created by the ConnectionBuilder as needed.
+Part of the low-level API: Provides the transport layer for toy communication.
+You are not meant to instantiate any of these classes yourself. Objects of these classes are created by the ConnectionBuilder as needed.
 
 Decouples toy protocol logic from the underlying wire technology (BLE, USB, etc.).
 Concrete implementations wrap bleak or pyserial-asyncio-fast.

@@ -1,9 +1,7 @@
 """
-Data structures and constants for toy device management.
+Part of both the Low-Level and High-Level API: Data structures and constants for toy device management.
 
-Part of both the Low-Level and High-Level API.
 This module defines the data classes and configuration used throughout the toy control system. It provides:
-
 - Exception classes for validation errors (raised if model_name is invalid)
 - ToyData returned by the connection builder after discovery
 - Lookup tables mapping model names to their capabilities
@@ -11,6 +9,8 @@ This module defines the data classes and configuration used throughout the toy c
 Constants:
     LOVENSE_TOY_NAMES (dict[str, ToyCommands]): Maps Lovense toy model names to their command configurations.
      Keys are model names (e.g., "Nora", "Lush"), values are ToyCommands objects defining the toy's capabilities.
+
+    BRANDS (dict[str, str]): Mapping of brand names to all their toy models.
 
     ROTATION_TOY_NAMES (list[str]): List of Lovense toy model names that support rotation direction changes.
 """
@@ -63,6 +63,7 @@ class BadModelError(ValidationError):
     This exception can mean two things:
         1) A valid, but wrong model_name is being set
         2) the commands being incorrect -> the Library does not handle this model correctly. Please contact the library maintainer in this case.
+
     Can be raised during toy initialization or when setting a toy's model name.
     """
 

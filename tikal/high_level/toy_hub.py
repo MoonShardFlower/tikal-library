@@ -50,12 +50,13 @@ from typing import Any, Callable, Optional
 
 from bleak import BleakClient, BleakScanner
 
-from .connection_builder import BLEConnectionBuilder
-from .toy import Lovense
+from .._private import AsyncRunner
+from ..low_level import BLEConnectionBuilder, Lovense, ToyData
 from .toy_cache import ToyCache
 from .toy_controller import LovenseController, ToyController
-from .toy_data import ToyData
-from .utils import AsyncRunner
+
+_BATTERY_UPDATE_INTERVAL = 120.0  # seconds
+_COMMUNICATION_FPS = 20  # frames per second
 
 
 class ToyHub:
@@ -76,14 +77,7 @@ class ToyHub:
         default_model: Default model name to use if a toy isn't in the cache.
         bluetooth_scanner: BLE scanner class to use (defaults to BleakScanner). Can be overridden for testing.
         bluetooth_client: BLE client class to use (defaults to BleakClient). Can be overridden for testing.
-
-    Attributes:
-        BATTERY_UPDATE_INTERVAL (float): Seconds between automatic battery updates (120.0).
-        COMMUNICATION_FPS (int): Frames per second for communication loop (20).
     """
-
-    BATTERY_UPDATE_INTERVAL = 120.0  # seconds
-    COMMUNICATION_FPS = 20  # frames per second
 
     def __init__(
         self,
@@ -596,7 +590,7 @@ class ToyHub:
             if len(self._toy_controllers) == 1:
                 self._start_communication_loop()
         # Trigger immediate battery update for new device
-        self._last_battery_update = time() - self.BATTERY_UPDATE_INTERVAL
+        self._last_battery_update = time() - _BATTERY_UPDATE_INTERVAL
         self._log.debug(
             f"Registered toy {controller.toy_id}. ({len(self._toy_controllers)} total)"
         )
@@ -638,7 +632,7 @@ class ToyHub:
         if self._cancel_communication_loop is not None:
             return
 
-        sleep_time = 1.0 / self.COMMUNICATION_FPS
+        sleep_time = 1.0 / _COMMUNICATION_FPS
 
         async def communication_iteration():
             try:
@@ -649,10 +643,7 @@ class ToyHub:
                     controllers = list(self._toy_controllers.values())
                 # Update battery levels periodically
                 if self._battery_update_callback:
-                    if (
-                        time() - self._last_battery_update
-                        >= self.BATTERY_UPDATE_INTERVAL
-                    ):
+                    if time() - self._last_battery_update >= _BATTERY_UPDATE_INTERVAL:
                         await self._update_battery_levels(controllers)
                 # Process controller communication (pattern playback, etc.)
                 await ToyHub._process_controller_communication(controllers, sleep_time)

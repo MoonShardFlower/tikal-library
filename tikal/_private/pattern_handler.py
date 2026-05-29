@@ -1,3 +1,5 @@
+"""Private Module: Implements the necessary logic for pattern handling functionality of the High-Level API"""
+
 from time import time
 
 

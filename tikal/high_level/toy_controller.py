@@ -23,8 +23,8 @@ from collections import deque
 from logging import getLogger
 from typing import Any, Callable, Optional
 
-from .toy import Lovense, Toy
-from .utils import PatternHandler
+from .._private import PatternHandler
+from ..low_level import Lovense, Toy
 
 
 class ToyController(ABC):
@@ -313,6 +313,7 @@ class ToyController(ABC):
         - If a pattern is active, it stops advancing.
         - Toy intensities are set to zero, but manual commands can override this.
         - Block state is cleared if active (toy cannot be paused and blocked at the same time)
+
         Args:
             pause: If true will be paused, if false will be unpaused.
         """
@@ -333,6 +334,7 @@ class ToyController(ABC):
             - Toy intensities are forced to zero
             - Pattern continues advancing but doesn't control the toy
             - Pause state is cleared if active (toy cannot be paused and blocked at the same time)
+
         Args:
             block: If true will be blocked, if false will be unblocked.
         """

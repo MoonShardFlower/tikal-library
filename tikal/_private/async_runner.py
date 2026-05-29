@@ -1,3 +1,5 @@
+"""Private Module: Used by the High-Level API to run asyncio coroutines."""
+
 import asyncio
 import threading
 import time

@@ -311,7 +311,7 @@ class ToyIdsData(BaseModel):
     Response payload for get_toy_ids.
 
     Attributes:
-        toy_ids: Snapshot list of all toy identifiers currently managed by ToyHub.
+        toy_ids: Snapshot list of all toy identifiers currently managed by _ToyHub.
     """
 
     toy_ids: list[str]

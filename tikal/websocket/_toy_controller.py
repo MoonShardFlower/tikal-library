@@ -1,16 +1,16 @@
 """
-Private
+Private Module of the WebSocket API
 
-Defines the ToyController class, which extends the low-level Toy class with additional methods for pattern playback and toy control.
+Defines the _ToyController class, which extends the low-level Toy class with additional methods for pattern playback and toy control.
 Comparable to the ToyController class of the tikal library, but offering async methods instead of sync.
-Meant to be consumed by ToyHub, which in turn is consumed by ToyServer. ToyServer defines a public API.
+Meant to be consumed by _ToyHub, which in turn is consumed by ToyServer. ToyServer defines a public API.
 """
 
-from tikal import Lovense, Toy
-from tikal.utils import PatternHandler
+from .._private import PatternHandler
+from ..low_level import Lovense, Toy
 
 
-class ToyController:
+class _ToyController:
     """
     Parent class for high-level toy control.
 
@@ -115,7 +115,7 @@ class ToyController:
     @property
     def battery(self) -> int | None:
         """
-        Get the current battery level of the toy (from memory, automatically updated by ToyHub)
+        Get the current battery level of the toy (from memory, automatically updated by _ToyHub)
 
         Returns:
             Current battery level (0-100) or None if the toy has no battery.
@@ -447,7 +447,7 @@ class ToyController:
 
     async def process_communication(self) -> None:
         """
-        Process pattern playback. This method is called periodically by the ToyHub to execute pattern playback.
+        Process pattern playback. This method is called periodically by the _ToyHub to execute pattern playback.
 
         Raises:
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
@@ -533,7 +533,7 @@ class ToyController:
         await self._toy.strict_reconnect()
 
 
-class LovenseController(ToyController):
+class _LovenseController(_ToyController):
     """
     High-level controller for Lovense toys.
 

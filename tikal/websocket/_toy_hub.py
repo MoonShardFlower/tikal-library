@@ -1,9 +1,9 @@
 """
-Private
+Private Module of the WebSocket API
 
 Contains all the ToyManagement logic needed by ToyServer so ToyServer can focus on defining the public API alone.
-Comparable to ToyHub of the tikal library but is mostly async instead of sync. Makes use of private ToyControllers, which
-unlike the tikal ToyHub are not exposed to users -> all logic routed through ToyHub instead.
+Comparable to _ToyHub of the tikal library but is mostly async instead of sync. Makes use of private ToyControllers, which
+unlike the tikal _ToyHub are not exposed to users -> all logic routed through _ToyHub instead.
 """
 
 import asyncio
@@ -15,13 +15,14 @@ from typing import Any, Awaitable, Callable, TypeVar
 
 from bleak import BleakClient, BleakScanner
 
-from tikal import BRANDS
-from tikal import BadModelError as LowLevelBadModelError
-from tikal import BLEConnectionBuilder
-from tikal import InvalidModelError as LowLevelInvalidModelError
-from tikal import Lovense, ToyCache, ToyData
-from tikal.mock import MockBleakClient, MockBleakScanner
-from tikal_web_server.toy_controller import LovenseController, ToyController
+from ..high_level import ToyCache
+from ..low_level import BRANDS
+from ..low_level import BadModelError as LowLevelBadModelError
+from ..low_level import BLEConnectionBuilder
+from ..low_level import InvalidModelError as LowLevelInvalidModelError
+from ..low_level import Lovense, ToyData
+from ..mock import MockBleakClient, MockBleakScanner
+from ._toy_controller import _LovenseController, _ToyController
 
 _RETRY_DELAY = 0.05  # seconds,
 _PROCESS_INTERVAL = 0.05  # seconds
@@ -34,9 +35,9 @@ from enum import StrEnum
 
 
 class ToyStatus(StrEnum):
-    """Represents the connection status of a toy managed by ToyHub."""
+    """Represents the connection status of a toy managed by _ToyHub."""
 
-    # reconnection succeeded. Always preceded by a toy_state_change event (so clients stay synchronized with the ToyHub state)
+    # reconnection succeeded. Always preceded by a toy_state_change event (so clients stay synchronized with the _ToyHub state)
     CONNECTED = "connected"
     # on_disconnect fired, command failed. Reconnection is automatically attempted
     RECONNECTING = "reconnecting"
@@ -55,7 +56,7 @@ class UndiscoveredToyError(ValueError):
 
 
 class UnknownToyError(ValueError):
-    """Raised when trying to interact with a toy that is not known to ToyHub."""
+    """Raised when trying to interact with a toy that is not known to _ToyHub."""
 
     def __init__(self, toy_id: str):
         self.toy_id = toy_id
@@ -134,7 +135,7 @@ async def _retry(fn, *args):
         return await fn(*args)
 
 
-class ToyHub:
+class _ToyHub:
 
     def __init__(
         self,
@@ -167,12 +168,12 @@ class ToyHub:
         """
         self._log = logging.getLogger(log_name)
         self._log.info(
-            f"Initializing ToyHub with toy_cache_path={toy_cache_path} and mock_toys={mock_toys}"
+            f"Initializing _ToyHub with toy_cache_path={toy_cache_path} and mock_toys={mock_toys}"
         )
 
         # Toy state
         self._toy_cache = ToyCache(toy_cache_path, default_model, log_name)
-        self._toys: dict[str, ToyController] = {}
+        self._toys: dict[str, _ToyController] = {}
         self._toy_lock = asyncio.Lock()
         # Per-toy command lock: held for the full check-command-callback sequence of every mutating operation on a single toy.
         # This prevents races (e.g., two clients racing on set_paused) and serializes concurrent BLE commands to the same toy.
@@ -222,8 +223,8 @@ class ToyHub:
     # -------------------------------------------------------------------------
 
     async def startup(self) -> None:
-        """Start the background processing and battery polling loops. Call before using ToyHub. Idempotent."""
-        self._log.info("Starting ToyHub.")
+        """Start the background processing and battery polling loops. Call before using _ToyHub. Idempotent."""
+        self._log.info("Starting _ToyHub.")
         self._shutting_down = False
         if self._process_task is None or self._process_task.done():
             self._process_task = asyncio.get_running_loop().create_task(
@@ -235,8 +236,8 @@ class ToyHub:
             )
 
     async def shutdown(self) -> None:
-        """Stop the background processing and battery polling loops. Disconnects all toys. Call when finished using ToyHub. Idempotent."""
-        self._log.info("Shutting down ToyHub.")
+        """Stop the background processing and battery polling loops. Disconnects all toys. Call when finished using _ToyHub. Idempotent."""
+        self._log.info("Shutting down _ToyHub.")
         self._shutting_down = True
 
         # Idempotent. Safe to call even when no scan is running
@@ -379,7 +380,7 @@ class ToyHub:
         """
         Handle a toy power‑off event.
 
-        Sets ToyStatus to POWERED_OFF and removes the Toy from ToyHub.
+        Sets ToyStatus to POWERED_OFF and removes the Toy from _ToyHub.
 
         Args:
             toy_id: Identifier of the toy that powered off.
@@ -417,7 +418,7 @@ class ToyHub:
                 )
 
     async def _process_one_locked(
-        self, toy: ToyController, cmd_lock: asyncio.Lock
+        self, toy: _ToyController, cmd_lock: asyncio.Lock
     ) -> None:
         """
         Acquire the per‑toy command lock and run one `process_communication` tick.
@@ -431,7 +432,7 @@ class ToyHub:
         async with cmd_lock:
             await self._process_one(toy)
 
-    async def _process_one(self, toy: ToyController) -> None:
+    async def _process_one(self, toy: _ToyController) -> None:
         """
         Run process_communication for a single toy with one automatic retry.
         Errors after the retry are logged but not re-raised so the loop stays alive.
@@ -458,7 +459,7 @@ class ToyHub:
                 exc_info=True,
             )
 
-    async def _handle_command_failure(self, toy: ToyController) -> None:
+    async def _handle_command_failure(self, toy: _ToyController) -> None:
         """
         Handle a command failure after the built‑in retry.
 
@@ -472,7 +473,7 @@ class ToyHub:
         self._ensure_reconnect_task(toy)
         await self._set_toy_status(toy.toy_id, ToyStatus.RECONNECTING)
 
-    def _ensure_reconnect_task(self, toy: ToyController) -> None:
+    def _ensure_reconnect_task(self, toy: _ToyController) -> None:
         """
         Start a background reconnect task for a toy if none is already running.
 
@@ -501,21 +502,13 @@ class ToyHub:
         if self._reconnect_tasks.get(toy_id) is task:
             self._reconnect_tasks.pop(toy_id, None)
 
-    async def _reconnect_toy(self, toy: ToyController) -> None:
+    async def _reconnect_toy(self, toy: _ToyController) -> None:
         """
         Attempt to reconnect a lost toy. If successful, sets its ToyStatus to CONNECTED; else sets it to LOST and removes the toy.
 
         Args:
             toy: The toy controller to reconnect.
         """
-        # Give some time for the connection to fix itself
-        await asyncio.sleep(1.0)
-        if toy.is_connected:
-            await self._fire_callback(self._on_toy_state_change, toy.get_state())
-            await self._set_toy_status(toy.toy_id, ToyStatus.CONNECTED)
-            return
-
-        # Try reconnecting:
         try:
             await toy.reconnect()
             await toy.stop()  # Always stop the toy after connection loss
@@ -536,7 +529,7 @@ class ToyHub:
             except Exception:
                 pass
 
-    async def _get_toy(self, toy_id: str) -> ToyController:
+    async def _get_toy(self, toy_id: str) -> _ToyController:
         """
         Retrieve a toy controller by its ID.
 
@@ -547,7 +540,7 @@ class ToyHub:
             UnknownToyError: The toy has not been added.
 
         Returns:
-            The ToyController instance.
+            The _ToyController instance.
         """
         async with self._toy_lock:
             toy = self._toys.get(toy_id)
@@ -555,7 +548,7 @@ class ToyHub:
                 raise UnknownToyError(toy_id)
         return toy
 
-    async def _get_toy_cmd(self, toy_id: str) -> tuple[ToyController, asyncio.Lock]:
+    async def _get_toy_cmd(self, toy_id: str) -> tuple[_ToyController, asyncio.Lock]:
         """
         Retrieve a toy controller and its per‑toy command lock.
 
@@ -596,7 +589,7 @@ class ToyHub:
 
     async def _run_toy_command(
         self,
-        toy: ToyController,
+        toy: _ToyController,
         command_name: str,
         command: Callable[..., Awaitable[T]],
         *args,
@@ -656,7 +649,9 @@ class ToyHub:
         updates: dict[str, int | None] = {}
 
         # Poll each toy
-        async def poll_one(toy_id: str, toy: ToyController, lock: asyncio.Lock) -> None:
+        async def poll_one(
+            toy_id: str, toy: _ToyController, lock: asyncio.Lock
+        ) -> None:
             async with lock:
                 old_battery = toy.battery
                 new_battery = await toy.fetch_and_update_battery()
@@ -670,7 +665,7 @@ class ToyHub:
 
     async def _create_toy(
         self, builder: BLEConnectionBuilder, toy_data: ToyData
-    ) -> ToyController:
+    ) -> _ToyController:
         """
         Adapter that converts BLEConnectionBuilder's result‑type errors to raised exceptions.
 
@@ -679,7 +674,7 @@ class ToyHub:
             toy_data: Data describing the toy to create.
 
         Returns:
-            A high-level ToyController instance.
+            A high-level _ToyController instance.
 
         Raises:
             InvalidModelError: Model name not valid for the brand.
@@ -697,7 +692,7 @@ class ToyHub:
                 battery = await result.strict_get_battery_level()
             except Exception as e:
                 raise AddConnectionError(toy_data.toy_id, toy_data.model_name) from e
-            return LovenseController(result, battery)
+            return _LovenseController(result, battery)
         if isinstance(result, LowLevelInvalidModelError):
             raise InvalidModelError(
                 toy_data.toy_id, toy_data.model_name, toy_data.brand
@@ -1037,10 +1032,10 @@ class ToyHub:
 
     async def get_toy_ids(self) -> list[str]:
         """
-        Retrieve a list of all toy_ids currently managed by ToyHub
+        Retrieve a list of all toy_ids currently managed by _ToyHub
 
         Returns:
-            A list of toy_ids currently managed by ToyHub. Snapshot, the list will not update automatically.
+            A list of toy_ids currently managed by _ToyHub. Snapshot, the list will not update automatically.
         """
         async with self._toy_lock:
             return list(self._toys.keys())
@@ -1073,7 +1068,7 @@ class ToyHub:
 
     async def get_battery(self, toy_id: str) -> int | None:
         """
-        Get the current battery level of the toy (from memory, automatically updated by ToyHub).
+        Get the current battery level of the toy (from memory, automatically updated by _ToyHub).
 
         Args:
             toy_id: Identifier of the toy to get the battery level of.
@@ -1162,7 +1157,7 @@ class ToyHub:
 
     async def direct_command(self, toy_id: str, command: str) -> str:
         """
-        Send a raw command directly to the toy. Allows accessing functionalities that are not exposed by the ToyHub API.
+        Send a raw command directly to the toy. Allows accessing functionalities that are not exposed by the _ToyHub API.
 
         Args:
             toy_id: Unique identifier of the toy that you want to send the command to.
@@ -1176,7 +1171,7 @@ class ToyHub:
             toy response string. Empty string if the command could not be delivered.
 
         Note:
-            Do not use this method to change any tracked state (intensity1, intensity2, etc.) as this method bypasses the ToyHub's state tracking.
+            Do not use this method to change any tracked state (intensity1, intensity2, etc.) as this method bypasses the _ToyHub's state tracking.
         """
         self._log.info(f"Sending direct command to {toy_id}: {command}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
