@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools>=80.0.0", "wheel"]
+requires = ["setuptools>=82.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tikal"
-version = "0.4.0"
-description = "Toys I know and love: Unofficial Python Library to connect to and control Lovense Toys via bluetooth"
+version = "0.6.0"
+description = "Toys I know and love: Unofficial Python Library to connect to and control Lovense Toys via Bluetooth"
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
@@ -17,7 +17,9 @@ authors = [
 
 dependencies = [
     "bleak~=2.1.1",
-    "pyserial-asyncio-fast~=0.16"
+    "pyserial-asyncio-fast~=0.16",
+    "pydantic~=2.13.4",
+    "websockets~=16.0",
 ]
 
 keywords = [
@@ -28,7 +30,7 @@ keywords = [
 ]
 
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
@@ -39,13 +41,17 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-format = [
-    "black>=26.1.0",
-    "isort>=8.0.1"
+dev = [
+    "black>=26.5.1",
+    "isort>=8.0.1",
+	"pytest>=9.0.3",
+    "nuitka>=4.1.2",
+    "twine>=6.2.0",
+    "build>=1.5.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/MoonShardFlower/lovense-bled"
+Homepage = "https://github.com/MoonShardFlower/tikal-library"
 
 [tool.setuptools]
 packages = { find = {} }

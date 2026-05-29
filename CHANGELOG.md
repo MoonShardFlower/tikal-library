@@ -6,17 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed
     - Development status is now beta. It will likely remain in beta (Unless I get enough reports to confirm most lovense toys to be working)
+    - All future versions will follow semantic versioning.
+
+
+## [0.6.0] - 2026-05-29
+
+### Added
+    - Low-Level API: Toy: new methods e.g. strict_intensity1, strict_get_battery_level that raise exceptions to the caller instead of swallowing them.
+    - Both APIs: New Exceptions: InvalidModelError and BadModelError replace ValidationError. Backwards compatible as both inherit from ValidationError.
+    - High-Level API: ToyController: new methods: set_paused and set_blocked
+    - Mock: MockBleakScanner now supports continuous scanning.
+    - WebAPI: Added WebAPI + Documentation
+
+### Changed
+    - Both APIs: Toy / ToyController: renamed rotate_change_direction to change_rotation_direction.
+    - Low-Level API: on_disconnect callback provided to BLEConnectionBuilder now called with toy_id: str instead of the underlying transport layer
+    - Low-Level API: Toy: new method: "reconnect". can be called to attempt reconnection to a disconnected toy.
+    - Low-Level API: Toy: set_model_name now async and can raise InvalidModelError or BadModelError (Both inherit from ValidationError). This breaks the API.
+    - Restructing of the directory structure of the code base, impacting the import paths. This breaks the API.
+
+### Removed
+    - Both APIs: Removed LovenseData. Fully replaced by ToyData with ToyData.brand = "Lovense". This breaks the API.
+
 
 ## [0.5.0] - 2026-05-06
 
 ### Added
+
     - Low-Level API: BLEConnectionBuilder: Handles the discovery and connection of all BLE based toys. Delegates brand-specific logic to internal handler classes.
     - Low-Level API: Added new properties to Toy: brand, change_rotation_direction_available, intensity_names, max_intensity
     - Both-Apis: Added new property to ToyData: brand 
     - High-Level API: ToyHub: Added new methods: start_discovery, stop_discovery
 
 ### Changed
+
     - High-Level API: Toy Controller: Extraced pattern logic to Pattern Handler class. No API changes.
     - High-Level API: Toy Controller: Restructured. Instantiation arguments changed. No API changes, as instantiation should only be done by ToyHub.
     - High-Level API: Toy Controller: property connected renamed to is_connected. This breaks the API
@@ -28,11 +54,14 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     - Both APIs: model_name is no longer case sensitive
 
 ### Removed
+
     - Low-Level API: Lovense: intentional_disconnect property. Docstring marked property as for internal use only. Therefore no API change
     - Low-Level API: Removed LovenseConnectionBuilder and ToyConnectionBuilder (Replaced by BLEConnectionBuilder). This breaks the API.
 
 ### Fixed
+
     - High-Level API: ToyHub called its on_power_off callback twice when a toy powered off. Now only called once.
+
 
 ## [0.4.0] - 2026-04-19
 
@@ -40,11 +69,13 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     
     - Low-Level API: Introduced a transport layer to allow for the addition of potentially non-BLE toys. More generic Toy class replaces former ToyBLED class.
 
+
 ## [0.3.0] - 2026-01-21
 
 ### Added
 	
 	- High-Level API: ToyController has new pattern_version property and get_pattern_data method (view docs for details)
+
 
 ## [0.2.1] - 2026-01-20
 
@@ -53,11 +84,13 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     - Both APIs: If an exception was raised in the disconnect method of LovenseBLED, the toy would not be fully disconnected
     - High-Level API: If a timeout occured during a reconnection attempt of ToyHub, the toy would not be disconnected
 
+
 ## [0.2.0] - 2026-01-10
 
 ### Added
 
     - High Level API: Introduced High Level API
+
 
 ## [0.1.0] - 2026-01-07
 

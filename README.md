@@ -3,19 +3,16 @@
 Only SolacePro and Gush2 (Toys that I own and therefore can test on) are fully supported, other toys might work fully,
 likely work at least partially, but also may not work at all.
 If you have other toys, I would be very thankful if you reported to me whether they work or not.
-The library currently only supports lovense toys and will likely remain so for the foreseeable future.
-Should I get my hands on a different toy that I like, then I'll likely add it to the library
+The library currently only supports Lovense toys and will likely remain so for the foreseeable future.
+Should I get my hands on a different toy that I like, then I'll add it to the library.
 
 
 ## Installation and Usage
-The Library is currently in Alpha, and I do not yet make it available on PyPI
-if you like to work on the library, you'll need to clone the Repo and install the Bleak Library "pip install bleak".
-I use python 3.14, but any (reasonably new) version is likely to work
+You can grab the library via `pip install tikal`
+I use python 3.14, but any (reasonably new) version is likely to work.
 For Usage, please see (./examples/) for (heavily commented) usage examples.
-There's also some documentation created automatically by Sphinx (./docs/build/html/index.html). However, this is my
-first time using Sphinx, and my knowledge of it is still lacking. 
-Sphinx also needs good docstrings. Some of the docstrings in the code are not yet of sufficient quality.
-When using the library, you can choose between two APIs:
+Some documentation is created automatically via ReadTheDocs (# TODO: insert URL)
+There are three different APIs:
 
 ### High-Level API
 The 'High Level' API uses a ToyHub to scan for toys, establish connections, and disconnecting toys.
@@ -25,10 +22,14 @@ For each connected Toy the ToyHub produces and hands over an Implementation of t
 just LovenseController) to control the toy.
 
 ### Low-Level API
-The 'Low Level' API provides LovenseConnectionBuilder (Implementation of the abstract the
-ToyConnectionBuilder) to scan and connect to toys. LovenseConnectionBuilder produces and hands over an Implementation of
-the abstract ToyBLED (currently just LovenseBLED) to control the toy. Both classes are mostly async.
+The 'Low Level' API provides BLEConnectionBuilder to scan and connect to toys. BLEConnectionBuilder produces and hands over an Implementation of
+the abstract Toy (currently just Lovense) class to control the toy. Both classes are mostly async.
 You can use ToyCache to remember toy model names in-between sessions.
+
+### WebSocket API
+The 'WebSocket API' allows for the toy control to run in a separate process. Communication is done via websockets.
+It's the best tested API, as the Tikal APP relies on it. Besides the Python files, I provide Windows executables (GitHub Releases).
+The docstring-based documentation is not very useful for this API, I instead provide Markdown files in **./docs/websocket.**
 
 
 ## What you should know:
@@ -75,7 +76,6 @@ If you do report, please follow these rules:
 - be polite (I'm a human, you know)
 - provide me with the toy model that you used e.g., Nora, SolacePro
 - Note that the Software is provided as is and that I have absolutely no obligation to do anything.
-I'll do my best, but I do have other stuff to do and my coding skills have limits
 
 
 ## Affiliation
