@@ -2,7 +2,7 @@ import asyncio
 import time
 import unittest
 
-from tikal.utils import AsyncRunner
+from tikal._private import AsyncRunner
 
 
 class TestAsyncRunner(unittest.TestCase):

@@ -2,7 +2,8 @@ from logging import INFO, Formatter, StreamHandler, getLogger
 from pathlib import Path
 from time import sleep
 
-from tikal import LOVENSE_TOY_NAMES, ToyHub
+from tikal.high_level import ToyHub
+from tikal.low_level import LOVENSE_TOY_NAMES
 from tikal.mock import MockBleakClient, MockBleakScanner
 
 # All classes use the logging module

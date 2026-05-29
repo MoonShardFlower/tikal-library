@@ -1,7 +1,7 @@
 import time
 from logging import INFO, Formatter, StreamHandler, getLogger
 
-from tikal import ToyHub
+from tikal.high_level import ToyHub
 from tikal.mock import MockBleakClient, MockBleakScanner
 
 # All classes use the logging module

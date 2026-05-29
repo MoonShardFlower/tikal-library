@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tikal import ToyCache
+from tikal.high_level import ToyCache
 
 
 class TestToyCache(unittest.TestCase):

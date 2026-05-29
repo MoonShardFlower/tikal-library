@@ -1,7 +1,7 @@
 import asyncio
 from logging import INFO, Formatter, StreamHandler, getLogger
 
-from tikal import (
+from tikal.low_level import (
     LOVENSE_TOY_NAMES,
     ROTATION_TOY_NAMES,
     BadModelError,

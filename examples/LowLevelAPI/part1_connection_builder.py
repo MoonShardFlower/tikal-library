@@ -1,7 +1,7 @@
 import asyncio
 from logging import INFO, Formatter, StreamHandler, getLogger
 
-from tikal import LOVENSE_TOY_NAMES, BLEConnectionBuilder, ValidationError
+from tikal.low_level import LOVENSE_TOY_NAMES, BLEConnectionBuilder, ValidationError
 from tikal.mock import MockBleakClient, MockBleakScanner
 
 # All classes use the logging module

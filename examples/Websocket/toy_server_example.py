@@ -81,7 +81,7 @@ def start_server() -> subprocess.Popen:
     cmd = [
         sys.executable,
         "-m",
-        "tikal_web_server.main",
+        "tikal.websocket.cli",
         "--host",
         HOST,
         "--port",
