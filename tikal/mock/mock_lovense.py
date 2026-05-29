@@ -1,3 +1,5 @@
+"""Private Mock: Used to simulate Lovense Devices for testing."""
+
 import asyncio
 from enum import Enum
 from typing import Any, Callable, Optional
