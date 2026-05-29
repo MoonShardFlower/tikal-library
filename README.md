@@ -11,7 +11,7 @@ Should I get my hands on a different toy that I like, then I'll add it to the li
 You can grab the library via `pip install tikal`
 I use python 3.14, but any (reasonably new) version is likely to work.
 For Usage, please see (./examples/) for (heavily commented) usage examples.
-Some documentation is created automatically via ReadTheDocs (# TODO: insert URL)
+Some documentation is created automatically via ReadTheDocs (https://tikal-library.readthedocs.io/en/latest/index.html)
 There are three different APIs:
 
 ### High-Level API
