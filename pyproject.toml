@@ -37,7 +37,6 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
     "Topic :: Software Development :: Libraries",
-    "Topic :: System :: Hardware :: Bluetooth"
 ]
 
 [project.optional-dependencies]
