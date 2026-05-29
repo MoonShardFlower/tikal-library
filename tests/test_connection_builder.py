@@ -2,18 +2,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tikal.connection_builder import (
-    BLEConnectionBuilder,
-    LovenseHandler,
-    StaleDeviceError,
-)
-from tikal.toy_data import LovenseData, ValidationError
+from tikal.low_level import BLEConnectionBuilder, InvalidModelError, ToyData
+from tikal.low_level.connection_builder import LovenseHandler, StaleDeviceError
 
 
 class FakeBLEDevice:
     def __init__(self, name="LVS-Test", address="AA:BB:CC"):
         self.name = name
         self.address = address
+        self.services = []
+
+    async def connect(self):
+        return
+
+    async def disconnect(self):
+        return
 
 
 @pytest.fixture
@@ -38,7 +41,7 @@ def test_handles_device_false():
 
 
 def test_handles_toy():
-    td = LovenseData("LVS-Test", "addr", "")
+    td = ToyData("LVS-Test", "addr", "", "Lovense")
     assert LovenseHandler.handles_toy(td)
 
 
@@ -53,9 +56,9 @@ def test_create_toy_data():
 @pytest.mark.asyncio
 async def test_create_toy_invalid_model(handler):
     device = FakeBLEDevice()
-    td = LovenseData("LVS-Test", device.address, "INVALID")
+    td = ToyData("LVS-Test", device.address, "INVALID", "Lovense")
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidModelError):
         await handler.create_toy(td, device)
 
 
@@ -102,7 +105,7 @@ async def test_discover_toys_filters_devices(callbacks):
 async def test_create_toy_not_discovered(callbacks):
     builder = BLEConnectionBuilder(*callbacks, logger_name="test")
 
-    td = LovenseData("LVS-Test", "missing", "Nora")
+    td = ToyData("LVS-Test", "missing", "Nora", "Lovense")
 
     result = await builder.create_toy(td)
     assert isinstance(result, KeyError)
@@ -114,7 +117,7 @@ async def test_create_toy_stale_device(callbacks):
 
     builder = BLEConnectionBuilder(on_disconnect, on_power_off, "test")
 
-    td = LovenseData("LVS-Test", "addr", "Nora")
+    td = ToyData("LVS-Test", "addr", "Nora", "Lovense")
 
     builder._all_seen_addresses.add("addr")
     # NOT in _ble_devices → stale
@@ -129,17 +132,21 @@ async def test_create_toys_mixed_results(callbacks):
 
     builder = BLEConnectionBuilder(on_disconnect, on_power_off, "test")
 
-    td = LovenseData("LVS-Test", "addr", "Nora")
+    td = ToyData("LVS-Test", "addr", "Nora", "Lovense")
 
     builder._all_seen_addresses.add("addr")
     builder._ble_devices["addr"] = FakeBLEDevice()
 
+    mock_toy = MagicMock()
+    mock_toy.set_model_name = AsyncMock()
+
     with patch.object(
-        builder._handlers[0], "create_toy", new=AsyncMock(return_value="OK")
+        builder._handlers[0], "create_toy", new=AsyncMock(return_value=mock_toy)
     ):
         results = await builder.create_toys([td])
 
-    assert results == ["OK"]
+    assert results == [mock_toy]
+    mock_toy.set_model_name.assert_called_once_with("Nora")
 
 
 @pytest.mark.asyncio

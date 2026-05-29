@@ -2,8 +2,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from tikal import LOVENSE_TOY_NAMES, Lovense, ValidationError
-from tikal.utils import BleTransport
+from tikal.low_level import LOVENSE_TOY_NAMES, BleTransport, Lovense
 
 
 class MockBleTransport(Mock):
@@ -17,11 +16,12 @@ class MockBleTransport(Mock):
         self.send = AsyncMock()
         self.start_notify = AsyncMock()
         self.disconnect = AsyncMock()
+        self.reconnect = AsyncMock()
         # For tracking the notification callback
         self.notification_callback = None
 
 
-class TestLovenseInitialization(unittest.TestCase):
+class TestLovenseInitialization(unittest.IsolatedAsyncioTestCase):
     """Tests for Lovense initialization."""
 
     def setUp(self):
@@ -29,34 +29,26 @@ class TestLovenseInitialization(unittest.TestCase):
         self.transport = MockBleTransport()
         self.on_power_off = Mock()
 
-    def test_initialization_with_valid_model(self):
+    async def test_initialization_with_valid_model(self):
         """Lovense initializes correctly with a valid model name."""
         toy = Lovense(self.transport, "Gush", self.on_power_off, "")
         self.assertEqual(toy.model_name, "Gush")
         self.assertEqual(toy.toy_id, "00:11:22:33:44:55")
         self.assertEqual(toy.name, "LVS-A123")
-        # Notifications not started yet
         self.transport.start_notify.assert_not_called()
 
-    def test_initialization_with_invalid_model(self):
-        """Lovense raises ValidationError for invalid model name."""
-        with self.assertRaises(ValidationError) as context:
-            Lovense(self.transport, "InvalidModel", self.on_power_off, "")
-        self.assertIn("Invalid model name 'InvalidModel'", str(context.exception))
-        self.assertIn("00:11:22:33:44:55", str(context.exception))
-
-    def test_set_model_name_valid(self):
+    async def test_set_model_name_valid(self):
         """set_model_name updates model with valid name."""
         toy = Lovense(self.transport, "Gush", self.on_power_off, "")
-        toy.set_model_name("Nora")
-        self.assertEqual(toy.model_name, "Nora")
 
-    def test_set_model_name_invalid(self):
-        """set_model_name raises ValidationError for an invalid name."""
-        toy = Lovense(self.transport, "Gush", self.on_power_off, "")
-        with self.assertRaises(ValidationError) as context:
-            toy.set_model_name("InvalidModel")
-        self.assertIn("Invalid model name 'InvalidModel'", str(context.exception))
+        with (
+            patch.object(toy, "strict_intensity1", new_callable=AsyncMock) as mock_int1,
+            patch.object(toy, "strict_intensity2", new_callable=AsyncMock) as mock_int2,
+        ):
+            mock_int1.return_value = True
+            mock_int2.return_value = True
+            await toy.set_model_name("Nora")
+            self.assertEqual(toy.model_name, "Nora")
 
 
 class TestLovenseNotifications(unittest.IsolatedAsyncioTestCase):
@@ -76,10 +68,10 @@ class TestLovenseNotifications(unittest.IsolatedAsyncioTestCase):
         self.notification_callback = self.transport.start_notify.call_args[0][0]
 
     async def test_start_notifications_no_transport(self):
-        """start_notifications raises RuntimeError if the transport fails."""
+        """start_notifications raises ConnectionError if the transport fails."""
         # Simulate transport.start_notify raising
-        self.transport.start_notify.side_effect = RuntimeError("No client")
-        with self.assertRaises(RuntimeError):
+        self.transport.start_notify.side_effect = ConnectionError("No client")
+        with self.assertRaises(ConnectionError):
             await self.toy.start_notifications()
 
     def test_notification_callback_normal_message(self):
@@ -109,8 +101,8 @@ class TestLovenseCommands(unittest.IsolatedAsyncioTestCase):
 
     async def test_send_command_success(self):
         """_send_command successfully sends command to toy."""
-        result = await self.toy._send_command("Vibrate:10")
-        self.assertTrue(result)
+        # _send_command now returns None on success (it raises on error)
+        await self.toy._send_command("Vibrate:10")
         self.transport.send.assert_called_once_with(b"Vibrate:10;")
 
     async def test_send_command_no_duplicate_semicolon(self):
@@ -119,16 +111,16 @@ class TestLovenseCommands(unittest.IsolatedAsyncioTestCase):
         self.transport.send.assert_called_once_with(b"Battery;")
 
     async def test_send_command_not_connected(self):
-        """_send_command returns False if not connected."""
+        """_send_command raises ConnectionError if not connected."""
         self.transport.is_connected = False
-        result = await self.toy._send_command("Vibrate:10")
-        self.assertFalse(result)
+        with self.assertRaises(ConnectionError):
+            await self.toy._send_command("Vibrate:10")
 
     async def test_send_command_exception(self):
-        """_send_command returns False on exception."""
+        """_send_command raises ConnectionError on exception."""
         self.transport.send.side_effect = Exception("BLE error")
-        result = await self.toy._send_command("Vibrate:10")
-        self.assertFalse(result)
+        with self.assertRaises(ConnectionError):
+            await self.toy._send_command("Vibrate:10")
 
     async def test_wait_for_response_success(self):
         """_wait_for_response returns a message from the queue."""
@@ -488,20 +480,18 @@ class TestLovenseCommandLocking(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
             await self.toy._response_queue.put("OK1")
             execution_order.append("end1")
-            return True
 
         async def mock_send_2(_):
             execution_order.append("start2")
             await asyncio.sleep(0.05)
             await self.toy._response_queue.put("OK2")
             execution_order.append("end2")
-            return True
 
         mock_functions = iter([mock_send_1, mock_send_2])
 
         async def side_effect_wrapper(cmd):
             func = next(mock_functions)
-            return await func(cmd)
+            await func(cmd)
 
         with patch.object(self.toy, "_send_command", side_effect=side_effect_wrapper):
             task1 = asyncio.create_task(self.toy._execute_command("Command1"))
@@ -601,7 +591,7 @@ class TestLovenseEdgeCases(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "new_response")
 
 
-class TestLovenseProperties(unittest.TestCase):
+class TestLovenseProperties(unittest.IsolatedAsyncioTestCase):
     """Tests for property accessors."""
 
     def setUp(self):
@@ -610,27 +600,27 @@ class TestLovenseProperties(unittest.TestCase):
         self.on_power_off = Mock()
         self.toy = Lovense(self.transport, "Gush", self.on_power_off, "")
 
-    def test_model_name_property(self):
+    async def test_model_name_property(self):
         """model_name property returns the correct value."""
         self.assertEqual(self.toy.model_name, "Gush")
 
-    def test_toy_id_property(self):
+    async def test_toy_id_property(self):
         """toy_id property returns the correct value."""
         self.assertEqual(self.toy.toy_id, "00:11:22:33:44:55")
 
-    def test_name_property(self):
+    async def test_name_property(self):
         """name property returns the correct value."""
         self.assertEqual(self.toy.name, "LVS-A123")
 
-    def test_brand_property(self):
+    async def test_brand_property(self):
         """brand property returns 'Lovense'."""
         self.assertEqual(self.toy.brand, "Lovense")
 
-    def test_max_intensity(self):
+    async def test_max_intensity(self):
         """max_intensity returns 20."""
         self.assertEqual(self.toy.max_intensity, 20)
 
-    def test_intensity_names(self):
+    async def test_intensity_names(self):
         """intensity_names returns correct tuple."""
         names = self.toy.intensity_names
         self.assertEqual(names[0], "Vibration")
@@ -658,7 +648,6 @@ class TestLovenseCommandRetry(unittest.IsolatedAsyncioTestCase):
             current_call = call_count
             await asyncio.sleep(0.02)
             await self.toy._response_queue.put(f"response_{current_call}")
-            return True
 
         async def execute_and_track(cmd_num):
             result = await self.toy._execute_command(f"Command{cmd_num}")
