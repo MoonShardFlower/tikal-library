@@ -5,7 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+
+## [1.0.0] - 2026-06-02
 
 ### Changed
     - Development status is now beta. It will likely remain in beta (Unless I get enough reports to confirm most lovense toys to be working)

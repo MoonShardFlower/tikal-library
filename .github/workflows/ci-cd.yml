@@ -3,7 +3,7 @@
 # 2. Runs on pull requests targeting main
 # 3. Builds, tests, lints, and formats the project
 # 4. Creates a Windows executable on release tags
-# 5. Publishes to TestPyPI on release tags
+# 5. Publishes to PyPI on release tags
 # 6. Creates a GitHub Release and uploads the executable
 
 name: CI/CD Pipeline
@@ -208,7 +208,7 @@ jobs:
             retention-days: 7
             if-no-files-found: error
 
-  # when we want to release build wheel + sdist and upload to TestPyPI. Needs TESTPYPI_TOKEN secret.
+  # when we want to release build wheel + sdist and upload to PyPI. Needs PYPI_TOKEN secret.
   publish-testpypi:
     needs: [build-and-test, check-release]
     if: needs.check-release.outputs.is_release == 'true'
@@ -232,15 +232,14 @@ jobs:
       - name: Build package
         run: python -m build
 
-      - name: Publish to TestPyPI
+      - name: Publish to PyPI
         env:
-          TESTPYPI_TOKEN: ${{ secrets.TESTPYPI_TOKEN }}
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
         run: |
           python -m twine upload \
-            --repository testpypi \
             dist/*.whl dist/*.tar.gz \
             --username __token__ \
-            --password "$TESTPYPI_TOKEN" \
+            --password "$PYPI_TOKEN" \
             --verbose
 
   # When we want to release, take the previously built zip and create a GitHub release
