@@ -386,7 +386,7 @@ class ToyHub:
         if self._toy_cache and cache_updates:
             self._toy_cache.update(cache_updates)
 
-        self._log.info(f"Connection process finished")
+        self._log.info("Connection process finished")
         return controllers
 
     def connect_toys_callback(
@@ -435,7 +435,7 @@ class ToyHub:
                     controllers.append(toy)
             if self._toy_cache and cache_updates:
                 self._toy_cache.update(cache_updates)
-            self._log.info(f"Connection process finished")
+            self._log.info("Connection process finished")
             return controllers
 
         self._runner.run_callback(connection_task(), on_connected, timeout)
@@ -677,7 +677,7 @@ class ToyHub:
         Args:
             controllers: List of controllers to query.
         """
-        self._log.info(f"Updating battery levels...")
+        self._log.info("Updating battery levels...")
         self._last_battery_update = time()
         # Run all battery queries in parallel
         battery_coroutines = [
@@ -691,7 +691,7 @@ class ToyHub:
             zip([controller.toy_id for controller in controllers], battery_results)
         )
         self._battery_update_callback(batteries)
-        self._log.info(f"Battery levels updated")
+        self._log.info("Battery levels updated")
 
     @staticmethod
     async def _process_controller_communication(

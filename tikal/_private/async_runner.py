@@ -128,7 +128,6 @@ class AsyncRunner:
         cancelled = False
 
         async def recurring_task():
-            nonlocal cancelled
             while not cancelled:
                 try:
                     await coro_factory()

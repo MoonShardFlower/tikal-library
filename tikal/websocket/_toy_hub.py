@@ -10,6 +10,7 @@ import asyncio
 import copy
 import logging
 import traceback
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Awaitable, Callable, TypeVar
 
@@ -29,9 +30,6 @@ _PROCESS_INTERVAL = 0.05  # seconds
 _BATTERY_UPDATE_INTERVAL = 120.0  # seconds
 
 T = TypeVar("T")
-
-
-from enum import StrEnum
 
 
 class ToyStatus(StrEnum):

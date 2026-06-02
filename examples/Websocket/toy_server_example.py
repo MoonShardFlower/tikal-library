@@ -231,7 +231,7 @@ async def run_walkthrough() -> None:
         reply = await send(
             ws, "set_model", {"toy_id": MOCK_TOY_ID, "model_name": "Sex Machine"}
         )
-        print_reply(f"20. set_model to 'Sex Machine')", reply)
+        print_reply("20. set_model to 'Sex Machine')", reply)
 
         # ── 21. remove ─────────────────────────────────────────────────────
         reply = await send(ws, "remove", {"toy_id": MOCK_TOY_ID})

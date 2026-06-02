@@ -765,7 +765,7 @@ class Lovense(Toy):
 
                 await toy.rotate_change_direction()  # Toggle rotation direction
         """
-        if not self.model_name in ROTATION_TOY_NAMES:
+        if self.model_name not in ROTATION_TOY_NAMES:
             return True
         response = await self._execute_command("RotateChange")
         return response == "OK"
@@ -1036,7 +1036,7 @@ class Lovense(Toy):
         Returns:
             True if the toy supports rotation, False otherwise. Does not raise if the toy does not support rotation.
         """
-        if not self.model_name in ROTATION_TOY_NAMES:
+        if self.model_name not in ROTATION_TOY_NAMES:
             return False
         response = await self._strict_execute_command("RotateChange")
         if not response == "OK":

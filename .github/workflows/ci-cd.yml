@@ -1,0 +1,272 @@
+# GitHub Actions Pipeline
+# 1. Runs on pushes to main and version tags (v*.*.*)
+# 2. Runs on pull requests targeting main
+# 3. Builds, tests, lints, and formats the project
+# 4. Creates a Windows executable on release tags
+# 5. Publishes to TestPyPI on release tags
+# 6. Creates a GitHub Release and uploads the executable
+
+name: CI/CD Pipeline
+
+on:
+  # Trigger on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+
+  # We test it on Windows + Linux with Python 3.13 + 3.14
+  build-and-test:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: true   # Cancel other jobs if one fails
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ['3.13', '3.14']
+
+    steps:
+      # Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v6.0.0
+        with:
+          fetch-depth: 0
+
+      # Install selected Python version
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      # Windows venv setup
+      - name: Setup virtual environment (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python --version
+          python -m venv venv
+          .\venv\Scripts\Activate.ps1
+          python.exe -m pip install --upgrade pip
+          pip install -e .[dev]   # Install project + dev extras
+
+      # Linux venv setup
+      - name: Setup virtual environment (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python --version
+          python -m venv venv
+          source venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      # E501 is long lines. When black does not reformat them, I want my linter to accept them as well.
+      - name: Linting (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\venv\Scripts\Activate.ps1
+          flake8 . --extend-ignore=E501 --exclude=.\venv
+
+      - name: Linting (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          source venv/bin/activate
+          flake8 . --extend-ignore=E501 --exclude=./venv
+
+      # formatting check
+      - name: Format Check (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\venv\Scripts\Activate.ps1
+          black --check .
+          isort --check-only --profile black .
+
+      - name: Format Check (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          source venv/bin/activate
+          black --check .
+          isort --check-only --profile black .
+
+      # tests
+      - name: Run Tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\venv\Scripts\Activate.ps1
+          python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Run Tests (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          source venv/bin/activate
+          python -m unittest discover -s tests -p "test_*.py" -v
+
+  # check if the current run is triggered by a version tag.
+  # If yes, extract the tag name (version number) and annotation (release message) and expose them for later jobs
+  check-release:
+    runs-on: ubuntu-latest
+    outputs:
+      is_release: ${{ steps.check_release.outputs.is_release }}
+      git_tag: ${{ steps.check_release.outputs.git_tag }}
+      release_notes: ${{ steps.check_release.outputs.release_notes }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Check for release
+        id: check_release
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            tag="${{ github.ref_name }}"
+            echo "Building Release $tag"
+
+            # Extract annotated tag message
+            releaseNotes=$(git tag -l --format='%(contents)' "$tag")
+
+            echo "is_release=true" >> $GITHUB_OUTPUT
+            echo "git_tag=$tag" >> $GITHUB_OUTPUT
+
+            # release notes could be multiline
+            {
+              echo "release_notes<<EOF_RELEASE_NOTES"
+              echo "$releaseNotes"
+              echo "EOF_RELEASE_NOTES"
+            } >> $GITHUB_OUTPUT
+          else
+            echo "is_release=false" >> $GITHUB_OUTPUT
+            echo "git_tag=" >> $GITHUB_OUTPUT
+            echo "release_notes=" >> $GITHUB_OUTPUT
+          fi
+
+
+  # When we want to release, use Nuitka to create a standalone .exe for windows
+  build-executable:
+    needs: [build-and-test, check-release]
+    if: needs.check-release.outputs.is_release == 'true'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Setup virtual environment and install dependencies
+        shell: pwsh
+        run: |
+          python -m venv venv
+          .\venv\Scripts\Activate.ps1
+          pip install --upgrade pip
+          pip install .[dev]
+          pip install nuitka
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          .\venv\Scripts\Activate.ps1
+          python.exe -m nuitka --assume-yes-for-downloads ./ToyServer.py
+
+      - name: Rename folder and create zip
+        shell: pwsh
+        run: |
+          # Rename ToyServer.dist -> ToyServer
+          if (Test-Path ToyServer.dist) {
+            Rename-Item -Path ToyServer.dist -NewName ToyServer
+          }
+          Compress-Archive -Path ToyServer -DestinationPath ToyServer.zip -Force
+
+      # Upload built .exe for later use
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+            name: ToyServer-standalone
+            path: ToyServer.zip
+            retention-days: 7
+            if-no-files-found: error
+
+  # when we want to release build wheel + sdist and upload to TestPyPI. Needs TESTPYPI_TOKEN secret.
+  publish-testpypi:
+    needs: [build-and-test, check-release]
+    if: needs.check-release.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to TestPyPI
+        env:
+          TESTPYPI_TOKEN: ${{ secrets.TESTPYPI_TOKEN }}
+        run: |
+          python -m twine upload \
+            --repository testpypi \
+            dist/*.whl dist/*.tar.gz \
+            --username __token__ \
+            --password "$TESTPYPI_TOKEN" \
+            --verbose
+
+  # When we want to release, take the previously built zip and create a GitHub release
+  publish-release:
+    needs: [build-executable, check-release]
+    if: needs.check-release.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6.0.0
+
+      - name: Download built artifact
+        uses: actions/download-artifact@v6.0.0
+        with:
+          name: ToyServer-standalone
+          path: .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check-release.outputs.git_tag }}
+          name: ${{ needs.check-release.outputs.git_tag }}
+          body: ${{ needs.check-release.outputs.release_notes }}
+          draft: false
+          prerelease: false
+          files: |
+            ToyServer.zip
+          token: ${{ secrets.GITHUB_TOKEN }}
