@@ -812,7 +812,7 @@ class _ToyHub:
             except LowLevelBadModelError as e:
                 raise BadModelError(toy_id, model_name) from e
             self._toy_cache.update({toy.name: model_name})
-        change = dict(toy_id=toy_id, model_name=model_name)
+        change = await toy.get_info(full=False)
         await self._fire_callback(self._on_model_change, change)
 
     async def stop(self, toy_id: str) -> None:
