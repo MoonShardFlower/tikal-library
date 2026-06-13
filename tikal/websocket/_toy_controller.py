@@ -28,6 +28,10 @@ class _ToyController:
             "intensity1": None,
             "intensity2": None,
         }
+        self._intensity_limits: list[int] = [
+            self._toy.max_intensity,
+            self._toy.max_intensity,
+        ]
         self._accepted_pause = False
         self._is_blocked = False
         self._battery = initial_battery
@@ -146,26 +150,6 @@ class _ToyController:
         """
         return self._is_blocked
 
-    @property
-    def is_connected(self) -> bool:
-        """
-        Check if the toy is currently connected.
-
-        Returns:
-            True if the toy is connected and False otherwise.
-        """
-        return self._toy.is_connected
-
-    @property
-    def pattern_version(self) -> int:
-        """
-        Each time the pattern state changes, the version number is incremented.
-
-        Returns:
-            current version number.
-        """
-        return self._pattern_handler.pattern_version
-
     async def set_model_name(self, model_name: str) -> None:
         """
         Set the model name of the toy.
@@ -260,9 +244,42 @@ class _ToyController:
         Note:
             Manual intensity commands automatically pause pattern playback to avoid conflicts. Call ``toggle_pause()`` to resume the pattern.
         """
+        limited_pattern = []
+        for duration_ms, intensity1, intensity2 in pattern:
+            limited_pattern.append(
+                (
+                    duration_ms,
+                    min(intensity1, self._intensity_limits[0]),
+                    min(intensity2, self._intensity_limits[1]),
+                )
+            )
         self._pattern_handler.set_pattern(pattern, wraparound, reset_time)
         if not pattern:  # ensure that intensities are 0 if pattern is cleared
             await self.stop()
+
+    async def set_intensity1_limit(self, level: int | None):
+        """
+        Set the upper limit for the primary intensity. All future intensity1 commands are clamped to this value.
+
+        Args:
+            level: Maximum allowed intensity1 value (0 – max_intensity). Clamped to max_intensity.
+        """
+        if level is None:
+            self._intensity_limits[0] = self._toy.max_intensity
+        else:
+            self._intensity_limits[0] = min(level, self._toy.max_intensity)
+
+    async def set_intensity2_limit(self, level: int | None):
+        """
+        Set the upper limit for the secondary intensity. All future intensity2 commands are clamped to this value.
+
+        Args:
+            level: Maximum allowed intensity2 value (0 – max_intensity). Clamped to max_intensity.
+        """
+        if level is None:
+            self._intensity_limits[1] = self._toy.max_intensity
+        else:
+            self._intensity_limits[1] = min(level, self._toy.max_intensity)
 
     async def intensity1(self, level: int) -> bool:
         """
@@ -282,7 +299,9 @@ class _ToyController:
         """
         if self._is_blocked:
             return False
+        # avoid the pattern overriding the command
         self._pattern_handler.set_paused(True)
+        level = min(level, self._intensity_limits[0])
         return await self._toy.strict_intensity1(level)
 
     async def intensity2(self, level: int) -> bool:
@@ -306,6 +325,7 @@ class _ToyController:
             return False
         # avoid the pattern overriding the command
         self._pattern_handler.set_paused(True)
+        level = min(level, self._intensity_limits[1])
         return await self._toy.strict_intensity2(level)
 
     async def change_rotation_direction(self) -> bool:
@@ -366,7 +386,7 @@ class _ToyController:
         -  `brand` (str) brand of the toy, e.g., Lovense
         -  `intensity_names` (list of str). Two human-readable strings. The second string is empty if the toy only has one intensity.
         -  `supports_rotation` (bool) whether the toy supports changing the rotation direction
-        -  `max_intensity` (int) maximum intensity value
+        -  `max_intensity` (int) maximum intensity value possible for the toy. (Keep in mind that self._intensity_limits can apply stricter thresholds)
 
         Args:
             full: If True, returns all available info (making requests to the toy). Otherwise, returns only the "cheap" info described above.
@@ -403,6 +423,7 @@ class _ToyController:
         State information contains:
         -  `toy_id` (str) Unique identifier of the toy
         -  `current_intensity` (list[int, int]) Current intensity values. The second value is always zero if the toy only has one intensity.
+        -  `intensity_limits` (list[int, int]) Current set intensity limits.
         -  `is_blocked` (bool) Whether the toy is currently blocked (toy's intensities are forced to zero)
         -  `pattern_version` (int) Each time the pattern state changes, the version number is incremented
         -  `pattern` (list[tuple[int, int, int]]) List of tuples (duration, intensity1, intensity2) defining the pattern segment
@@ -419,6 +440,7 @@ class _ToyController:
         result = dict(
             toy_id=self._toy.toy_id,
             current_intensities=list(self._toy.current_intensities),
+            intensity_limits=self._intensity_limits.copy(),
             is_blocked=self._is_blocked,
             pattern_version=self._pattern_handler.pattern_version,
             pattern=pattern,

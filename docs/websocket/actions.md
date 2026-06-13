@@ -228,6 +228,7 @@ Retrieve the in‑memory state of a toy. This is completely retrieved from the s
 {
   "toy_id": "00:00:00:00:00:01",
   "current_intensities": [5, 0],
+  "intensity_limits": [20, 20],
   "is_blocked": false,
   "pattern_version": 3,
   "pattern": [[1000, 5, 0], [500, 0, 0]],
@@ -241,6 +242,7 @@ Retrieve the in‑memory state of a toy. This is completely retrieved from the s
 |-----------------------|-----------------|-------------------------------------------------------------------------------------------------|
 | `toy_id`              | string          | Unique Toy identifier.                                                                          |
 | `current_intensities` | [int, int]      | Current intensity levels. Second value is always `0` if the toy has no second capability.       |
+| `intensity_limits`    | [int, int]      | Current intensity limits. All intensity commands are clamped to these values.                   |
 | `is_blocked`          | boolean         | `true` if the toy is blocked (both intensities forced to zero).                                 |
 | `pattern_version`     | integer         | Increments each time the pattern state changes.                                                 |
 | `pattern`             | array of arrays | Active pattern segments: `[duration_ms, intensity1, intensity2]`. `[]` if no pattern is active. |
@@ -331,6 +333,7 @@ Use `full=false` for fast in‑memory data only; `full=true` may request additio
   "battery": 85,
   "connection_status": "connected",
   "current_intensities": [5, 0],
+  "intensity_limits": [20, 20],
   "is_blocked": false,
   "pattern_version": 3,
   "pattern": [[1000, 5, 0], [500, 0, 0]],
@@ -699,7 +702,109 @@ Disconnect a toy and remove it from the server.
 
 ---
 
-### 22 `shutdown`
+### 22. `set_intensity1_limit` / `set_intensity2_limit`
+Set the upper limit for a toy's primary (`set_intensity1_limit`) or secondary (`set_intensity2_limit`) intensity.
+All future `intensity1` / `intensity2` commands and pattern values are clamped to this limit.
+By default, both limits equal `max_intensity` (no restriction). Values above `max_intensity` are clamped to `max_intensity`.
+The current effective limits are included in the `get_state` and `get_all` responses under the `intensity_limits` field.
+
+When multiple clients are connected, the **minimum** limit across all clients wins.
+For example, if Client A sets `limit: 5` and Client B sets `limit: 10`, the effective limit is `5`.
+If Client A later raises their limit to `15`, the effective limit becomes `10` (Client B's limit).
+When a client disconnects, its limits are removed and the effective limit is recalculated from the remaining clients.
+
+**Request data**:
+```json
+{
+  "toy_id": "00:00:00:00:00:01",
+  "limit": 10
+}
+```
+
+| Field    | Type         | Description                                                                                                                           |
+|----------|--------------|---------------------------------------------------------------------------------------------------------------------------------------|
+| `toy_id` | string       | Unique toy identifier.                                                                                                                |
+| `limit`  | integer/null | Maximum allowed intensity (0 – `max_intensity`). Values above `max_intensity` are clamped. Send `null` to remove this client's limit. |
+
+Send `null` to withdraw your limit, letting the remaining clients' limits (or `max_intensity` if none) take effect:
+```json
+{
+  "toy_id": "00:00:00:00:00:01",
+  "limit": null
+}
+```
+
+**Response data**:
+```json
+{
+  "ack": true,
+  "toy_id": "00:00:00:00:00:01"
+}
+```
+
+**Possible errors**
+- Unknown Toy: The provided toy ID is not known to the server.
+- Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
+- Invalid Data: Your request data is wrong, e.g., missing the `toy_id` field.
+- Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
+
+---
+
+### 23. `enable_heartbeat`
+Subscribe or unsubscribe to the heartbeat watchdog. Clients that enable the heartbeat watchdog **must** send a `heartbeat` command
+at least every 3 seconds. If the server does not receive a heartbeat in time, it stops **all** toys as a safety measure
+and broadcasts a `heartbeat_timeout` event (see **events.md**). The subscription is automatically removed on disconnect.
+
+This is an optional protective measure against client malfunction (e.g., the client freezing or crashing while toys are active).
+
+**Request data**:
+```json
+{
+  "enable": true
+}
+```
+
+| Field    | Type    | Description                                         |
+|----------|---------|-----------------------------------------------------|
+| `enable` | boolean | `true` to subscribe, `false` to unsubscribe.        |
+
+**Response data**:
+```json
+{
+  "ack": true,
+  "toy_id": null
+}
+```
+
+**Possible errors**
+- Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
+- Invalid Data: Your request data is wrong.
+- Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
+
+---
+
+### 24. `heartbeat`
+Reset the heartbeat timer. Must be sent at least every 3 seconds while subscribed to the heartbeat watchdog (see `enable_heartbeat`).
+If the client is not subscribed to the heartbeat watchdog, this command is accepted but has no effect.
+
+**Request data**: `{}`
+
+**Response data**:
+```json
+{
+  "ack": true,
+  "toy_id": null
+}
+```
+
+**Possible errors**
+- Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
+- Invalid Data: Your request data is wrong, e.g., not the empty dict.
+- Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
+
+---
+
+### 25 `shutdown`
 Shut down the server. Any toys still connected will be automatically stopped and disconnected.
 The command is acknowledged right away. 
 However, the actual shutdown is only triggered once the client who made the request has closed its Websocket connection.

@@ -182,6 +182,21 @@ class IntensityData(BaseModel):
     model_config = _STRICT
 
 
+class IntensityLimitData(BaseModel):
+    """
+    Payload for the set_intensity1_limit and set_intensity2_limit commands.
+
+    Attributes:
+        toy_id: Unique identifier of the toy to command.
+        limit: Maximum allowed intensity level (0 – ``max_intensity`` inclusive). Values above max_intensity are clamped.
+               Send ``null`` to remove this client's limit (the effective limit reverts to the minimum of the remaining clients' limits, or max_intensity if none).
+    """
+
+    toy_id: str
+    limit: Optional[int]
+    model_config = _STRICT
+
+
 class SetPausedData(BaseModel):
     """
     Payload for the set_paused command.
@@ -243,6 +258,18 @@ class SetPatternData(BaseModel):
             if not all(isinstance(x, int) for x in seg):
                 raise ValueError(f"Pattern segment {i} values must all be integers")
         return self
+
+
+class HeartbeatEnableData(BaseModel):
+    """
+    Payload for the enable_heartbeat command.
+
+    Attributes:
+        enable: True to subscribe to the heartbeat watchdog, False to unsubscribe.
+    """
+
+    enable: bool
+    model_config = _STRICT
 
 
 class GetInfoData(BaseModel):
@@ -324,6 +351,7 @@ class ToyStateData(BaseModel):
     Attributes:
         toy_id: Unique identifier of the toy.
         current_intensities: Current intensity values as [intensity1, intensity2]. intensity2 is always 0 for single-intensity toys.
+        intensity_limits: Current intensity limits as [limit1, limit2]. All intensity commands are clamped to these values.
         is_blocked: True when the toy is blocked (both intensities forced to zero).
         pattern_version: Increments each time the pattern state changes.
         pattern: Active pattern as a list of (duration_ms, intensity1, intensity2) tuples.
@@ -334,6 +362,7 @@ class ToyStateData(BaseModel):
 
     toy_id: str
     current_intensities: list[int]
+    intensity_limits: list[int]
     is_blocked: bool
     pattern_version: int
     pattern: list[tuple[int, int, int]]
@@ -417,6 +446,7 @@ class GetAllResponseData(BaseModel):
     max_intensity: int
     battery: Optional[int] = None
     current_intensities: list[int]
+    intensity_limits: list[int]
     is_blocked: bool
     pattern_version: int
     pattern: list[tuple[int, int, int]]

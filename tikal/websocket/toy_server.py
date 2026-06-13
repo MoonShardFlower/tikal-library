@@ -92,6 +92,7 @@ import asyncio
 import datetime
 import http
 import logging
+import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -129,8 +130,10 @@ from .toy_server_models import (
     EventEnvelope,
     GetAllResponseData,
     GetInfoData,
+    HeartbeatEnableData,
     InfoResponseData,
     IntensityData,
+    IntensityLimitData,
     RequestEnvelope,
     ResponseEnvelope,
     SetBlockedData,
@@ -184,6 +187,7 @@ async def _cmd_get_state(hub: _ToyHub, data: ToyIdData) -> dict:
     State information contains:
     -  `toy_id` (str) Unique identifier of the toy
     -  `current_intensity` (list[int, int]) Current intensity values. The second value is always zero if the toy only has one intensity.
+    -  `intensity_limits` (list[int, int]) Current intensity limits. All intensity commands are clamped to these values.
     -  `is_blocked` (bool) Whether the toy is currently blocked (toy's intensities are forced to zero)
     -  `pattern_version` (int) Each time the pattern state changes, the version number is incremented
     -  `pattern` (list[tuple[int, int, int]]) List of tuples (duration, intensity1, intensity2) defining the pattern segment
@@ -557,6 +561,18 @@ async def _cmd_set_pattern(hub: _ToyHub, data: SetPatternData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
+async def _cmd_limit_noop(
+    hub: _ToyHub, data: IntensityLimitData
+) -> dict:  # pragma: no cover
+    """
+    Placeholder handler for limit commands (set_intensity1_limit / set_intensity2_limit).
+
+    Limit commands need per-client tracking and are intercepted by _handle_limit before
+    the generic dispatcher reaches this handler.
+    """
+    return {"ack": True, "toy_id": data.toy_id}
+
+
 async def _cmd_scan_noop(hub: _ToyHub, data: _EmptyData) -> dict:  # pragma: no cover
     """
     Placeholder handler for scan commands (start_scan / stop_scan).
@@ -564,6 +580,16 @@ async def _cmd_scan_noop(hub: _ToyHub, data: _EmptyData) -> dict:  # pragma: no 
     Scan commands need access to the per-client WebSocket connection for subscription management and are intercepted by
     _handle_scan before the generic dispatcher reaches this handler. This function should never be reached,
     it only serves as a placeholder for the CommandEntry.handler slot in _COMMAND_REGISTRY.
+    """
+    return {"ack": True}
+
+
+async def _cmd_heartbeat_noop(hub: _ToyHub, data) -> dict:  # pragma: no cover
+    """
+    Placeholder handler for heartbeat commands (enable_heartbeat / heartbeat).
+
+    Heartbeat commands need access to the per-client WebSocket connection and are intercepted by
+    _handle_heartbeat before the generic dispatcher reaches this handler.
     """
     return {"ack": True}
 
@@ -597,6 +623,8 @@ class CommandEntry:
                         instead of the generic dispatcher. Handler is unused in that case.
         is_shutdown:    If True, the command is a shutdown command and routed to _handle_shutdown instead of the generic dispatcher.
                         Handler is unused in that case.
+        is_heartbeat:   If True, the command is a heartbeat command (enable_heartbeat / heartbeat) and routed to _handle_heartbeat.
+        is_limit:       If True, the command is a limit command (set_intensity1_limit / set_intensity2_limit) and routed to _handle_limit.
     """
 
     req_model: type[BaseModel]
@@ -604,6 +632,8 @@ class CommandEntry:
     handler: Callable
     is_scan: bool = False
     is_shutdown: bool = False
+    is_heartbeat: bool = False
+    is_limit: bool = False
 
 
 _COMMAND_REGISTRY: dict[str, CommandEntry] = {
@@ -635,12 +665,27 @@ _COMMAND_REGISTRY: dict[str, CommandEntry] = {
     "set_paused": CommandEntry(SetPausedData, AckData, _cmd_set_paused),
     "set_blocked": CommandEntry(SetBlockedData, AckData, _cmd_set_blocked),
     "set_pattern": CommandEntry(SetPatternData, AckData, _cmd_set_pattern),
+    "set_intensity1_limit": CommandEntry(
+        IntensityLimitData, AckData, _cmd_limit_noop, is_limit=True
+    ),
+    "set_intensity2_limit": CommandEntry(
+        IntensityLimitData, AckData, _cmd_limit_noop, is_limit=True
+    ),
     # Scan subscription commands
     "start_scan": CommandEntry(_EmptyData, AckData, _cmd_scan_noop, is_scan=True),
     "stop_scan": CommandEntry(_EmptyData, AckData, _cmd_scan_noop, is_scan=True),
+    # Heartbeat commands
+    "enable_heartbeat": CommandEntry(
+        HeartbeatEnableData, AckData, _cmd_heartbeat_noop, is_heartbeat=True
+    ),
+    "heartbeat": CommandEntry(
+        _EmptyData, AckData, _cmd_heartbeat_noop, is_heartbeat=True
+    ),
     # Shutdown
     "shutdown": CommandEntry(_EmptyData, AckData, _cmd_shutdown, is_shutdown=True),
 }
+
+_NO_LIMIT = 0x7FFF_FFFF
 
 
 # -----------------------------------------------------------------------------
@@ -696,6 +741,15 @@ class ToyServer:
         self._start_time: datetime.datetime | None = None
         self._shutdown_initiated = False
 
+        # Heartbeat watchdog: maps subscribed ws -> last heartbeat timestamp (time.monotonic)
+        self._heartbeat_clients: dict[ServerConnection, float] = {}
+        self._heartbeat_timeout = 3.0  # seconds
+        self._heartbeat_check_interval = 1.0  # seconds
+        self._heartbeat_task: asyncio.Task | None = None
+
+        # Per-client intensity limits: ws -> toy_id -> [limit1_or_None, limit2_or_None]
+        self._client_limits: dict[ServerConnection, dict[str, list[int | None]]] = {}
+
         self._hub = _ToyHub(
             on_status_change=self._on_status_change,
             on_toy_ids_change=self._on_toy_ids_change,
@@ -738,11 +792,15 @@ class ToyServer:
         await self._shutdown()
 
     async def _shutdown(self) -> None:
-        """Tear down _ToyHub and lose the server."""
+        """Tear down _ToyHub and close the server."""
         await self._hub.shutdown()  # idempotent
         if self._shutdown_initiated:
             return
         self._shutdown_initiated = True
+        self._heartbeat_clients.clear()
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            self._heartbeat_task = None
         if self._server is not None:
             self._server.close()
 
@@ -780,6 +838,10 @@ class ToyServer:
             pass
         finally:
             self._clients.discard(ws)
+            self._heartbeat_clients.pop(ws, None)
+            if not self._heartbeat_clients and self._heartbeat_task is not None:
+                self._heartbeat_task.cancel()
+                self._heartbeat_task = None
             async with self._scan_lock:
                 self._scan_subscribers.discard(ws)
                 if not self._scan_subscribers:
@@ -787,6 +849,19 @@ class ToyServer:
                         await self._hub.stop_scan()
                     except Exception:
                         pass
+
+            client_toys = self._client_limits.pop(ws, {})
+            for toy_id, limits in client_toys.items():
+                for axis in (0, 1):
+                    if limits[axis] is not None:
+                        effective = self._compute_effective_limit(toy_id, axis)
+                        try:
+                            if axis == 0:
+                                await self._hub.set_intensity1_limit(toy_id, effective)
+                            else:
+                                await self._hub.set_intensity2_limit(toy_id, effective)
+                        except Exception:
+                            pass
 
             if getattr(ws, "shutdown_requested", False):
                 await self._shutdown()
@@ -875,6 +950,14 @@ class ToyServer:
         try:
             if entry.is_scan:
                 await self._handle_scan(ws, req_id, cmd, entry.resp_model)
+                return
+
+            if entry.is_heartbeat:
+                await self._handle_heartbeat(ws, req_id, cmd, data, entry.resp_model)
+                return
+
+            if entry.is_limit:
+                await self._handle_limit(ws, req_id, cmd, data, entry.resp_model)
                 return
 
             if entry.is_shutdown:
@@ -1108,6 +1191,117 @@ class ToyServer:
             ws, req_id, cmd, resp_model(ack=True).model_dump(), success=True
         )
 
+    async def _handle_heartbeat(
+        self,
+        ws: ServerConnection,
+        req_id: str,
+        cmd: str,
+        data,
+        resp_model: type[BaseModel],
+    ) -> None:
+        """Route enable_heartbeat / heartbeat to the appropriate handler."""
+        if cmd == "enable_heartbeat":
+            if data.enable:
+                self._heartbeat_clients[ws] = time.monotonic()
+                if self._heartbeat_task is None or self._heartbeat_task.done():
+                    self._heartbeat_task = asyncio.get_running_loop().create_task(
+                        self._heartbeat_check_loop(), name="heartbeat-check"
+                    )
+            else:
+                self._heartbeat_clients.pop(ws, None)
+                if not self._heartbeat_clients and self._heartbeat_task is not None:
+                    self._heartbeat_task.cancel()
+                    self._heartbeat_task = None
+        else:
+            if ws in self._heartbeat_clients:
+                self._heartbeat_clients[ws] = time.monotonic()
+            else:
+                self._log.debug("Heartbeat received from non-subscribed client.")
+
+        await self._send_response(
+            ws, req_id, cmd, resp_model(ack=True).model_dump(), success=True
+        )
+
+    async def _handle_limit(
+        self,
+        ws: ServerConnection,
+        req_id: str,
+        cmd: str,
+        data,
+        resp_model: type[BaseModel],
+    ) -> None:
+        """Store per-client limit, compute effective minimum, and forward to _ToyHub."""
+        toy_id = data.toy_id
+        axis = 0 if cmd == "set_intensity1_limit" else 1
+
+        client_toys = self._client_limits.setdefault(ws, {})
+        toy_limits = client_toys.setdefault(toy_id, [None, None])
+        old_value = toy_limits[axis]
+        toy_limits[axis] = data.limit  # None = "I don't want to limit"
+
+        effective = self._compute_effective_limit(toy_id, axis)
+        try:
+            if axis == 0:
+                await self._hub.set_intensity1_limit(toy_id, effective)
+            else:
+                await self._hub.set_intensity2_limit(toy_id, effective)
+        except Exception:
+            toy_limits[axis] = old_value
+            if toy_limits == [None, None]:
+                client_toys.pop(toy_id, None)
+            if not client_toys:
+                self._client_limits.pop(ws, None)
+            raise
+
+        await self._send_response(
+            ws,
+            req_id,
+            cmd,
+            resp_model(ack=True, toy_id=toy_id).model_dump(),
+            success=True,
+        )
+
+    def _compute_effective_limit(self, toy_id: str, axis: int) -> int | None:
+        """Minimum of all clients' limits for a toy axis, or None if no limit is set."""
+        values = []
+        for client_toys in self._client_limits.values():
+            limits = client_toys.get(toy_id)
+            if limits is not None and limits[axis] is not None:
+                values.append(limits[axis])
+        return min(values) if values else None
+
+    async def _heartbeat_check_loop(self) -> None:
+        """Background loop that checks heartbeat deadlines and stops all toys on timeout."""
+        while self._heartbeat_clients:
+            await asyncio.sleep(self._heartbeat_check_interval)
+            now = time.monotonic()
+            timed_out = [
+                ws
+                for ws, last in self._heartbeat_clients.items()
+                if (now - last) > self._heartbeat_timeout
+            ]
+            if timed_out:
+                self._log.warning(
+                    "Heartbeat timeout for %d client(s). Stopping all toys.",
+                    len(timed_out),
+                )
+                for ws in timed_out:
+                    self._heartbeat_clients.pop(ws, None)
+                toy_ids = await self._hub.get_toy_ids()
+                for toy_id in toy_ids:
+                    try:
+                        await self._hub.stop(toy_id)
+                    except Exception:
+                        self._log.exception(
+                            "Failed to stop toy %s during heartbeat timeout.", toy_id
+                        )
+                await self._broadcast(
+                    "heartbeat_timeout",
+                    dict(message="Heartbeat timeout. All toys stopped."),
+                )
+                if not self._heartbeat_clients:
+                    break
+
     async def _handle_http_request(self, _, request) -> Response | None:
         """
         Intercept plain HTTP requests and serve a status page.
@@ -1244,6 +1438,12 @@ class ToyServer:
 
     async def _on_toy_ids_change(self, toy_ids: list[str]) -> None:
         """Broadcast a ``toy_ids_changed`` event to all connected clients when the set of managed toys changes."""
+        current = set(toy_ids)
+        # Clean up any stale intensity limits
+        for client_toys in self._client_limits.values():
+            for stale_id in list(client_toys.keys()):
+                if stale_id not in current:
+                    del client_toys[stale_id]
         await self._broadcast("toy_ids_changed", dict(toy_ids=toy_ids))
 
     async def _on_toy_state_change(self, state: dict) -> None:

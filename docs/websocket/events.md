@@ -55,13 +55,14 @@ The set of toys managed by the server changed: a toy was added or removed.
 ---
 
 ### 3. `toy_state_changed`
-Any part of a toy’s internal state has changed (intensities, pattern, pause/block state, pattern version, elapsed time)
+Any part of a toy’s internal state has changed (intensities, intensity limits, pattern, pause/block state, pattern version, elapsed time)
 
 **Data**
 ```json
 {
   "toy_id": "AA:BB:CC:DD:EE:FF",
   "current_intensities": [0, 0],
+  "intensity_limits": [20, 20],
   "is_blocked": false,
   "pattern_version": 3,
   "pattern": [[500, 100, 0], [500, 0, 100]],
@@ -75,6 +76,7 @@ Any part of a toy’s internal state has changed (intensities, pattern, pause/bl
 |---------------------|--------------------------|--------------------------------------------------------------------------------------------------------------|
 | toy_id              | string                   | Unique identifier of the toy.                                                                                |
 | current_intensities | list[int]                | `[intensity1, intensity2]`; second value is always `0` for single‑intensity toys.                            |
+| intensity_limits    | list[int]                | `[limit1, limit2]`; current intensity limits. All intensity commands are clamped to these values.            |
 | is_blocked          | bool                     | `true` if the toy is forced to zero intensities.                                                             |
 | pattern_version     | int                      | Increments each time the pattern state changes.                                                              |
 | pattern             | list[tuple[int,int,int]] | Active pattern as a list of `(duration_ms, intensity1, intensity2)` segments.                                |
@@ -179,5 +181,25 @@ If an error occurs (e.g., Bluetooth hardware becomes unavailable), the server br
 | traceback | str  | Traceback of the error       |
 
 Similar to replies, you can use the success field of the event envelope to determine whether the data field contains an error or success payload.
+
+---
+
+### 7. `heartbeat_timeout`
+A client subscribed to the heartbeat watchdog failed to send a `heartbeat` command within 3 seconds.
+As a safety measure, the server stops **all** toys. The timed-out client's heartbeat subscription is removed automatically.
+See the `enable_heartbeat` and `heartbeat` actions in **actions.md** for details.
+
+This event is broadcast to **all** connected clients, not just the one that timed out.
+
+**Data**
+```json
+{
+  "message": "Heartbeat timeout. All toys stopped."
+}
+```
+
+| Field   | Type   | Description                          |
+|---------|--------|--------------------------------------|
+| message | string | Human-readable description of what happened. |
 
 ---

@@ -976,6 +976,38 @@ class _ToyHub:
             await self._run_toy_command(toy, "set_blocked", toy.toggle_block)
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
 
+    async def set_intensity1_limit(self, toy_id: str, level: int | None) -> None:
+        """
+        Set the upper limit for the primary intensity of a toy. All future intensity1 commands are clamped to this value.
+
+        Args:
+            toy_id: Identifier of the toy to set the intensity1 limit for.
+            level: Maximum allowed intensity1 value (0 – max_intensity). Clamped to max_intensity. None is equal to max_intensity.
+
+        Raises:
+            UnknownToyError: The toy was not added before.
+        """
+        self._log.info(f"Setting intensity1 limit of {toy_id} to {level}")
+        toy = await self._get_toy(toy_id)
+        await toy.set_intensity1_limit(level)
+        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+
+    async def set_intensity2_limit(self, toy_id: str, level: int | None) -> None:
+        """
+        Set the upper limit for the secondary intensity of a toy. All future intensity2 commands are clamped to this value.
+
+        Args:
+            toy_id: Identifier of the toy to set the intensity2 limit for.
+            level: Maximum allowed intensity2 value (0 – max_intensity). Clamped to max_intensity. None is equal to max_intensity.
+
+        Raises:
+            UnknownToyError: The toy was not added before.
+        """
+        self._log.info(f"Setting intensity2 limit of {toy_id} to {level}")
+        toy = await self._get_toy(toy_id)
+        await toy.set_intensity2_limit(level)
+        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+
     async def set_pattern(
         self,
         toy_id: str,
@@ -1045,6 +1077,7 @@ class _ToyHub:
         State information contains:
         -  `toy_id` (str) Unique identifier of the toy
         -  `current_intensity` (list[int, int]) Current intensity values. The second value is always zero if the toy only has one intensity.
+        -  `intensity_limits` (list[int, int]) Current intensity limits. All intensity commands are clamped to these values.
         -  `is_blocked` (bool) Whether the toy is currently blocked (toy's intensities are forced to zero)
         -  `pattern_version` (int) Each time the pattern state changes, the version number is incremented
         -  `pattern` (list[tuple[int, int, int]]) List of tuples (duration, intensity1, intensity2) defining the pattern segment

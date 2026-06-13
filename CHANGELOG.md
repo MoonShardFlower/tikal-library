@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+    - WebAPI: Limit Intenstiy functionality. See docs/websocket/actions.md for details.
+    - WebAPI: Heartbeat functionality (opt-in protective measure agains client failures). See docs/websocket/actions.md for details.
+    - All APIs: Alpha support for Lovense Spinel and Lovense Lush Anal (I don't have these toys and had to guess their commands, so they may or may not work)
+
 
 ## [1.0.0] - 2026-06-02
 
