@@ -231,7 +231,14 @@ LOVENSE_TOY_NAMES = {
 }
 
 #: Mapping of brands to all their toy models
+#:
 #: This dictionary defines all valid model_names (list[str]) for each brand (str)
+#: Type:
+#:     dict[str, list[str]]
+#: Example:
+#:      ::
+#:
+#:         print(BRANDS["Lovense"])  # ["Nora", "Lush", ...]
 BRANDS = {
     "Lovense": [toy for toy in LOVENSE_TOY_NAMES.keys()],
 }
@@ -250,3 +257,44 @@ BRANDS = {
 #:         if toy.model_name in ROTATION_TOY_NAMES:
 #:             await toy.rotate_change_direction()
 ROTATION_TOY_NAMES = ["Nora", "Ridge"]
+
+
+#: Maps toys to my suggested minimum segment length, meaning the minimum interval between intensity changes (In milliseconds)
+#:
+#: Especially useful if you want to implement any pattern playback-related functionality.
+#: This is just a suggestion. You're free to use whatever you want.
+#: Type:
+#:     dict[str, int]
+#: Example:
+#:      ::
+#:
+#:         print(MIN_SEGMENT_LENGTH["Nora"])  # 200
+MIN_SEGMENT_LENGTH = {
+    "Solace": 800,
+    "Sex Machine": 800,
+    "Lush": 200,
+    "Ferri": 200,
+    "Nora": 200,
+    "Osci": 200,
+    "Mission": 200,
+    "Flexer": 200,
+    "Gravity": 200,
+    "Dolce": 200,
+    "Vulse": 200,
+    "Tenera": 400,
+    "Lapis": 200,
+    "Ambi": 200,
+    "Hyphy": 200,
+    "Exomoon": 200,
+    "Gush": 200,
+    "Edge": 200,
+    "Max": 200,
+    "Diamo": 200,
+    "Calor": 200,
+    "Ridge": 200,
+    "Hush": 200,
+    "Domi": 200,
+    "Gemini": 200,
+    "Lush Anal": 200,
+    "Spinel": 200,
+}

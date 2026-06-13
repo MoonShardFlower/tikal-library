@@ -3,6 +3,7 @@ from .toy import Lovense, Toy
 from .toy_data import (
     BRANDS,
     LOVENSE_TOY_NAMES,
+    MIN_SEGMENT_LENGTH,
     ROTATION_TOY_NAMES,
     BadModelError,
     InvalidModelError,
@@ -18,6 +19,7 @@ __all__ = [
     "BRANDS",
     "LOVENSE_TOY_NAMES",
     "ROTATION_TOY_NAMES",
+    "MIN_SEGMENT_LENGTH",
     "BadModelError",
     "InvalidModelError",
     "ToyData",
