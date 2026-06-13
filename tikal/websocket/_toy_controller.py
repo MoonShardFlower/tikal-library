@@ -77,26 +77,6 @@ class _ToyController:
         return self._toy.brand
 
     @property
-    def change_rotation_direction_available(self) -> bool:
-        """
-        Check if the toy supports changing the rotation direction.
-
-        Returns:
-            bool: True if the rotation direction can be changed, False otherwise.
-        """
-        return self._toy.change_rotation_direction_available
-
-    @property
-    def intensity_names(self) -> tuple[str, str | None]:
-        """
-        Get the display names for the toy's capabilities.
-
-        Returns:
-            tuple[str, str | None]: A tuple of (primary_name, secondary_name). The secondary name is None if the toy has only one capability.
-        """
-        return self._toy.intensity_names
-
-    @property
     def max_intensity(self) -> int:
         """
         Get the maximum intensity value for this toy.
@@ -105,16 +85,6 @@ class _ToyController:
             int: Maximum intensity value (e.g., 20 for Lovense toys).
         """
         return self._toy.max_intensity
-
-    @property
-    def current_intensities(self) -> tuple[int, int]:
-        """
-        Get the current intensity values for the toy's capabilities.
-
-        Returns:
-            tuple[int, int]: A tuple of (primary_intensity, secondary_intensity). The secondary intensity is always 0 if the toy has only one capability.
-        """
-        return self._toy.current_intensities
 
     @property
     def battery(self) -> int | None:
