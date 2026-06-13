@@ -225,6 +225,9 @@ LOVENSE_TOY_NAMES = {
     "Gemini": ToyCommands(
         "Vibration", "Vibrate"
     ),  # Has 2 independent vibrators, no idea how to independently control them
+    "Lush Anal": ToyCommands("Vibration", "Vibrate"),
+    # Second Command unknown, assume Thrusting
+    "Spinel": ToyCommands("Vibration", "Vibrate", "Thrust", "Thrusting"),
 }
 
 #: Mapping of brands to all their toy models
