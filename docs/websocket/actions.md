@@ -284,20 +284,22 @@ Use `full=false` for fast in‑memory data only; `full=true` may request additio
   "brand": "Lovense",
   "intensity_names": ["Thrust", "Depth"],
   "supports_rotation": false,
-  "max_intensity": 20
+  "max_intensity": 20,
+  "recommended_min_interval": 400
 }
 ```
 When `full` is `true`, extra brand-specific fields (e.g., `batch`) may appear.
 
-| Field               | Type                 | Description                                                                                                        |
-|---------------------|----------------------|--------------------------------------------------------------------------------------------------------------------|
-| `toy_id`            | string               | Unique toy identifier.                                                                                             |
-| `name`              | string               | Human readable toy identifier.                                                                                     |
-| `model_name`        | string               | Model of the toy.                                                                                                  |
-| `brand`             | string               | Brand of the toy.                                                                                                  |
-| `intensity_names`   | list[string, string] | Human readable names for both capabilities. Second string is empty if the toy only has one capability.             |
-| `supports_rotation` | boolean              | If `true`, the toy allows for its rotation direction to be changed.                                                |
-| `max_intensity`     | int                  | Maximum intensity level (equal for both capabilities). Values outside the range (0-max) are clamped automatically. |
+| Field                      | Type                 | Description                                                                                                        |
+|----------------------------|----------------------|--------------------------------------------------------------------------------------------------------------------|
+| `toy_id`                   | string               | Unique toy identifier.                                                                                             |
+| `name`                     | string               | Human readable toy identifier.                                                                                     |
+| `model_name`               | string               | Model of the toy.                                                                                                  |
+| `brand`                    | string               | Brand of the toy.                                                                                                  |
+| `intensity_names`          | list[string, string] | Human readable names for both capabilities. Second string is empty if the toy only has one capability.             |
+| `supports_rotation`        | boolean              | If `true`, the toy allows for its rotation direction to be changed.                                                |
+| `max_intensity`            | int                  | Maximum intensity level (equal for both capabilities). Values outside the range (0-max) are clamped automatically. |
+| `recommended_min_interval` | int                  | Recommended minimum interval between intensity commands (in ms). Especially useful for pattern playback.           |
 
 **Possible errors**
 - Unknown Toy: The provided toy ID is not known to the server.
@@ -330,6 +332,7 @@ Use `full=false` for fast in‑memory data only; `full=true` may request additio
   "intensity_names": ["Thrust", "Depth"],
   "supports_rotation": false,
   "max_intensity": 20,
+  "recommended_min_interval": 400,
   "battery": 85,
   "connection_status": "connected",
   "current_intensities": [5, 0],

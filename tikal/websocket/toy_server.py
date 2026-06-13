@@ -266,13 +266,27 @@ async def _cmd_get_info(hub: _ToyHub, data: GetInfoData) -> dict:
         UnknownToyError: The toy was not added before.
 
     Returns:
-        dict: dictionary containing the gathered info. Empty dict if the command could not be delivered.
+        dict: dictionary containing the gathered info.
     """
     return await hub.get_info(data.toy_id, data.full)
 
 
 async def _cmd_get_all(hub: _ToyHub, data: GetInfoData) -> dict:
-    """Return combined state, info, connection status, get_battery for a toy."""
+    """
+    Return combined state, info, connection status, get_battery for a toy.
+
+    Args:
+        hub:   _ToyHub instance managing the toy
+        data:   Validated GetInfoData instance, containing the toy_id and full flag.
+                If full is True, additional brand-dependent information is returned.
+
+    Raises:
+        ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
+        UnknownToyError: The toy was not added before.
+
+    Returns:
+        dict: dictionary containing the gathered info.
+    """
     return await hub.get_all(data.toy_id, data.full)
 
 

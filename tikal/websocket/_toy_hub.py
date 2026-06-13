@@ -1125,6 +1125,7 @@ class _ToyHub:
         -  `intensity_names` (list of str). Two human-readable strings. The second string is empty if the toy only has one intensity.
         -  `supports_rotation` (bool) whether the toy supports changing the rotation direction
         -  `max_intensity` (int) maximum intensity value
+        -  `recommended_min_interval` (int) The recommended minimum interval between intensity commands (in ms). Especially useful for pattern playback.
 
         Args:
             toy_id: Unique identifier of the toy that you want to gather info about.
@@ -1148,7 +1149,7 @@ class _ToyHub:
         """
         Combines get_info, get_state, get_status, get_battery.
 
-        The returned dict contains all keys from both methods.
+        The returned dict contains all keys from all above methods.
         If full is True, it will return additional brand-dependent information. See self.get_info
 
         Raises:

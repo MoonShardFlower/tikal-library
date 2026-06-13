@@ -409,6 +409,7 @@ class InfoResponseData(BaseModel):
         intensity_names: List of two human-readable strings. The second string is "None" if the toy only has one intensity.
         supports_rotation: True if the toy supports changing the rotation direction.
         max_intensity: Maximum intensity value supported by the toy.
+        recommended_min_interval: Recommended minimum interval between intensity changes, in milliseconds.
     """
 
     toy_id: str
@@ -418,6 +419,7 @@ class InfoResponseData(BaseModel):
     intensity_names: list[str]
     supports_rotation: bool
     max_intensity: int
+    recommended_min_interval: int
     model_config = {"extra": "allow"}
 
 
@@ -444,6 +446,7 @@ class GetAllResponseData(BaseModel):
     intensity_names: list[str]
     supports_rotation: bool
     max_intensity: int
+    recommended_min_interval: int
     battery: Optional[int] = None
     current_intensities: list[int]
     intensity_limits: list[int]

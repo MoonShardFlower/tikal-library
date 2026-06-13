@@ -7,7 +7,7 @@ Meant to be consumed by _ToyHub, which in turn is consumed by ToyServer. ToyServ
 """
 
 from .._private import PatternHandler
-from ..low_level import Lovense, Toy
+from ..low_level import MIN_SEGMENT_LENGTH, Lovense, Toy
 
 
 class _ToyController:
@@ -357,6 +357,7 @@ class _ToyController:
         -  `intensity_names` (list of str). Two human-readable strings. The second string is empty if the toy only has one intensity.
         -  `supports_rotation` (bool) whether the toy supports changing the rotation direction
         -  `max_intensity` (int) maximum intensity value possible for the toy. (Keep in mind that self._intensity_limits can apply stricter thresholds)
+        -  `recommended_min_interval` (int) The recommended minimum interval between intensity commands (in ms). Especially useful for pattern playback.
 
         Args:
             full: If True, returns all available info (making requests to the toy). Otherwise, returns only the "cheap" info described above.
@@ -383,6 +384,7 @@ class _ToyController:
             intensity_names=[intensity1, intensity2],
             supports_rotation=self._toy.change_rotation_direction_available,
             max_intensity=self._toy.max_intensity,
+            recommended_min_interval=MIN_SEGMENT_LENGTH[self._toy.model_name],
         )
         return result
 
@@ -558,6 +560,7 @@ class _LovenseController(_ToyController):
         -  `intensity_names` (list of str). Two human-readable strings. The second string is empty if the toy only has one intensity.
         -  `supports_rotation` (bool) whether the toy supports changing the rotation direction
         -  `max_intensity` (int) maximum intensity value
+        -  `recommended_min_interval` (int) The recommended minimum interval between intensity commands (in ms). Especially useful for pattern playback.
         Additional info if `full` is true:
         - 'status' (str): Status code ("2" for normal)
         - 'batch_number' (str): Manufacturing batch (e.g., "241015")
