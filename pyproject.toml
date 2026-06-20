@@ -43,7 +43,8 @@ classifiers = [
 dev = [
     "black>=26.5.1",
     "isort>=8.0.1",
-	"pytest>=9.0.3",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
     "flake8>=7.3.0",
 ]
 
@@ -52,3 +53,6 @@ Homepage = "https://github.com/MoonShardFlower/tikal-library"
 
 [tool.setuptools]
 packages = { find = {} }
+
+[tool.isort]
+profile = "black"
