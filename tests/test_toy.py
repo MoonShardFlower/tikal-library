@@ -626,6 +626,16 @@ class TestLovenseProperties(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(names[0], "Vibration")
         self.assertIsNone(names[1])
 
+    async def test_recommended_min_interval(self):
+        """recommended_min_interval returns the per-model suggested interval."""
+        self.assertEqual(self.toy.recommended_min_interval, 200)  # Gush
+
+    async def test_change_rotation_direction_available(self):
+        """change_rotation_direction_available reflects ROTATION_TOY_NAMES membership."""
+        self.assertFalse(self.toy.change_rotation_direction_available)  # Gush
+        nora = Lovense(MockBleTransport(), "Nora", self.on_power_off, "")
+        self.assertTrue(nora.change_rotation_direction_available)
+
 
 class TestLovenseCommandRetry(unittest.IsolatedAsyncioTestCase):
     """Tests for command retry and reliability."""
