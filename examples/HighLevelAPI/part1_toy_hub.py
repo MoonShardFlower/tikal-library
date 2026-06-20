@@ -213,7 +213,7 @@ def main():
     )
     # Setting/Updating a callback can be done like this:
     new_toy_hub.battery_update_callback(on_battery_update)
-    print(f"The battery callback will be called every 120 seconds")
+    print("The battery callback will be called every 120 seconds")
 
     # Connecting new toys will trigger the battery update callback immediately.
     MockBleakScanner.reset()  # you obviously don't need to do this with the real BleakScanner
