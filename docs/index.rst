@@ -28,7 +28,7 @@ For each connected Toy the ToyHub produces and hands over an Implementation of t
 just LovenseController) to control the toy.
 
 The 'Low Level' API provides BLEConnectionBuilder to scan and connect to toys. BLEConnectionBuilder produces and hands over an Implementation of
-the abstract Toy (currently just Lovense) class to control the toy. Both classes are mostly async.
+the abstract Toy (currently just LovenseToy) class to control the toy. Both classes are mostly async.
 You can use ToyCache to remember toy model names in-between sessions.
 
 The 'WebSocket API' allows for the toy control to run in a separate process. Communication is done via websockets.
@@ -65,6 +65,7 @@ Some models like Nora have multiple Identifiers (A or C), while some models shar
 Help me
 ========
 | You can help this project by:
+
 * Testing toys and reporting if they work fully, partially, or not at all.
 * Not all device capabilities are implemented (e.g., things like turning on/off lights, getting, and controlling patterns of toys that have this capability).
   You can help by implementing the missing ones.
@@ -75,6 +76,7 @@ Help me
 Notes about reporting
 =====================
 | If you do report, please follow these rules:
+
 * be polite
 * provide me with the toy model that you used e.g., Nora, SolacePro
 * Note that the Software is provided as is and that I have absolutely no obligation to do anything. I'll do my best, but no promises.

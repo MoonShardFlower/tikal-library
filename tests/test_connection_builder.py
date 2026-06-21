@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tikal.low_level import BLEConnectionBuilder, InvalidModelError, ToyData
-from tikal.low_level.connection_builder import LovenseHandler, StaleDeviceError
+from tikal.low_level.brands.lovense import LovenseHandler
+from tikal.low_level.connection_builder import StaleDeviceError
 
 
 class FakeBLEDevice:

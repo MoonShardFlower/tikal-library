@@ -7,7 +7,7 @@ Meant to be consumed by _ToyHub, which in turn is consumed by ToyServer. ToyServ
 """
 
 from .._private import PatternHandler
-from ..low_level import MIN_SEGMENT_LENGTH, Lovense, Toy
+from ..low_level import LovenseToy, Toy
 
 
 class _ToyController:
@@ -384,7 +384,7 @@ class _ToyController:
             intensity_names=[intensity1, intensity2],
             supports_rotation=self._toy.change_rotation_direction_available,
             max_intensity=self._toy.max_intensity,
-            recommended_min_interval=MIN_SEGMENT_LENGTH[self._toy.model_name],
+            recommended_min_interval=self._toy.recommended_min_interval,
         )
         return result
 
@@ -538,8 +538,8 @@ class _LovenseController(_ToyController):
         initial_battery: Initial battery level (0-100) or None if the toy has no battery.
     """
 
-    def __init__(self, toy: Lovense, initial_battery: int | None = None):
-        self._toy = toy
+    def __init__(self, toy: LovenseToy, initial_battery: int | None = None):
+        self._toy: LovenseToy = toy
         super().__init__(toy, initial_battery)
 
     async def get_info(
@@ -584,3 +584,10 @@ class _LovenseController(_ToyController):
             info["device_type"] = await self._toy.strict_get_device_type()
 
         return info
+
+
+#: Maps a toy's brand (``toy.brand``) to its websocket controller class.
+#: Register a brand's controller here when adding support for a new brand.
+_CONTROLLER_BY_BRAND: dict[str, type[_ToyController]] = {
+    "Lovense": _LovenseController,
+}

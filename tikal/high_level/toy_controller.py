@@ -24,7 +24,7 @@ from logging import getLogger
 from typing import Any, Callable, Optional
 
 from .._private import PatternHandler
-from ..low_level import Lovense, Toy
+from ..low_level import LovenseToy, Toy
 
 
 class ToyController(ABC):
@@ -773,8 +773,8 @@ class LovenseController(ToyController):
         This class should not be instantiated directly. Use ToyHub's connection methods to get controller instances.
     """
 
-    def __init__(self, toy: Lovense, logger_name: str):
-        self._toy: Lovense = toy
+    def __init__(self, toy: LovenseToy, logger_name: str):
+        self._toy: LovenseToy = toy
         super().__init__(toy, logger_name)
 
     def get_information(self, callback: Callable[[dict[str, str]], None]) -> None:
@@ -837,3 +837,10 @@ class LovenseController(ToyController):
                 toy.set_model_name("Nora")
         """
         self._toy.set_model_name(model_name)
+
+
+#: Maps a toy's brand (``toy.brand``) to its high-level controller class.
+#: Register a brand's controller here when adding support for a new brand.
+CONTROLLER_BY_BRAND: dict[str, type[ToyController]] = {
+    "Lovense": LovenseController,
+}

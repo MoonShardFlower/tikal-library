@@ -2,9 +2,10 @@
 Part of the Low-Level API: Provides connection management for toy devices.
 
 This module provides:
-- :class `BLEConnectionBuilder`: Entry point for all BLE toys manages BLE scanning (one‑shot and continuous) and creation of Toys  Delegates brand details to handlers.
-- :class ``BLEBrandHandler``: Internal (Private) abstract interface for brand‑specific BLE logic
-- :class ``LovenseHandler``: Internal (Private) implementation of ``BLEBrandHandler``
+- :class `BLEConnectionBuilder`: Entry point for all BLE toys. Manages BLE scanning (one‑shot and continuous) and creation of Toys.
+
+Brand-specific logic lives behind :class:`BLEBrandHandler` (``brand_handler.py``); concrete handlers and their
+registration live under ``tikal/low_level/brands/``. The builder gets its handlers from that registry via ``build_handlers``.
 
 Example::
 
@@ -23,211 +24,20 @@ Example::
 
 import asyncio
 import time
-from abc import ABC, abstractmethod
 from logging import getLogger
 from typing import Any, Callable, Type
 
 from bleak import BleakClient, BleakScanner, BLEDevice
 
-from .toy import Lovense, Toy
-from .toy_data import LOVENSE_TOY_NAMES, InvalidModelError, ToyData, ValidationError
-from .transport import BleTransport
+from .brands import build_handlers
+from .toy import Toy
+from .toy_data import ToyData
 
 
 class StaleDeviceError(ConnectionError):
     """Raised when attempting to connect to a device that was at one point discovered but is no longer available."""
 
     pass
-
-
-class BLEBrandHandler(ABC):
-    """
-    Abstract interface for handling a specific brand of BLE toy.
-
-    Each concrete implementation provides the logic for:
-    - Recognizing the brand from BLE advertisements
-    - Creating the appropriate ``ToyData``
-    - Establishing a connection and returning a ready‑to‑use ``Toy`` instance
-    """
-
-    @staticmethod
-    @abstractmethod
-    def handles_device(device: BLEDevice) -> bool:
-        """Return ``True`` if the BLE device belongs to this brand."""
-        raise NotImplementedError
-
-    @staticmethod
-    @abstractmethod
-    def handles_toy(toy_data: ToyData) -> bool:
-        """Return ``True`` if the given ``ToyData`` belongs to this brand."""
-        raise NotImplementedError
-
-    @staticmethod
-    @abstractmethod
-    def create_toy_data(device: BLEDevice) -> ToyData:
-        """Create a brand‑specific ``ToyData`` object from a BLE device."""
-        raise NotImplementedError
-
-    @abstractmethod
-    async def create_toy(self, toy_data: ToyData, device: BLEDevice) -> Toy:
-        """
-        Connect to the toy described by ``toy_data`` using the provided ``BLEDevice``.
-
-        This method handles brand‑specific connection steps (UUID resolution, notification setup, etc.) and returns a connected ``Toy`` instance.
-
-        Raises:
-            ValidationError: The ``toy_data`` contains an invalid model name.
-            ConnectionError: The BLE connection, UUID resolution, or notification setup failed.
-        """
-        raise NotImplementedError
-
-
-class LovenseHandler(BLEBrandHandler):
-
-    _LOVENSE_SERVICE_PATTERN = "-4bd4-bbd5-a6920e4c5653"
-    _UUID_REPLACEMENTS = {
-        "tx": ("0001", "0002"),
-        "rx": ("0001", "0003"),
-    }
-
-    def __init__(
-        self,
-        on_disconnect: Callable[[str], Any],
-        on_power_off: Callable[[str], Any],
-        logger_name: str = "tikal",
-        client_class: Type[BleakClient] = BleakClient,
-    ):
-        """
-        Brand handler for Lovense BLE toys.
-
-        Encapsulates all Lovense‑specific logic: identification, UUID resolution, connection, and notification setup.
-
-        Args:
-            on_disconnect: Callback called when a toy disconnects unexpectedly. Receives the toy's toy_id.
-            on_power_off: Callback called when the user powers off a toy via its physical button. Receives the toy id (address).
-            logger_name: Name for the logger used by this handler. Defaults to 'tikal'.
-            client_class BLE client class to use. Defaults to BleakClient. Can be overridden for testing.
-        """
-        self._on_disconnect = on_disconnect
-        self._on_power_off = on_power_off
-        self._log = getLogger(logger_name)
-        self._client_class = client_class
-
-    @staticmethod
-    def handles_device(device: BLEDevice) -> bool:
-        """Return ``True`` if the BLE device is a lovense toy. Lovense toys advertise with a name prefixed 'LVS-'"""
-        if device.name and device.name.startswith("LVS-"):
-            return True
-        return False
-
-    @staticmethod
-    def handles_toy(toy_data: ToyData) -> bool:
-        """Return ``True`` if the given ``ToyData`` represents a Lovense toy."""
-        return toy_data.brand == "Lovense"
-
-    @staticmethod
-    def create_toy_data(device: BLEDevice) -> ToyData:
-        """Create a ``LovenseData`` instance (inherits from ``ToyData``) from a BLE device representing a Lovense toy."""
-        name = device.name if device.name else "unknown"
-        return ToyData(name, device.address, "", "Lovense")
-
-    async def create_toy(self, toy_data: ToyData, device: BLEDevice) -> Toy:
-        """
-        Connect to a single Lovense toy.
-
-        Args:
-            toy_data: ``LovenseData`` object representing the toy to connect to.
-            device: ``BLEDevice`` object representing the toy to connect to.
-
-        Returns:
-            A connected, ready to use ``Lovense`` instance.
-
-        Raises:
-            ValidationError: The ``toy_data`` contains an invalid model name.
-            ConnectionError: The BLE connection, UUID resolution, or notification setup failed.
-        """
-        if toy_data.model_name.title() not in LOVENSE_TOY_NAMES:
-            raise InvalidModelError(
-                f"Invalid model name '{toy_data.model_name}' for lovense toy at address '{device.address}'."
-            )
-
-        transport = BleTransport(
-            device,
-            uuid_resolver=self._resolve_uuids,
-            on_disconnect=self._on_disconnect,
-            client_class=self._client_class,
-        )
-        try:
-            await transport.connect()
-            toy = Lovense(
-                transport, toy_data.model_name, self._on_power_off, self._log.name
-            )
-            await toy.start_notifications()
-        except ValidationError:
-            await transport.disconnect()
-            raise
-        except Exception as e:
-            await transport.disconnect()
-            raise ConnectionError(
-                f"Error connecting to {toy_data.model_name} at {device.address}: {e}."
-            )
-        return toy
-
-    async def _resolve_uuids(self, client: BleakClient) -> tuple[str, str]:
-        """
-        Resolve the TX and RX UUIDs for a Lovense device by inspecting its GATT services.
-
-        Passed as the ``uuid_resolver`` to ``BleTransport``, where it is called once the BLE link is open.
-
-        Args:
-            client: The connected ``BleakClient`` to inspect.
-
-        Returns:
-            ``(tx_uuid, rx_uuid)`` as uppercase strings.
-
-        Raises:
-            ConnectionError: If either UUID cannot be found in the device's GATT table.
-        """
-        tx_uuid = await self._find_uuid_by_type(client, "tx")
-        rx_uuid = await self._find_uuid_by_type(client, "rx")
-        return tx_uuid, rx_uuid
-
-    async def _find_uuid_by_type(self, client: BleakClient, uuid_type: str) -> str:
-        """
-        Find the TX or RX UUID for a Lovense device.
-
-        Searches through the device's GATT services to find the appropriate UUID based on the Lovense service pattern
-        and UUID replacement rules.
-
-        Args:
-            client: Connected BleakClient for the toy.
-            uuid_type: Either 'rx' (for receiving notifications) or 'tx' (for sending commands).
-
-        Returns:
-            UUID string in uppercase format for the specified characteristic type.
-
-        Raises:
-            ValueError: If uuid_type is not 'rx' or 'tx'.
-            ConnectionError: If unable to find the UUID matching the Lovense service pattern.
-                This can happen if the device is not a valid Lovense toy or if the connection is incomplete.
-        """
-        if uuid_type not in self._UUID_REPLACEMENTS:
-            raise ValueError(f"Invalid UUID type: {uuid_type}")
-        old_pattern, new_pattern = self._UUID_REPLACEMENTS[uuid_type]
-        for service in client.services:
-            uuid_str = str(service.uuid).lower()
-            if (
-                uuid_str.endswith(self._LOVENSE_SERVICE_PATTERN)
-                and uuid_str.startswith("4")
-                and old_pattern in uuid_str
-            ):
-                target_uuid = uuid_str.replace(old_pattern, new_pattern).upper()
-                if any(
-                    str(char.uuid).upper() == target_uuid
-                    for char in service.characteristics
-                ):
-                    return target_uuid
-        raise ConnectionError(f"Unable to find {uuid_type}-UUID for {client.address}")
 
 
 class BLEConnectionBuilder:
@@ -243,8 +53,8 @@ class BLEConnectionBuilder:
         """
         Connection builder for Bluetooth Low Energy (BLE) toys using the Bleak library.
 
-        Part of the Low-Level API: Handles discovery and connection for Toys using Bluetooth Low Energy. Delegates
-        brand-specific handling to instances of BLEBrandHandler
+        Part of the Low-Level API: Handles discovery and connection for Toys using Bluetooth Low Energy.
+        Delegates brand-specific handling to instances of BLEBrandHandler.
 
         on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives the toy's toy_id. Not called for intentional disconnects.
         on_power_off: Callback invoked when the user powers off a toy via the physical power button. Receives the toy id.
@@ -256,9 +66,9 @@ class BLEConnectionBuilder:
             Lovense Toys:   toys of this brand are identified by their bluetooth name starting with "LVS-".
                             If the user configured the bluetooth name to be different, the builder will not find the toy.
         """
-        self._handlers = [
-            LovenseHandler(on_disconnect, on_power_off, logger_name, client_class)
-        ]
+        self._handlers = build_handlers(
+            on_disconnect, on_power_off, logger_name, client_class
+        )
         self._log = getLogger(logger_name)
         self._scanner_class = scanner_class
 

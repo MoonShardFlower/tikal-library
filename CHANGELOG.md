@@ -8,9 +8,16 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 ## [Unreleased]
 
 ### Added
-    - WebAPI: Limit Intenstiy functionality. See docs/websocket/actions.md for details.
-    - WebAPI: Heartbeat functionality (opt-in protective measure agains client failures). See docs/websocket/actions.md for details.
+    - Web API: Limit Intenstiy functionality. See docs/websocket/actions.md for details.
+    - Web API: Heartbeat functionality (opt-in protective measure agains client failures). See docs/websocket/actions.md for details.
+	- Low-Level API: Toy clas and subcallses feature the property recommended_min_interval (My suggested minimum segment length (in ms), meaning the minimum interval between intensity changes)
     - All APIs: Alpha support for Lovense Spinel and Lovense Lush Anal (I don't have these toys and had to guess their commands, so they may or may not work)
+
+
+### Changed
+	- WebAPI: get_info and get_all now return the new key recommended_min_interval (recommended minimal interval between intensity changes in ms)
+    - Low-level API: Restructured the code base, to make it easier to add new brands. No changes to the API.
+                        Objects that you were not meant to use may have changed e.g. LovenseHandler (especially import locations)
 
 
 ## [1.0.0] - 2026-06-02

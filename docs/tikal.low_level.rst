@@ -1,8 +1,25 @@
 tikal.low\_level package
 ========================
 
+Subpackages
+-----------
+
+.. toctree::
+   :maxdepth: 4
+
+   tikal.low_level.brands
+
 Submodules
 ----------
+
+tikal.low\_level.brand\_handler module
+--------------------------------------
+
+.. automodule:: tikal.low_level.brand_handler
+   :members:
+   :show-inheritance:
+   :undoc-members:
+   :noindex:
 
 tikal.low\_level.connection\_builder module
 -------------------------------------------

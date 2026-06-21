@@ -1,18 +1,14 @@
 """
-Part of both the Low-Level and High-Level API: Data structures and constants for toy device management.
+Part of both the Low-Level and High-Level API: brand-agnostic data structures for toy device management.
 
-This module defines the data classes and configuration used throughout the toy control system. It provides:
+This module defines the shared data classes used throughout the toy control system:
 - Exception classes for validation errors (raised if model_name is invalid)
-- ToyData returned by the connection builder after discovery
-- Lookup tables mapping model names to their capabilities
+- :class:`ToyData` returned by the connection builder after discovery
+- :class:`ToyCommands` describing a toy model's capabilities
 
-Constants:
-    LOVENSE_TOY_NAMES (dict[str, ToyCommands]): Maps Lovense toy model names to their command configurations.
-     Keys are model names (e.g., "Nora", "Lush"), values are ToyCommands objects defining the toy's capabilities.
-
-    BRANDS (dict[str, str]): Mapping of brand names to all their toy models.
-
-    ROTATION_TOY_NAMES (list[str]): List of Lovense toy model names that support rotation direction changes.
+Brand-specific model data (e.g., Lovense's model -> command mapping in ``LOVENSE_TOY_NAMES``) lives in the brand
+subpackages under ``tikal/low_level/brands/``. The ``BRANDS`` mapping of brand name -> supported model names is built
+from the brand registry in ``tikal/low_level/brands/__init__.py``.
 """
 
 from dataclasses import dataclass
@@ -164,137 +160,3 @@ class ToyCommands:
     intensity1_command: str
     intensity2_name: str | None = None
     intensity2_command: str | None = None
-
-
-#: Mapping of Lovense toy model names to their command configurations.
-#:
-#: This dictionary defines all supported Lovense toy models and their capabilities.
-#: Keys are model names, values are ToyCommands objects specifying what commands each toy supports.
-#:
-#: Models of different versions are treated the same (e.g., Lush 1, Lush 2, and Lush 3 all use the "Lush" key).
-#: Some commands are uncertain and assumed based on similar toys. Please notify me if some commands don't work.
-#:
-#: Type:
-#:     dict[str, ToyCommands]
-#:
-#: Example:
-#:     ::
-#:
-#:         # Check capabilities
-#:         commands = LOVENSE_TOY_NAMES["Nora"]
-#:         print(f"{commands.intensity1_name}: {commands.intensity1_command}")
-#:         if commands.intensity2_name:
-#:             print(f"{commands.intensity2_name}: {commands.intensity2_command}")
-LOVENSE_TOY_NAMES = {
-    "Solace": ToyCommands("Thrust", "Thrusting", "Depth", "Depth"),
-    "Sex Machine": ToyCommands(
-        "Thrust", "Thrusting", "Depth", "Depth"
-    ),  # Commands unknown, assume it uses the same ones as Solace
-    "Lush": ToyCommands("Vibration", "Vibrate"),
-    "Ferri": ToyCommands("Vibration", "Vibrate"),
-    "Nora": ToyCommands("Vibration", "Vibrate", "Rotation", "Rotate"),
-    "Osci": ToyCommands(
-        "Vibration", "Vibrate", "Oscillation", "Oscillate"
-    ),  # Unsure about the second command, Oscillate assumed
-    "Mission": ToyCommands("Vibration", "Vibrate"),
-    "Flexer": ToyCommands(
-        "Vibration", "Vibrate", "Fingering", "Finger"
-    ),  # Second command unknown; I just assume 'Finger'
-    "Gravity": ToyCommands("Vibration", "Vibrate", "Thrust", "Thrusting"),
-    "Dolce": ToyCommands("Vibration", "Vibrate"),
-    "Vulse": ToyCommands("Vibration", "Vibrate"),
-    "Tenera": ToyCommands("Sucking", "Suck"),  # Command unknown, just assume 'Suck'
-    "Lapis": ToyCommands(
-        "Vibration", "Vibrate"
-    ),  # Has 3 independent vibrators, no idea how to independently control them
-    "Ambi": ToyCommands("Vibration", "Vibrate"),
-    "Hyphy": ToyCommands("Vibration", "Vibrate"),
-    "Exomoon": ToyCommands("Vibration", "Vibrate"),
-    "Gush": ToyCommands(
-        "Vibration", "Vibrate"
-    ),  # Apparently, Oscillation cannot be controlled independently
-    "Edge": ToyCommands(
-        "Vibration", "Vibrate"
-    ),  # Has 2 independent vibrators, no idea how to independently control them
-    "Max": ToyCommands("Vibration", "Vibrate", "Air", "Air:Level"),
-    "Diamo": ToyCommands("Vibration", "Vibrate"),
-    "Calor": ToyCommands("Vibration", "Vibrate"),  # Heat function control unknown
-    "Ridge": ToyCommands("Vibration", "Vibrate", "Rotation", "Rotate"),
-    "Hush": ToyCommands("Vibration", "Vibrate"),
-    "Domi": ToyCommands("Vibration", "Vibrate"),
-    "Gemini": ToyCommands(
-        "Vibration", "Vibrate"
-    ),  # Has 2 independent vibrators, no idea how to independently control them
-    "Lush Anal": ToyCommands("Vibration", "Vibrate"),
-    # Second Command unknown, assume Thrusting
-    "Spinel": ToyCommands("Vibration", "Vibrate", "Thrust", "Thrusting"),
-}
-
-#: Mapping of brands to all their toy models
-#:
-#: This dictionary defines all valid model_names (list[str]) for each brand (str)
-#: Type:
-#:     dict[str, list[str]]
-#: Example:
-#:      ::
-#:
-#:         print(BRANDS["Lovense"])  # ["Nora", "Lush", ...]
-BRANDS = {
-    "Lovense": [toy for toy in LOVENSE_TOY_NAMES.keys()],
-}
-
-
-#: List of toys (by model_name) that support rotation direction changes.
-#:
-#: Toys in this list can use the ``rotate_change_direction()`` method to toggle their rotation direction.
-#:
-#: Type:
-#:     list[str]
-#:
-#: Example:
-#:     ::
-#:
-#:         if toy.model_name in ROTATION_TOY_NAMES:
-#:             await toy.rotate_change_direction()
-ROTATION_TOY_NAMES = ["Nora", "Ridge"]
-
-
-#: Maps toys to my suggested minimum segment length, meaning the minimum interval between intensity changes (In milliseconds)
-#:
-#: Especially useful if you want to implement any pattern playback-related functionality.
-#: This is just a suggestion. You're free to use whatever you want.
-#: Type:
-#:     dict[str, int]
-#: Example:
-#:      ::
-#:
-#:         print(MIN_SEGMENT_LENGTH["Nora"])  # 200
-MIN_SEGMENT_LENGTH = {
-    "Solace": 800,
-    "Sex Machine": 800,
-    "Lush": 200,
-    "Ferri": 200,
-    "Nora": 200,
-    "Osci": 200,
-    "Mission": 200,
-    "Flexer": 200,
-    "Gravity": 200,
-    "Dolce": 200,
-    "Vulse": 200,
-    "Tenera": 400,
-    "Lapis": 200,
-    "Ambi": 200,
-    "Hyphy": 200,
-    "Exomoon": 200,
-    "Gush": 200,
-    "Edge": 200,
-    "Max": 200,
-    "Diamo": 200,
-    "Calor": 200,
-    "Ridge": 200,
-    "Hush": 200,
-    "Domi": 200,
-    "Gemini": 200,
-    "Lush Anal": 200,
-    "Spinel": 200,
-}

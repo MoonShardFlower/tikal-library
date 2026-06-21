@@ -51,9 +51,9 @@ from typing import Any, Callable, Optional
 from bleak import BleakClient, BleakScanner
 
 from .._private import AsyncRunner
-from ..low_level import BLEConnectionBuilder, Lovense, ToyData
+from ..low_level import BLEConnectionBuilder, Toy, ToyData
 from .toy_cache import ToyCache
-from .toy_controller import LovenseController, ToyController
+from .toy_controller import CONTROLLER_BY_BRAND, ToyController
 
 _BATTERY_UPDATE_INTERVAL = 120.0  # seconds
 _COMMUNICATION_FPS = 20  # frames per second
@@ -367,14 +367,12 @@ class ToyHub:
         controllers: list["ToyController | BaseException"] = []
         cache_updates = {}
 
-        # TODO: Future, separate by connection method, e.g. BLE, serial... Not needed now, as we only support Lovense (BLE)
-        lovense_data = [data for data in to_connect if data.brand == "Lovense"]
-        lovense_toys = self._runner.run_async(
-            self._ble_connection_builder.create_toys(lovense_data), timeout
+        toys = self._runner.run_async(
+            self._ble_connection_builder.create_toys(to_connect), timeout
         )
-        for data, toy in zip(lovense_data, lovense_toys):
-            if isinstance(toy, Lovense):
-                controller = LovenseController(toy, self._log.name)
+        for data, toy in zip(to_connect, toys):
+            if isinstance(toy, Toy):
+                controller = self._create_controller(toy)
                 controllers.append(controller)
                 self._register_controller(controller)
                 cache_updates[data.name] = toy.model_name
@@ -392,7 +390,7 @@ class ToyHub:
     def connect_toys_callback(
         self,
         to_connect: list[ToyData],
-        on_connected: Callable[[list["ToyController | BaseException"]], None],
+        on_connected: Callable[[list["ToyController | BaseException"]], Any],
         timeout: float = 30.0,
     ) -> None:
         """
@@ -419,15 +417,13 @@ class ToyHub:
         """
         self._log.info(f"Connecting to {len(to_connect)} toy(s) (callback)...")
 
-        # TODO: see connect_toys_blocking()
         async def connection_task():
             controllers: list["ToyController | BaseException"] = []
             cache_updates = {}
-            lovense_data = [data for data in to_connect if data.brand == "Lovense"]
-            lovense_toys = await self._ble_connection_builder.create_toys(lovense_data)
-            for data, toy in zip(lovense_data, lovense_toys):
-                if isinstance(toy, Lovense):
-                    controller = LovenseController(toy, self._log.name)
+            toys = await self._ble_connection_builder.create_toys(to_connect)
+            for data, toy in zip(to_connect, toys):
+                if isinstance(toy, Toy):
+                    controller = self._create_controller(toy)
                     controllers.append(controller)
                     self._register_controller(controller)
                     cache_updates[data.name] = toy.model_name
@@ -574,6 +570,19 @@ class ToyHub:
     # ------------------------------------------------------------------------------------------------------------------
     # Controller Management
     # ------------------------------------------------------------------------------------------------------------------
+
+    def _create_controller(self, toy: Toy) -> ToyController:
+        """
+        Create the high-level controller matching the toy's brand.
+
+        Args:
+            toy: A connected low-level toy.
+
+        Returns:
+            A brand-appropriate ToyController.
+        """
+        controller_cls = CONTROLLER_BY_BRAND[toy.brand]
+        return controller_cls(toy, self._log.name)
 
     def _register_controller(self, controller: ToyController) -> None:
         """

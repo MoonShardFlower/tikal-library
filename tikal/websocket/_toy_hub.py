@@ -21,9 +21,9 @@ from ..low_level import BRANDS
 from ..low_level import BadModelError as LowLevelBadModelError
 from ..low_level import BLEConnectionBuilder
 from ..low_level import InvalidModelError as LowLevelInvalidModelError
-from ..low_level import Lovense, ToyData
+from ..low_level import Toy, ToyData
 from ..mock import MockBleakClient, MockBleakScanner
-from ._toy_controller import _LovenseController, _ToyController
+from ._toy_controller import _CONTROLLER_BY_BRAND, _ToyController
 
 _RETRY_DELAY = 0.05  # seconds,
 _PROCESS_INTERVAL = 0.05  # seconds
@@ -684,13 +684,14 @@ class _ToyHub:
             f"Creating new toy with parameters toy_id={toy_data.toy_id}, model_name={toy_data.model_name})"
         )
         result = await builder.create_toy(toy_data)
-        if isinstance(result, Lovense):
+        if isinstance(result, Toy):
             try:
                 # Unstable connection if the first command already fails. Treat as unable to connect.
                 battery = await result.strict_get_battery_level()
             except Exception as e:
                 raise AddConnectionError(toy_data.toy_id, toy_data.model_name) from e
-            return _LovenseController(result, battery)
+            controller_cls = _CONTROLLER_BY_BRAND[result.brand]
+            return controller_cls(result, battery)
         if isinstance(result, LowLevelInvalidModelError):
             raise InvalidModelError(
                 toy_data.toy_id, toy_data.model_name, toy_data.brand
