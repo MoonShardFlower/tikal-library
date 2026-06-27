@@ -7,6 +7,11 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 
 ## [Unreleased]
 
+Nothing
+
+
+## [1.1.0] - 2026-06-27
+
 ### Added
     - Web API: Limit Intenstiy functionality. See docs/websocket/actions.md for details.
     - Web API: Heartbeat functionality (opt-in protective measure agains client failures). See docs/websocket/actions.md for details.
