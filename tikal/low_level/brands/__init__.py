@@ -16,6 +16,7 @@ from bleak import BleakClient
 
 from ..brand_handler import BLEBrandHandler
 from .lovense import LOVENSE_TOY_NAMES, LovenseHandler
+from .mock_estim import MOCK_ESTIM_TOY_NAMES
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,10 @@ BRAND_REGISTRATIONS: list[BrandRegistration] = [
 ]
 
 
-#: Mapping of brand name -> list of supported model names, derived from the registry.
+#: Public mapping of brand name -> list of supported model names.
+#:
+#: BLE brands are derived from the registry above. Brands on other transports (which are not part of the BLE handler
+#: registry) are added explicitly afterwards, so ``BRANDS`` stays the single source of truth for every supported brand.
 #:
 #: Type:
 #:     dict[str, list[str]]
@@ -45,6 +49,9 @@ BRAND_REGISTRATIONS: list[BrandRegistration] = [
 BRANDS: dict[str, list[str]] = {
     reg.name: reg.model_names for reg in BRAND_REGISTRATIONS
 }
+
+#: Non-BLE brands (e.g., the fictional MockEstimToys, on its own in-memory transport).
+BRANDS["MockEstimToys"] = list(MOCK_ESTIM_TOY_NAMES.keys())
 
 
 def build_handlers(

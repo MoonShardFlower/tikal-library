@@ -50,13 +50,14 @@ from typing import Any, Callable, Optional
 
 from bleak import BleakClient, BleakScanner
 
-from .._private import AsyncRunner
-from ..low_level import BLEConnectionBuilder, Toy, ToyData
+from .._private import (
+    BATTERY_UPDATE_INTERVAL,
+    COMMUNICATION_INTERVAL,
+    AsyncRunner,
+)
+from ..low_level import ConnectionBuilder, Toy, ToyData
 from .toy_cache import ToyCache
 from .toy_controller import CONTROLLER_BY_BRAND, ToyController
-
-_BATTERY_UPDATE_INTERVAL = 120.0  # seconds
-_COMMUNICATION_FPS = 20  # frames per second
 
 
 class ToyHub:
@@ -77,6 +78,7 @@ class ToyHub:
         default_model: Default model name to use if a toy isn't in the cache.
         bluetooth_scanner: BLE scanner class to use (defaults to BleakScanner). Can be overridden for testing.
         bluetooth_client: BLE client class to use (defaults to BleakClient). Can be overridden for testing.
+        mock_toys: If True, use the MockEstimToys brand. Not part of the public API. This parameter may be removed without notice.
     """
 
     def __init__(
@@ -92,6 +94,7 @@ class ToyHub:
         default_model: str = "",
         bluetooth_scanner: Any = BleakScanner,
         bluetooth_client: Any = BleakClient,
+        mock_toys: bool = False,
     ):
         self._battery_update_callback = on_battery_update
         self._error_callback = on_error
@@ -107,13 +110,14 @@ class ToyHub:
         self._lock = Lock()
         self._last_battery_update = 0.0
         self._cancel_communication_loop: Optional[Callable[[], None]] = None
-        # Connection builders for different toy brands
-        self._ble_connection_builder = BLEConnectionBuilder(
+        # Single transport-agnostic entry point composing every per-transport connection builder.
+        self._connection_builder = ConnectionBuilder(
             self._handle_disconnect,
             self._handle_power_off,
             logger_name,
             bluetooth_scanner,
             bluetooth_client,
+            mock_toys,
         )
 
     @property
@@ -232,10 +236,10 @@ class ToyHub:
                     td.model_name = self._toy_cache.get_model_name(td.name)
                 on_update(toys)
 
-        self._runner.run_async(self._ble_connection_builder.start_continuous(callback))
+        self._runner.run_async(self._connection_builder.start_continuous(callback))
 
     def stop_discovery(self) -> None:
-        self._runner.run_async(self._ble_connection_builder.stop_continuous())
+        self._runner.run_async(self._connection_builder.stop_continuous())
 
     def discover_toys_blocking(self, timeout: float = 10.0) -> list[ToyData]:
         """
@@ -270,7 +274,7 @@ class ToyHub:
         self._log.info("Starting toy discovery (blocking)...")
         result: list[ToyData] = []
         toy_data = self._runner.run_async(
-            self._ble_connection_builder.discover_toys(timeout), timeout * 2
+            self._connection_builder.discover_toys(timeout), timeout * 2
         )
         for td in toy_data:
             td.model_name = self._toy_cache.get_model_name(td.name)
@@ -311,7 +315,7 @@ class ToyHub:
         async def discovery_task():
             result: list[ToyData] = []
             try:
-                toy_data = await self._ble_connection_builder.discover_toys(timeout)
+                toy_data = await self._connection_builder.discover_toys(timeout)
                 for td in toy_data:
                     td.model_name = self._toy_cache.get_model_name(td.name)
                     result.append(td)
@@ -368,7 +372,7 @@ class ToyHub:
         cache_updates = {}
 
         toys = self._runner.run_async(
-            self._ble_connection_builder.create_toys(to_connect), timeout
+            self._connection_builder.create_toys(to_connect), timeout
         )
         for data, toy in zip(to_connect, toys):
             if isinstance(toy, Toy):
@@ -420,7 +424,7 @@ class ToyHub:
         async def connection_task():
             controllers: list["ToyController | BaseException"] = []
             cache_updates = {}
-            toys = await self._ble_connection_builder.create_toys(to_connect)
+            toys = await self._connection_builder.create_toys(to_connect)
             for data, toy in zip(to_connect, toys):
                 if isinstance(toy, Toy):
                     controller = self._create_controller(toy)
@@ -599,7 +603,7 @@ class ToyHub:
             if len(self._toy_controllers) == 1:
                 self._start_communication_loop()
         # Trigger immediate battery update for new device
-        self._last_battery_update = time() - _BATTERY_UPDATE_INTERVAL
+        self._last_battery_update = time() - BATTERY_UPDATE_INTERVAL
         self._log.debug(
             f"Registered toy {controller.toy_id}. ({len(self._toy_controllers)} total)"
         )
@@ -633,7 +637,7 @@ class ToyHub:
         """
         Start the background communication loop
 
-        The loop runs at COMMUNICATION_FPS (20 FPS / every 50ms) and handles:
+        The loop runs every COMMUNICATION_INTERVAL seconds (50ms / 20 ticks per second) and handles:
         - Processing queued commands
         - Updating toy intensities based on patterns
         - Periodic battery level queries
@@ -641,7 +645,7 @@ class ToyHub:
         if self._cancel_communication_loop is not None:
             return
 
-        sleep_time = 1.0 / _COMMUNICATION_FPS
+        sleep_time = COMMUNICATION_INTERVAL
 
         async def communication_iteration():
             try:
@@ -652,7 +656,7 @@ class ToyHub:
                     controllers = list(self._toy_controllers.values())
                 # Update battery levels periodically
                 if self._battery_update_callback:
-                    if time() - self._last_battery_update >= _BATTERY_UPDATE_INTERVAL:
+                    if time() - self._last_battery_update >= BATTERY_UPDATE_INTERVAL:
                         await self._update_battery_levels(controllers)
                 # Process controller communication (pattern playback, etc.)
                 await ToyHub._process_controller_communication(controllers, sleep_time)
@@ -747,10 +751,13 @@ class ToyHub:
                 )
                 if self._reconnection_failure_callback:
                     self._reconnection_failure_callback(toy_id)
-                try:
-                    self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
-                except TimeoutError:
-                    pass
+                # We are on the runner's loop thread here (run_callback invokes this
+                # callback there), so block-waiting with run_async() would deadlock the
+                # loop until it times out. Schedule the cleanup disconnect on the loop
+                # instead, without waiting for it.
+                self._runner.run_callback(
+                    toy_controller.toy.disconnect(), lambda _: None, 4.0
+                )
             elif result:
                 self._log.info(f"Reconnection successful for {toy_id}")
                 self._register_controller(toy_controller)
@@ -759,10 +766,13 @@ class ToyHub:
             else:
                 if self._reconnection_failure_callback:
                     self._reconnection_failure_callback(toy_id)
-                try:
-                    self._runner.run_async(toy_controller.toy.disconnect(), 4.0)
-                except TimeoutError:
-                    pass
+                # We are on the runner's loop thread here (run_callback invokes this
+                # callback there), so block-waiting with run_async() would deadlock the
+                # loop until it times out. Schedule the cleanup disconnect on the loop
+                # instead, without waiting for it.
+                self._runner.run_callback(
+                    toy_controller.toy.disconnect(), lambda _: None, 4.0
+                )
 
         self._runner.run_callback(reconnect_task(), on_reconnect_complete, 5.0)
 
@@ -828,7 +838,7 @@ class ToyHub:
                 self._log.error(f"Error while trying to disconnect a toy: {e}")
 
         # Stop Connection Builder scans
-        self._runner.run_async(self._ble_connection_builder.stop_continuous())
+        self._runner.run_async(self._connection_builder.stop_continuous())
 
         self._runner.shutdown()
         self._log.info("CommunicationHandler shutdown complete")

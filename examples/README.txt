@@ -8,7 +8,7 @@ For each connected Toy the ToyHub produces and hands over an Implementation of t
 just LovenseController) to control the toy.
 
 ## Low-Level API
-The 'Low Level' API provides BLEConnectionBuilder to scan and connect to toys. BLEConnectionBuilder produces and hands over an Implementation of
+The 'Low Level' API provides ConnectionBuilder to scan and connect to toys. ConnectionBuilder produces and hands over an Implementation of
 the abstract Toy (currently just Lovense) to control the toy. Both classes are mostly async.
 You can use ToyCache to remember toy model names in-between sessions.
 

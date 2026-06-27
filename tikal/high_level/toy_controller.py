@@ -24,7 +24,7 @@ from logging import getLogger
 from typing import Any, Callable, Optional
 
 from .._private import PatternHandler
-from ..low_level import LovenseToy, Toy
+from ..low_level import LovenseToy, MockEstimToy, Toy
 
 
 class ToyController(ABC):
@@ -221,21 +221,37 @@ class ToyController(ABC):
         """
         return self._pattern_handler.pattern_version
 
-    @abstractmethod
-    def set_model_name(self, model_name: str) -> None:
+    def set_model_name(
+        self,
+        model_name: str,
+        callback: Optional[Callable[[Optional[str]], None]] = None,
+    ) -> None:
         """
         Set the model name of the toy.
 
-        This method validates and updates the toy's model name. The model name determines which commands are available
-        and how they're interpreted.
+        The model name determines which commands are available and how they're interpreted. Like every other controller
+        command, this is queued and executed asynchronously by ToyHub (validating the model against the toy involves
+        sending commands), so the result is delivered via the optional callback rather than raised.
 
         Args:
-            model_name: New model name. Must be a valid model for this toy brand.
+            model_name: New model name. Must be a valid model for this toy's brand.
+            callback: Optional callback invoked when the command completes. Receives the toy's new model name on success,
+                or None if the update failed (e.g. an invalid model name).
 
-        Raises:
-            ValidationError: If model_name is not valid for this toy brand.
+        Example::
+
+                # Correct a model that was set incorrectly while connecting
+                toy.set_model_name("Nora", callback=lambda name: print(f"Model is now {name}"))
+
+        Note:
+            For a blocking call that surfaces validation errors directly, use :meth:`ToyHub.update_model_name` instead.
         """
-        raise NotImplementedError
+
+        async def _execute():
+            await self._toy.set_model_name(model_name)
+            return self._toy.model_name
+
+        self._schedule_command(_execute, callback)
 
     def toggle_pause(self) -> bool:
         """
@@ -821,26 +837,56 @@ class LovenseController(ToyController):
 
         self._schedule_command(_execute, callback)
 
-    def set_model_name(self, model_name: str) -> None:
+
+class MockEstimController(ToyController):
+    """
+    High-level controller for the fictional MockEstimToys brand.
+
+    Wraps a :class:`MockEstimToy` with the same synchronous, queued, pattern-capable interface as every other
+    controller. Used to explore the High-Level API without real hardware.
+
+    Args:
+        toy: Low-level ``MockEstimToy`` instance.
+        logger_name: Name of the logger to use. Use empty string for root logger.
+
+    Note:
+        This class should not be instantiated directly. Use ToyHub's connection methods to get controller instances.
+    """
+
+    def __init__(self, toy: MockEstimToy, logger_name: str):
+        self._toy: MockEstimToy = toy
+        super().__init__(toy, logger_name)
+
+    def get_information(self, callback: Callable[[dict[str, str]], None]) -> None:
         """
-        Set the model name of the toy.
+        Gather information about the toy.
+
+        The following information is gathered (Key, Value pairs of the dictionary):
+            - 'Battery level': Battery percentage (e.g., "77%")
+            - 'Name': Human-readable device name (e.g., "Thunder1")
+            - 'Brand': Brand name ("MockEstimToys")
+            - 'Model': Model name (e.g., "Thunder")
 
         Args:
-            model_name: New model name. Must be in LOVENSE_TOY_NAMES.keys() of module ToyData. Case Insensitive.
-
-        Raises:
-            ValidationError: If model_name is not a valid Lovense model.
-
-        Example::
-
-                # Update model name in case it was set incorrectly while building the connection via the ConnectionBuilder
-                toy.set_model_name("Nora")
+            callback: Callback invoked with a dictionary containing toy information.
+                Keys describe the Information type, values contain the information.
         """
-        self._toy.set_model_name(model_name)
+
+        async def _execute():
+            battery = await self._toy.get_battery_level()
+            return {
+                "Battery level": f"{battery}%" if battery is not None else "Unknown",
+                "Name": self._toy.name,
+                "Brand": self._toy.brand,
+                "Model": self._toy.model_name,
+            }
+
+        self._schedule_command(_execute, callback)
 
 
 #: Maps a toy's brand (``toy.brand``) to its high-level controller class.
 #: Register a brand's controller here when adding support for a new brand.
 CONTROLLER_BY_BRAND: dict[str, type[ToyController]] = {
     "Lovense": LovenseController,
+    "MockEstimToys": MockEstimController,
 }

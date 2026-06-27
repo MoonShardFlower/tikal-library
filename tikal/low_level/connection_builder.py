@@ -2,10 +2,16 @@
 Part of the Low-Level API: Provides connection management for toy devices.
 
 This module provides:
-- :class `BLEConnectionBuilder`: Entry point for all BLE toys. Manages BLE scanning (one‑shot and continuous) and creation of Toys.
+- :class:`ConnectionBuilder`: The transport-agnostic entry point. Composes every per-transport connection builder
+  (:class:`BLEConnectionBuilder` and the fictional ``MockConnectionBuilder``) and presents a single, unified
+  discovery/connection API. This is the class the higher layers (and new code) should use.
+- :class:`BLEConnectionBuilder`: Entry point for all BLE toys. Manages BLE scanning (one‑shot and continuous) and creation of Toys.
 
 Brand-specific logic lives behind :class:`BLEBrandHandler` (``brand_handler.py``); concrete handlers and their
 registration live under ``tikal/low_level/brands/``. The builder gets its handlers from that registry via ``build_handlers``.
+
+Adding a brand that speaks a new transport (e.g., USB) only requires writing the transport's own connection builder and
+adding it to :class:`ConnectionBuilder`'s internal list; every consumer keeps using ``ConnectionBuilder`` unchanged.
 
 Example::
 
@@ -15,7 +21,7 @@ Example::
         def handle_power_off(address: str):
             print(f"Toy at {address} was powered off")
 
-        builder = BLEConnectionBuilder(
+        builder = ConnectionBuilder(
             on_disconnect=handle_disconnect,
             on_power_off=handle_power_off,
             logger_name="tikal"
@@ -25,13 +31,38 @@ Example::
 import asyncio
 import time
 from logging import getLogger
-from typing import Any, Callable, Type
+from typing import Any, Callable, Protocol, Type
 
 from bleak import BleakClient, BleakScanner, BLEDevice
 
 from .brands import build_handlers
+from .brands.mock_estim import MockConnectionBuilder
 from .toy import Toy
 from .toy_data import ToyData
+
+
+class _TransportConnectionBuilder(Protocol):
+    """
+    The interface every per-transport connection builder must satisfy to be composed by :class:`ConnectionBuilder`.
+
+    :class:`BLEConnectionBuilder` and
+    :class:`tikal.low_level.brands.mock_estim.MockConnectionBuilder` both implement it. To add a brand on a new
+    transport, write a builder with these methods and append it to ``ConnectionBuilder``'s internal list.
+    """
+
+    async def discover_toys(self, timeout: float = ...) -> list[ToyData]: ...
+
+    async def start_continuous(
+        self, on_update: Callable[[list[ToyData] | Exception], Any] | None = ...
+    ) -> None: ...
+
+    async def stop_continuous(self) -> None: ...
+
+    async def retrieve_continuous(self) -> list[ToyData]: ...
+
+    def handles_toy(self, toy_data: ToyData) -> bool: ...
+
+    async def create_toy(self, to_connect: ToyData) -> Toy | BaseException: ...
 
 
 class StaleDeviceError(ConnectionError):
@@ -88,6 +119,13 @@ class BLEConnectionBuilder:
     # -----------------------------------------------------------------------
     # Public API
     # -----------------------------------------------------------------------
+
+    def handles_toy(self, toy_data: ToyData) -> bool:
+        """Return ``True`` if one of this builder's brand handlers recognizes ``toy_data``.
+
+        Used by :class:`ConnectionBuilder` to route a ``ToyData`` to the builder that can connect it.
+        """
+        return any(h.handles_toy(toy_data) for h in self._handlers)
 
     async def discover_toys(self, timeout: float = 10.0) -> list[ToyData]:
         """
@@ -374,3 +412,180 @@ class BLEConnectionBuilder:
             return
         snapshot = [td for td, _ in self._discovered.values()]
         self._on_update(snapshot)
+
+
+class ConnectionBuilder:
+    """
+    Transport-agnostic entry point of the Low-Level API.
+
+    A ``ConnectionBuilder`` composes one connection builder per supported transport (:class:`BLEConnectionBuilder` for
+    real BLE toys and ``MockConnectionBuilder`` for the fictional MockEstimToys brand) and exposes the exact same
+    discovery/connection API as a single builder. Discovery results from every transport are merged into one list, and
+    connection requests are routed to the builder that owns the relevant ``ToyData``.
+
+    Adding a brand on a new transport only means: write that transport's connection builder and append it to
+    ``self._builders`` below. Every consumer of ``ConnectionBuilder`` keeps working unchanged.
+
+    Args:
+        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives the toy's toy_id. Not called for intentional disconnects.
+        on_power_off: Callback invoked when the user powers off a toy via the physical power button. Receives the toy id.
+        logger_name: Name of the logger to use. Use empty string for root logger.
+        bluetooth_scanner: BLE scanner class to use. Defaults to BleakScanner. Can be overridden for testing.
+        bluetooth_client: BLE client class to use. Defaults to BleakClient. Can be overridden for testing.
+        mock_toys: If True, use the MockEstimToys brand. Not part of the public API. This parameter may be removed without notice.
+    """
+
+    def __init__(
+        self,
+        on_disconnect: Callable[[str], Any],
+        on_power_off: Callable[[str], Any],
+        logger_name: str,
+        bluetooth_scanner: Type[BleakScanner] = BleakScanner,
+        bluetooth_client: Type[BleakClient] = BleakClient,
+        mock_toys: bool = False,
+    ):
+        self._log = getLogger(logger_name)
+
+        # One connection builder per supported transport. Append new transports here.
+        self._builders: list[_TransportConnectionBuilder] = [
+            BLEConnectionBuilder(
+                on_disconnect,
+                on_power_off,
+                logger_name,
+                bluetooth_scanner,
+                bluetooth_client,
+            ),
+        ]
+        if mock_toys:
+            self._builders.append(
+                MockConnectionBuilder(on_disconnect, on_power_off, logger_name)
+            )
+
+        # Continuous-scan merge state: the latest snapshot emitted by each builder, kept so we can
+        # combine them into a single unified snapshot for the user callback.
+        self._on_update: Callable[[list[ToyData] | Exception], Any] | None = None
+        self._snapshots: list[list[ToyData]] = [[] for _ in self._builders]
+
+    # -----------------------------------------------------------------------
+    # Public API
+    # -----------------------------------------------------------------------
+
+    async def discover_toys(self, timeout: float = 10.0) -> list[ToyData]:
+        """
+        Scan every transport for available toys and return the combined result.
+
+        Delegates to each underlying connection builder and concatenates their results. See
+        :meth:`BLEConnectionBuilder.discover_toys` for the per-transport behavior, arguments, and raised exceptions.
+
+        Args:
+            timeout: Scan time in seconds, passed to every transport.
+
+        Returns:
+            Combined list of ``ToyData`` across all transports. A snapshot, not a continuous stream.
+        """
+        results = await asyncio.gather(
+            *(builder.discover_toys(timeout) for builder in self._builders)
+        )
+        return [toy_data for result in results for toy_data in result]
+
+    async def start_continuous(
+        self, on_update: Callable[[list[ToyData] | Exception], Any] | None = None
+    ) -> None:
+        """
+        Start continuous background discovery across every transport.
+
+        Each transport scans independently; their snapshots are merged so ``on_update`` always receives a single list
+        spanning all transports. See :meth:`BLEConnectionBuilder.start_continuous` for the general contract.
+
+        Args:
+            on_update: **Optional** callback. Called with a merged snapshot of all discovered Toys whenever any
+                transport's view changes, or with an exception if a transport's scan errors.
+        """
+        self._on_update = on_update
+        self._snapshots = [[] for _ in self._builders]
+        for index, builder in enumerate(self._builders):
+            await builder.start_continuous(self._make_continuous_callback(index))
+        self._log.debug(
+            "Continuous discovery started across %d transport(s)", len(self._builders)
+        )
+
+    async def stop_continuous(self) -> None:
+        """
+        Stop continuous background discovery on every transport.
+
+        Idempotent. Does nothing for transports that are not currently scanning.
+        """
+        for builder in self._builders:
+            await builder.stop_continuous()
+        self._snapshots = [[] for _ in self._builders]
+        self._on_update = None
+
+    async def retrieve_continuous(self) -> list[ToyData]:
+        """
+        Retrieve the current merged snapshot of discovered Toys from every transport.
+
+        Needs a continuous scan to be running (see :meth:`start_continuous`); otherwise returns the empty list.
+        If a transport has a pending continuous-scan exception, the first call re-raises it (see
+        :meth:`BLEConnectionBuilder.retrieve_continuous`).
+
+        Returns:
+            Combined list of ``ToyData`` across all transports.
+        """
+        result: list[ToyData] = []
+        for builder in self._builders:
+            result.extend(await builder.retrieve_continuous())
+        return result
+
+    async def create_toys(self, to_connect: list[ToyData]) -> list[Toy | BaseException]:
+        """
+        Create Toy instances from discovery data, routing each to the transport that owns it.
+
+        See :meth:`BLEConnectionBuilder.create_toys` for arguments and the per-element result/exception types.
+
+        Returns:
+            List where each element is a connected ``Toy`` or a ``BaseException``. Order matches the input list.
+        """
+        if not to_connect:
+            return []
+        return await asyncio.gather(*(self.create_toy(td) for td in to_connect))
+
+    async def create_toy(self, to_connect: ToyData) -> Toy | BaseException:
+        """
+        Create a single Toy instance from discovery data, routing it to the transport that owns it.
+
+        See :meth:`BLEConnectionBuilder.create_toy` for arguments and the result/exception types.
+
+        Returns:
+            A connected ``Toy`` on success, or a ``BaseException`` on failure. Returns ``RuntimeError`` if no transport
+            recognizes the given ``ToyData`` (developer error; should never happen).
+        """
+        builder = next((b for b in self._builders if b.handles_toy(to_connect)), None)
+        if builder is None:
+            self._log.error(
+                "No connection builder for data type: %s", type(to_connect).__name__
+            )
+            return RuntimeError(
+                f"No connection builder for data type: {type(to_connect).__name__}"
+            )
+        return await builder.create_toy(to_connect)
+
+    # -----------------------------------------------------------------------
+    # Private helpers
+    # -----------------------------------------------------------------------
+
+    def _make_continuous_callback(
+        self, index: int
+    ) -> Callable[[list[ToyData] | Exception], None]:
+        """Build the per-builder callback that records that builder's snapshot and emits the merged result."""
+
+        def callback(update: list[ToyData] | Exception) -> None:
+            if self._on_update is None:
+                return
+            if isinstance(update, Exception):
+                self._on_update(update)
+                return
+            self._snapshots[index] = update
+            merged = [toy_data for snapshot in self._snapshots for toy_data in snapshot]
+            self._on_update(merged)
+
+        return callback

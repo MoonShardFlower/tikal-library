@@ -31,7 +31,7 @@ from abc import ABC, abstractmethod
 from logging import getLogger
 from typing import Optional
 
-from .transport import BleTransport, UsbTransport
+from .transport import Transport
 
 
 class UnexpectedToyResponse(ConnectionError):
@@ -56,7 +56,7 @@ class Toy(ABC):
 
     def __init__(
         self,
-        transport: BleTransport | UsbTransport,
+        transport: Transport,
         model_name: str,
         logger_name: str,
     ):

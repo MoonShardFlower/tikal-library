@@ -7,7 +7,7 @@ Meant to be consumed by _ToyHub, which in turn is consumed by ToyServer. ToyServ
 """
 
 from .._private import PatternHandler
-from ..low_level import LovenseToy, Toy
+from ..low_level import LovenseToy, MockEstimToy, Toy
 
 
 class _ToyController:
@@ -223,7 +223,7 @@ class _ToyController:
                     min(intensity2, self._intensity_limits[1]),
                 )
             )
-        self._pattern_handler.set_pattern(pattern, wraparound, reset_time)
+        self._pattern_handler.set_pattern(limited_pattern, wraparound, reset_time)
         if not pattern:  # ensure that intensities are 0 if pattern is cleared
             await self.stop()
 
@@ -586,8 +586,26 @@ class _LovenseController(_ToyController):
         return info
 
 
+class _MockEstimController(_ToyController):
+    """
+    High-level controller for the fictional MockEstimToys brand (WebSocket variant).
+
+    The MockEstimToys brand exposes no extra ``full`` info beyond the generic fields, so the base ``get_info`` is reused
+    as-is. This subclass exists only to type the wrapped toy and to register the brand.
+
+    Args:
+        toy: Low-level ``MockEstimToy`` instance.
+        initial_battery: Initial battery level (0-100) or None if the toy has no battery.
+    """
+
+    def __init__(self, toy: MockEstimToy, initial_battery: int | None = None):
+        self._toy: MockEstimToy = toy
+        super().__init__(toy, initial_battery)
+
+
 #: Maps a toy's brand (``toy.brand``) to its websocket controller class.
 #: Register a brand's controller here when adding support for a new brand.
 _CONTROLLER_BY_BRAND: dict[str, type[_ToyController]] = {
     "Lovense": _LovenseController,
+    "MockEstimToys": _MockEstimController,
 }

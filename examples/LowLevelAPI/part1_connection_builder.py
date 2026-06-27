@@ -1,7 +1,7 @@
 import asyncio
 from logging import INFO, Formatter, StreamHandler, getLogger
 
-from tikal.low_level import LOVENSE_TOY_NAMES, BLEConnectionBuilder, ValidationError
+from tikal.low_level import LOVENSE_TOY_NAMES, ConnectionBuilder, ValidationError
 from tikal.mock import MockBleakClient, MockBleakScanner
 
 # All classes use the logging module
@@ -44,7 +44,7 @@ def prepare_logger():
 async def main():
     """
     This is the main function, containing the actual example code.
-    Here we look at the usage of the BLEConnectionBuilder class.
+    Here we look at the usage of the ConnectionBuilder class.
     This is the first example you should look at.
     """
     prepare_logger()
@@ -53,10 +53,12 @@ async def main():
     # Scanning for toys
     # ------------------------------------------------------------------------------------------------------------------
 
-    # There's a bit more information in the docstring. Put briefly, this class is used to scan for and connect to toys
+    # There's a bit more information in the docstring. Put briefly, this class is used to scan for and connect to toys.
+    # ConnectionBuilder is the transport-agnostic entry point: it combines every supported transport (currently just BLE)
+    #  so the same code keeps working as new toy transports are added.
     # We use a mocked version of the BleakScanner and BleakClient classes here, so I know what mocked toys I will get.
     # In the real application you would leave these arguments empty, so the default values (BleakScanner/BleakClient) are used.
-    builder = BLEConnectionBuilder(
+    builder = ConnectionBuilder(
         on_disconnect, on_power_off, LOGGER_NAME, MockBleakScanner, MockBleakClient  # type: ignore
     )
 

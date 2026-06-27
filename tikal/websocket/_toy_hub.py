@@ -16,18 +16,19 @@ from typing import Any, Awaitable, Callable, TypeVar
 
 from bleak import BleakClient, BleakScanner
 
+from .._private import BATTERY_UPDATE_INTERVAL, COMMUNICATION_INTERVAL
 from ..high_level import ToyCache
 from ..low_level import BRANDS
 from ..low_level import BadModelError as LowLevelBadModelError
-from ..low_level import BLEConnectionBuilder
+from ..low_level import ConnectionBuilder
 from ..low_level import InvalidModelError as LowLevelInvalidModelError
 from ..low_level import Toy, ToyData
 from ..mock import MockBleakClient, MockBleakScanner
 from ._toy_controller import _CONTROLLER_BY_BRAND, _ToyController
 
-_RETRY_DELAY = 0.05  # seconds,
-_PROCESS_INTERVAL = 0.05  # seconds
-_BATTERY_UPDATE_INTERVAL = 120.0  # seconds
+# Retry backoff after a ConnectionError. Intentionally separate from the loop cadence
+# (COMMUNICATION_INTERVAL): it just happens to share the same value today.
+_RETRY_DELAY = 0.05  # seconds
 
 T = TypeVar("T")
 
@@ -205,8 +206,13 @@ class _ToyHub:
         def on_disconnect_helper(toy_id: str):
             asyncio.create_task(self._on_disconnect(toy_id))
 
-        self._ble_builder = BLEConnectionBuilder(
-            on_disconnect_helper, self._on_power_off, log_name, scanner, client
+        self._connection_builder = ConnectionBuilder(
+            on_disconnect_helper,
+            self._on_power_off,
+            log_name,
+            scanner,
+            client,
+            mock_toys,
         )
 
         # Background loop tasks
@@ -239,7 +245,7 @@ class _ToyHub:
         self._shutting_down = True
 
         # Idempotent. Safe to call even when no scan is running
-        await self._ble_builder.stop_continuous()
+        await self._connection_builder.stop_continuous()
 
         for task in [self._process_task, self._battery_poll_task]:
             if task is not None:
@@ -292,7 +298,7 @@ class _ToyHub:
             )
 
         try:
-            await self._ble_builder.start_continuous(on_discovery)
+            await self._connection_builder.start_continuous(on_discovery)
         except Exception as e:
             raise DiscoveryStartError(traceback.format_exc()) from e
 
@@ -301,7 +307,7 @@ class _ToyHub:
         self._log.info("Stopping toy discovery")
         async with self._toy_lock:
             self._toy_data.clear()
-        await self._ble_builder.stop_continuous()
+        await self._connection_builder.stop_continuous()
 
     # -------------------------------------------------------------------------
     # Private
@@ -396,10 +402,10 @@ class _ToyHub:
     async def _process_loop(self) -> None:
         """
         Background task that periodically calls `process_communication` on all connected toys.
-        Runs every `_PROCESS_INTERVAL` seconds. Only toys with status CONNECTED are processed.
+        Runs every `COMMUNICATION_INTERVAL` seconds. Only toys with status CONNECTED are processed.
         """
         while True:
-            await asyncio.sleep(_PROCESS_INTERVAL)
+            await asyncio.sleep(COMMUNICATION_INTERVAL)
             async with self._toy_lock:
                 toys_and_locks = [
                     (toy, self._toy_cmd_locks[toy_id])
@@ -616,11 +622,11 @@ class _ToyHub:
     async def _battery_poll_loop(self) -> None:
         """
         Background loop that periodically polls battery levels of all connected toys.
-        Runs every `_BATTERY_UPDATE_INTERVAL` seconds and fires the on_battery_change callback when any battery level changes.
+        Runs every `BATTERY_UPDATE_INTERVAL` seconds and fires the on_battery_change callback when any battery level changes.
         """
         while not self._shutting_down:
             try:
-                await asyncio.sleep(_BATTERY_UPDATE_INTERVAL)
+                await asyncio.sleep(BATTERY_UPDATE_INTERVAL)
                 if self._shutting_down:
                     break
                 await self._poll_all_batteries()
@@ -662,13 +668,13 @@ class _ToyHub:
             await self._fire_callback(self._on_battery_change, updates)
 
     async def _create_toy(
-        self, builder: BLEConnectionBuilder, toy_data: ToyData
+        self, builder: ConnectionBuilder, toy_data: ToyData
     ) -> _ToyController:
         """
-        Adapter that converts BLEConnectionBuilder's result‑type errors to raised exceptions.
+        Adapter that converts ConnectionBuilder's result‑type errors to raised exceptions.
 
         Args:
-            builder: The BLE connection builder.
+            builder: The connection builder.
             toy_data: Data describing the toy to create.
 
         Returns:
@@ -739,7 +745,7 @@ class _ToyHub:
             self._pending_toy_ids.add(toy_id)
 
         try:
-            toy = await self._create_toy(self._ble_builder, toy_data)
+            toy = await self._create_toy(self._connection_builder, toy_data)
         except Exception as e:
             async with self._toy_lock:
                 self._pending_toy_ids.discard(toy_id)

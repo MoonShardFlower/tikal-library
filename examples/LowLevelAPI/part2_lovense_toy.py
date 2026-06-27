@@ -5,7 +5,7 @@ from tikal.low_level import (
     LOVENSE_TOY_NAMES,
     ROTATION_TOY_NAMES,
     BadModelError,
-    BLEConnectionBuilder,
+    ConnectionBuilder,
     ValidationError,
 )
 from tikal.mock import MockBleakClient, MockBleakScanner
@@ -59,7 +59,7 @@ async def main():
     # Scanning and connecting to toys (see first example)
     # ------------------------------------------------------------------------------------------------------------------
 
-    builder = BLEConnectionBuilder(
+    builder = ConnectionBuilder(
         on_disconnect, on_power_off, LOGGER_NAME, MockBleakScanner, MockBleakClient  # type: ignore
     )
     lovense_data = await builder.discover_toys(10.0)

@@ -3,7 +3,7 @@ from logging import INFO, Formatter, StreamHandler, getLogger
 from pathlib import Path
 
 from tikal.high_level import ToyCache
-from tikal.low_level import BLEConnectionBuilder, Transport
+from tikal.low_level import ConnectionBuilder, Transport
 from tikal.mock import MockBleakClient, MockBleakScanner
 
 # All classes use the logging module
@@ -83,7 +83,7 @@ async def main():
     print(f"LVS-B12 is now of model {cache.get_model_name('LVS-B12')}")
 
     # Let's use the cache in combination with the mock toys
-    builder = BLEConnectionBuilder(on_disconnect, on_power_off, LOGGER_NAME, MockBleakScanner, MockBleakClient)  # type: ignore
+    builder = ConnectionBuilder(on_disconnect, on_power_off, LOGGER_NAME, MockBleakScanner, MockBleakClient)  # type: ignore
     toy_data = await builder.discover_toys(10.0)
     gush_data = toy_data[1]
     model_name = cache.get_model_name(gush_data.name)

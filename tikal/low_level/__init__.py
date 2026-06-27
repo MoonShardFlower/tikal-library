@@ -6,7 +6,16 @@ from .brands.lovense import (
     ROTATION_TOY_NAMES,
     LovenseToy,
 )
-from .connection_builder import BLEConnectionBuilder, StaleDeviceError
+from .brands.mock_estim import (
+    MOCK_ESTIM_TOY_NAMES,
+    MockConnectionBuilder,
+    MockEstimToy,
+)
+from .connection_builder import (
+    BLEConnectionBuilder,
+    ConnectionBuilder,
+    StaleDeviceError,
+)
 from .toy import Toy, UnexpectedToyResponse
 from .toy_data import (
     BadModelError,
@@ -14,17 +23,21 @@ from .toy_data import (
     ToyData,
     ValidationError,
 )
-from .transport import BleTransport, Transport, UsbTransport
+from .transport import BleTransport, MockTransport, Transport, UsbTransport
 
 #: Backwards-compatible alias for :class:`LovenseToy` (the class was formerly named ``Lovense``).
 Lovense = LovenseToy
 
 __all__ = [
+    "ConnectionBuilder",
     "BLEConnectionBuilder",
     "StaleDeviceError",
     "BLEBrandHandler",
     "LovenseToy",
     "Lovense",
+    "MockConnectionBuilder",
+    "MockEstimToy",
+    "MOCK_ESTIM_TOY_NAMES",
     "Toy",
     "UnexpectedToyResponse",
     "BRANDS",
@@ -38,4 +51,5 @@ __all__ = [
     "Transport",
     "UsbTransport",
     "BleTransport",
+    "MockTransport",
 ]

@@ -229,6 +229,87 @@ class BleTransport(Transport):
             self._client = None
 
 
+class MockTransport(Transport):
+    """
+    In-memory ``Transport`` for the fictional ``MockEstimToys`` brand.
+
+    Backed by no real hardware: it simulates a device that speaks a tiny line protocol (commands and responses are
+    UTF-8 strings terminated by ``;``). On every :meth:`send` it computes a canned response and feeds it straight back
+    through the notification callback, so the ``Toy`` layer's request/response flow works exactly as it would over BLE.
+
+    Used purely to explore the library's architecture and to add a second brand/transport without a physical toy.
+
+    Args:
+        toy_id: Unique identifier for the fake device (e.g. ``"Thunder_ID"``).
+        name: Human-readable device name (e.g. ``"Thunder1"``).
+        battery: Battery percentage the device reports in response to a ``Battery`` command.
+    """
+
+    def __init__(self, toy_id: str, name: str, battery: int = 77):
+        super().__init__(toy_id, name)
+        self._connected = True
+        self._battery = battery
+        self._notify_callback: Callable[[bytes], None] | None = None
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def reconnect(self) -> None:
+        """
+        Re-open the simulated link. Does nothing if already connected.
+
+        Raises:
+            RuntimeError: If called after an intentional :meth:`disconnect`.
+        """
+        if self._connected:
+            return
+        if self._intentional_disconnect:
+            raise RuntimeError("Cannot reconnect after intentional disconnect")
+        self._connected = True
+
+    async def send(self, data: bytes) -> None:
+        """
+        Accept a command and immediately feed the simulated response back through the notification callback.
+
+        Raises:
+            ConnectionError: If the transport is not connected.
+        """
+        if not self._connected:
+            raise ConnectionError(f"Mock transport {self._toy_id} is not connected")
+        response = self._respond(data.decode("utf-8").rstrip(";"))
+        if response is not None and self._notify_callback:
+            self._notify_callback((response + ";").encode("utf-8"))
+
+    async def start_notify(self, callback: Callable[[bytes], None]) -> None:
+        """
+        Register the callback that receives simulated responses.
+
+        Raises:
+            ConnectionError: If the transport is not connected.
+        """
+        if not self._connected:
+            raise ConnectionError(f"Mock transport {self._toy_id} is not connected")
+        self._notify_callback = callback
+
+    async def disconnect(self) -> None:
+        """Close the simulated link. After this call ``is_connected`` returns ``False``."""
+        self._intentional_disconnect = True
+        self._connected = False
+        self._notify_callback = None
+
+    def _respond(self, command: str) -> str | None:
+        """Compute the device's canned reply to a command (without the ``;`` terminator)."""
+        if command.startswith("Channel1:") or command.startswith("Channel2:"):
+            return "OK"
+        if command == "Battery":
+            return str(self._battery)
+        if command == "DeviceType":
+            return "MockEstim"
+        # Lenient default: acknowledge anything else so direct commands succeed.
+        return "OK"
+
+
 class UsbTransport(Transport):
     """
     ``Transport`` implementation for USB serial via pyserial-asyncio-fast.

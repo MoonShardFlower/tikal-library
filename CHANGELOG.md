@@ -10,7 +10,9 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 ### Added
     - Web API: Limit Intenstiy functionality. See docs/websocket/actions.md for details.
     - Web API: Heartbeat functionality (opt-in protective measure agains client failures). See docs/websocket/actions.md for details.
-	- Low-Level API: Toy clas and subcallses feature the property recommended_min_interval (My suggested minimum segment length (in ms), meaning the minimum interval between intensity changes)
+	- Low-Level API: Toy class and subclasses feature the property recommended_min_interval (My suggested minimum segment length (in ms), meaning the minimum interval between intensity changes)
+    - Low-Level API: class ConnectionBuilder replaces class BLEConnectionBuilder. BLEConnectionBuilder remains available for backwards compatibility.
+    - Low-Level API: Added new Toy brand: Mocked Estim devices to explore how to handle the addition of new brands with potentially non-BLE toys. Mocked Estim devices ARE NOT PART OF THE API and might be removed without notice.
     - All APIs: Alpha support for Lovense Spinel and Lovense Lush Anal (I don't have these toys and had to guess their commands, so they may or may not work)
 
 
