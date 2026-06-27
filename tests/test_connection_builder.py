@@ -183,7 +183,7 @@ class FakeBuilder:
         self._on_update = None
         self.stopped = False
 
-    async def discover_toys(self):
+    async def discover_toys(self, _=None):
         return list(self._toy_data)
 
     async def start_continuous(self, on_update=None):
@@ -197,7 +197,7 @@ class FakeBuilder:
     async def retrieve_continuous(self):
         return list(self._toy_data)
 
-    def handles_toy(self):
+    def handles_toy(self, _=None):
         return self._handles
 
     async def create_toy(self, toy_data):

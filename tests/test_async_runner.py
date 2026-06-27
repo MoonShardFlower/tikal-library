@@ -288,46 +288,62 @@ class TestAsyncRunner(unittest.TestCase):
         async def simple_coro():
             return 42
 
+        # Scheduled on the stopped loop but never awaited; close it so it doesn't emit a "coroutine was never awaited" RuntimeWarning
+        c = simple_coro()
+        self.addCleanup(c.close)
+
         # The loop is stopped but still exists, so this might raise different errors
         # depending on timing. We just verify it doesn't succeed normally.
         with self.assertRaises(Exception):
-            self.runner.run_async(simple_coro(), timeout=0.5)
+            self.runner.run_async(c, timeout=0.5)
 
     # Test error conditions
     def test_run_async_with_none_loop_raises_error(self):
         """Test that RuntimeError is raised if the loop is None"""
         runner = AsyncRunner()
+        runner.shutdown()  # we don't need its background loop/thread here
         runner.loop = None
 
         async def coro():
             return 1
 
+        c = coro()
+        self.addCleanup(c.close)
+
         with self.assertRaises(RuntimeError) as context:
-            runner.run_async(coro())
+            runner.run_async(c)
         self.assertIn("Event loop not initialized", str(context.exception))
 
     def test_run_async_parallel_with_none_loop_raises_error(self):
         """Test that RuntimeError is raised for parallel if loop is None"""
         runner = AsyncRunner()
+        runner.shutdown()
         runner.loop = None
 
         async def coro():
             return 1
 
+        c = coro()
+        self.addCleanup(c.close)
+
         with self.assertRaises(RuntimeError) as context:
-            runner.run_async_parallel([coro()])
+            runner.run_async_parallel([c])
         self.assertIn("Event loop not initialized", str(context.exception))
 
     def test_run_callback_with_none_loop_raises_error(self):
         """Test that RuntimeError is raised for callback if the loop is None"""
         runner = AsyncRunner()
+        runner.shutdown()
         runner.loop = None
 
         async def coro():
             return 1
 
+        c = coro()
+        self.addCleanup(c.close)
+
         with self.assertRaises(RuntimeError) as context:
-            runner.run_callback(coro(), lambda x: None)
+            runner.run_callback(c, lambda x: None)
         self.assertIn("Event loop not initialized", str(context.exception))
 
     def test_schedule_recurring_with_none_loop_raises_error(self):
