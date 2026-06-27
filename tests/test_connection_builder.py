@@ -2,7 +2,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tikal.low_level import BLEConnectionBuilder, InvalidModelError, ToyData
+from tikal.low_level import (
+    BLEConnectionBuilder,
+    ConnectionBuilder,
+    InvalidModelError,
+    ToyData,
+)
 from tikal.low_level.brands.lovense import LovenseHandler
 from tikal.low_level.connection_builder import StaleDeviceError
 
@@ -162,3 +167,92 @@ async def test_retrieve_continuous_exception(callbacks):
     # second call should not raise
     result = await builder.retrieve_continuous()
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# ConnectionBuilder (the transport-agnostic composite)
+# ---------------------------------------------------------------------------
+
+
+class FakeBuilder:
+    """Stand-in for a per-transport connection builder, exercising the composite's routing/merging."""
+
+    def __init__(self, toy_data=None, handles=True):
+        self._toy_data = toy_data or []
+        self._handles = handles
+        self._on_update = None
+        self.stopped = False
+
+    async def discover_toys(self):
+        return list(self._toy_data)
+
+    async def start_continuous(self, on_update=None):
+        self._on_update = on_update
+        if on_update:
+            on_update([])  # mirror real builders clearing their cache on start
+
+    async def stop_continuous(self):
+        self.stopped = True
+
+    async def retrieve_continuous(self):
+        return list(self._toy_data)
+
+    def handles_toy(self):
+        return self._handles
+
+    async def create_toy(self, toy_data):
+        return f"toy:{toy_data.toy_id}"
+
+    def emit(self, snapshot):
+        """Simulate this transport pushing a new discovery snapshot."""
+        self._on_update(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_connection_builder_discover_aggregates(callbacks):
+    builder = ConnectionBuilder(*callbacks, logger_name="test")
+    a = ToyData("LVS-A", "a", "", "Lovense")
+    b = ToyData("LVS-B", "b", "", "Lovense")
+    builder._builders = [FakeBuilder([a]), FakeBuilder([b])]
+
+    assert await builder.discover_toys() == [a, b]
+
+
+@pytest.mark.asyncio
+async def test_connection_builder_create_toy_routes_to_owner(callbacks):
+    builder = ConnectionBuilder(*callbacks, logger_name="test")
+    td = ToyData("LVS-A", "a", "Nora", "Lovense")
+    builder._builders = [FakeBuilder(handles=False), FakeBuilder(handles=True)]
+
+    assert await builder.create_toy(td) == "toy:a"
+
+
+@pytest.mark.asyncio
+async def test_connection_builder_create_toy_no_owner(callbacks):
+    builder = ConnectionBuilder(*callbacks, logger_name="test")
+    td = ToyData("LVS-A", "a", "Nora", "Lovense")
+    builder._builders = [FakeBuilder(handles=False)]
+
+    result = await builder.create_toy(td)
+    assert isinstance(result, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_connection_builder_continuous_merges_snapshots(callbacks):
+    builder = ConnectionBuilder(*callbacks, logger_name="test")
+    first, second = FakeBuilder(), FakeBuilder()
+    builder._builders = [first, second]
+
+    updates = []
+    await builder.start_continuous(updates.append)
+
+    a = ToyData("LVS-A", "a", "", "Lovense")
+    b = ToyData("LVS-B", "b", "", "Lovense")
+    first.emit([a])
+    second.emit([b])
+
+    # The user callback always sees a single list spanning every transport.
+    assert updates[-1] == [a, b]
+
+    await builder.stop_continuous()
+    assert first.stopped and second.stopped

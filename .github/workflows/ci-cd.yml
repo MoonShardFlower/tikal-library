@@ -108,14 +108,14 @@ jobs:
         shell: pwsh
         run: |
           .\venv\Scripts\Activate.ps1
-          python -m unittest discover -s tests -p "test_*.py" -v
+          python -m pytest tests/ -v
 
       - name: Run Tests (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           source venv/bin/activate
-          python -m unittest discover -s tests -p "test_*.py" -v
+          python -m pytest tests/ -v
 
   # check if the current run is triggered by a version tag.
   # If yes, extract the tag name (version number) and annotation (release message) and expose them for later jobs
