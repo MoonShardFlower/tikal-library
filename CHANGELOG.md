@@ -7,7 +7,9 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 
 ## [Unreleased]
 
-Nothing
+### Changed
+    - Web API:  Expanded Status webpage 
+                (found at http://<host>:<port>/ where host and port are replaced with the configuration used to start the server e.g. http://localhost:8142/)
 
 
 ## [1.1.0] - 2026-06-27

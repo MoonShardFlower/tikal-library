@@ -109,3 +109,8 @@ Similar to the above, data` can contain additional keys depending on the event.
 ```
 For developer errors, the message would be:
 "Unexpected error occurred in the TIKAL Web-API. If you see this, please contact MoonShardFlower@gmail.com and provide the following: {details}"
+
+### Status Page
+The Server can serve you a simple status webpage (Read-Only, you currently can't adjust the server state from it).
+To access the status page, call http://<host>:<port>/ in your web browser, 
+replacing <host> and <port> with the values you used to start the server, e.g., http://localhost:8142/

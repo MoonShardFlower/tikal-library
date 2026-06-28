@@ -104,6 +104,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.datastructures import Headers
 from websockets.http11 import Response
 
+from ._status_page import ToyServerStatusPage
 from ._toy_hub import (
     AddConnectionError,
     BadModelError,
@@ -752,7 +753,6 @@ class ToyServer:
         # The underlying websockets server object; set in serve().
         self._server: websockets.Server | None = None
 
-        self._start_time: datetime.datetime | None = None
         self._shutdown_initiated = False
 
         # Heartbeat watchdog: maps subscribed ws -> last heartbeat timestamp (time.monotonic)
@@ -775,12 +775,12 @@ class ToyServer:
             log_name=log_name,
             mock_toys=mock_toys,
         )
+        self._status_page = ToyServerStatusPage(self._hub, host, port)
 
     # Lifecycle
 
     async def serve(self) -> None:
         """Start the WebSocket server and block until it shuts itself down."""
-        self._start_time = datetime.datetime.now()
         self._server = await serve(
             self._handle_connection,
             self._host,
@@ -788,6 +788,7 @@ class ToyServer:
             process_request=self._handle_http_request,
         )
         self._log.info("ToyServer listening on ws://%s:%d", self._host, self._port)
+        self._status_page.set_start_time(datetime.datetime.now())
         self._shutdown_task = asyncio.create_task(self._idle_shutdown())
         await self._server.wait_closed()
         await self._hub.shutdown()
@@ -1324,12 +1325,7 @@ class ToyServer:
         if request.headers.get("upgrade", "").lower() == "websocket":
             return None
 
-        try:
-            toy_ids = await self._hub.get_toy_ids()
-        except Exception:
-            toy_ids = []
-
-        body = self._build_status_html(toy_ids).encode("utf-8")
+        body = (await self._status_page.build_html(len(self._clients))).encode("utf-8")
         headers = Headers(
             [
                 ("Content-Type", "text/html; charset=utf-8"),
@@ -1343,61 +1339,6 @@ class ToyServer:
             headers=headers,
             body=body,
         )
-
-    def _build_status_html(self, toy_ids: list[str]) -> str:
-        """Render a simple HTML status page."""
-        uptime = "unknown"
-        if self._start_time is not None:
-            delta = datetime.datetime.now() - self._start_time
-            h, remainder = divmod(int(delta.total_seconds()), 3600)
-            m, s = divmod(remainder, 60)
-            uptime = f"{h}h {m}m {s}s"
-
-        toy_rows = (
-            "".join(
-                f"<tr><td>{i + 1}</td><td><code>{toy_id}</code></td></tr>"
-                for i, toy_id in enumerate(toy_ids)
-            )
-            or "<tr><td colspan='2'>None</td></tr>"
-        )
-
-        return f"""<!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="utf-8">
-      <meta http-equiv="refresh" content="5">
-      <title>ToyServer Status</title>
-      <style>
-        body {{ font-family: sans-serif; max-width: 600px; margin: 2rem auto; color: #222; }}
-        h1 {{ font-size: 1.4rem; margin-bottom: 1.5rem; }}
-        table {{ border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }}
-        th, td {{ text-align: left; padding: 0.4rem 0.75rem; border: 1px solid #ddd; }}
-        th {{ background: #f5f5f5; font-weight: 600; }}
-        .badge {{ display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px;
-                  background: #d4edda; color: #155724; font-weight: 600; }}
-        footer {{ font-size: 0.8rem; color: #888; }}
-      </style>
-    </head>
-    <body>
-      <h1>ToyServer Status</h1>
-      <table>
-        <tr><th>Property</th><th>Value</th></tr>
-        <tr><td>Status</td><td><span class="badge">Running</span></td></tr>
-        <tr><td>Uptime</td><td>{uptime}</td></tr>
-        <tr><td>Address</td><td><code>ws://{self._host}:{self._port}</code></td></tr>
-        <tr><td>Connected clients</td><td>{len(self._clients)}</td></tr>
-        <tr><td>Connected toys</td><td>{len(toy_ids)}</td></tr>
-      </table>
-
-      <h2 style="font-size:1.1rem">Toys</h2>
-      <table>
-        <tr><th>#</th><th>Toy ID</th></tr>
-        {toy_rows}
-      </table>
-
-      <footer>Page refreshes every 5 seconds &mdash; {datetime.datetime.now().strftime("%H:%M:%S")}</footer>
-    </body>
-    </html>"""
 
     # Messaging helpers
 
