@@ -50,6 +50,34 @@ class TestLovenseInitialization(unittest.IsolatedAsyncioTestCase):
             await toy.set_model_name("Nora")
             self.assertEqual(toy.model_name, "Nora")
 
+    async def test_set_model_name_case_insensitive(self):
+        """set_model_name accepts a lower-case name and normalizes it."""
+        toy = Lovense(self.transport, "Gush", self.on_power_off, "")
+
+        with (
+            patch.object(toy, "strict_intensity1", new_callable=AsyncMock) as mock_int1,
+            patch.object(toy, "strict_intensity2", new_callable=AsyncMock) as mock_int2,
+        ):
+            mock_int1.return_value = True
+            mock_int2.return_value = True
+            await toy.set_model_name("nora")
+            self.assertEqual(toy.model_name, "Nora")
+
+    async def test_set_model_name_rolls_back_on_bad_model(self):
+        """A rejected model change raises BadModelError and keeps the previous name."""
+        from tikal.low_level import BadModelError
+
+        toy = Lovense(self.transport, "Gush", self.on_power_off, "")
+
+        with patch.object(
+            toy, "strict_intensity1", new_callable=AsyncMock
+        ) as mock_int1:
+            mock_int1.side_effect = ConnectionError("toy rejected command")
+            with self.assertRaises(BadModelError):
+                await toy.set_model_name("Nora")
+        # Name must be restored to the original after a failed change.
+        self.assertEqual(toy.model_name, "Gush")
+
 
 class TestLovenseNotifications(unittest.IsolatedAsyncioTestCase):
     """Tests for notification handling in Lovense."""
