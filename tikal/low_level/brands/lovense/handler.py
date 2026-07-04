@@ -77,7 +77,10 @@ class LovenseHandler(BLEBrandHandler):
         try:
             await transport.connect()
             toy = LovenseToy(
-                transport, toy_data.model_name, self._on_power_off, self._log.name
+                transport,
+                toy_data.model_name.title(),
+                self._on_power_off,
+                self._log.name,
             )
             await toy.start_notifications()
         except ValidationError:
