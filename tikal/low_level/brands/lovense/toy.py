@@ -133,7 +133,8 @@ class LovenseToy(Toy):
                 # Update model name in case it was set incorrectly while building the connection via the ConnectionBuilder
                 toy.set_model_name("Nora")
         """
-        if model_name.title() not in LOVENSE_TOY_NAMES:
+        normalized_name = model_name.title()
+        if normalized_name not in LOVENSE_TOY_NAMES:
             self._log.error(
                 f"Invalid model name '{model_name}' for lovense toy at address '{self._toy_id}'."
             )
@@ -142,12 +143,15 @@ class LovenseToy(Toy):
                 f"Valid names are: '{list(LOVENSE_TOY_NAMES.keys())}'"
             )
 
-        # Check if the commands work
+        # Validate against the new model's commands.
+        previous_name = self._model_name
+        self._model_name = normalized_name
         try:
             i1, i2 = self.current_intensities
             await self.strict_intensity1(i1)
             await self.strict_intensity2(i2)
         except Exception as e:
+            self._model_name = previous_name
             self._log.exception(
                 f"Failed to set model name for toy '{model_name}' at '{self._toy_id}': '{type(e)}' with details '{traceback.format_exc()}'."
             )
@@ -157,8 +161,6 @@ class LovenseToy(Toy):
                 f"\n2) the commands being incorrect -> the Library does not handle this model correctly. Please contact the library maintainer in this case."
                 f"Details: '{type(e)}' with details '{traceback.format_exc()}'"
             ) from e
-
-        self._model_name = model_name.title()
 
     # ========================================================================
     # Public non-strict Methods
@@ -719,6 +721,7 @@ class LovenseToy(Toy):
         Raises:
             ConnectionError: Failed to start notifications.
         """
+        self._loop = asyncio.get_running_loop()
         await self._transport.start_notify(self._notification_callback)
 
     def _notification_callback(self, data: bytes) -> None:
@@ -733,10 +736,11 @@ class LovenseToy(Toy):
         """
         try:
             msg = data.decode("utf-8").rstrip(";")
-            # Use call_soon_threadsafe for thread-safe queue access
-            asyncio.get_event_loop().call_soon_threadsafe(
-                self._response_queue.put_nowait, msg
-            )
+            # Hand the message to the event loop thread-safely. The loop is captured in start_notifications()
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(self._response_queue.put_nowait, msg)
+            else:
+                self._response_queue.put_nowait(msg)
 
             # Handle power-off notification
             if msg.strip().upper() == "POWEROFF":
