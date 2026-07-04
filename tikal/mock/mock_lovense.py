@@ -19,7 +19,7 @@ class MockCharacteristic:
     def __init__(self, uuid: str):
         self.uuid = uuid
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.uuid
 
 
@@ -30,7 +30,7 @@ class MockService:
         self.uuid = uuid
         self.characteristics = characteristics
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.uuid
 
 
@@ -81,7 +81,7 @@ class MockBleakScanner:
         """
         self._detection_callback = detection_callback
         self._stop_event: Optional[asyncio.Event] = None
-        self._scan_task: Optional[asyncio.Task] = None
+        self._scan_task: Optional[asyncio.Task[None]] = None
         self._is_started = False
 
     async def start(self) -> None:
@@ -105,6 +105,7 @@ class MockBleakScanner:
         """Stop continuous scanning."""
         if not self._is_started:
             return
+        assert self._stop_event is not None
         self._stop_event.set()
         if self._scan_task:
             await self._scan_task
@@ -117,7 +118,10 @@ class MockBleakScanner:
         Background loop that periodically reports all non-connected devices.
         Simulates receiving advertisement packets at regular intervals.
         """
-        while not self._stop_event.is_set():
+        stop_event = self._stop_event
+        callback = self._detection_callback
+        assert stop_event is not None and callback is not None
+        while not stop_event.is_set():
             # Simulate scanning delay (real scanner would be continuous, but we batch reports)
             await asyncio.sleep(self._SCAN_INTERVAL)
 
@@ -128,7 +132,7 @@ class MockBleakScanner:
             for device in all_devices:
                 if device.address not in self._connected_addresses:
                     # Simulate advertisement detection
-                    task = self._detection_callback(device, None)
+                    task = callback(device, None)
                     if asyncio.iscoroutine(task):
                         await task
 
@@ -327,7 +331,7 @@ class MockBleakClient:
             self._notification_callback = None
 
             # Notify the client of disconnection
-            if self._disconnected_callback:
+            if self._disconnected_callback is not None:
                 self._disconnected_callback(self)
 
     async def _trigger_power_off(self) -> None:

@@ -52,6 +52,7 @@ class LovenseToy(Toy):
     ):
         super().__init__(transport, model_name, logger_name)
         self._on_power_off = on_power_off
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def brand(self) -> str:
@@ -203,7 +204,7 @@ class LovenseToy(Toy):
             connect using the ConnectionBuilder. Use the newly provided Lovense object by the ConnectionBuilder.
         """
 
-        def log_disconnect_error(exception):
+        def log_disconnect_error(exception: Exception) -> None:
             self._log.warning(
                 f"Disconnect error for '{self._model_name}' at '{self._toy_id}': '{exception}' with details '{traceback.format_exc()}'"
             )
@@ -746,7 +747,7 @@ class LovenseToy(Toy):
                 f"Failed to decode a notification for '{self._model_name}' at '{self._toy_id}': {type(e)} with details {traceback.format_exc()}"
             )
 
-    async def _send_command(self, command: str):
+    async def _send_command(self, command: str) -> None:
         """
         Encode and send a command to the toy via the TX characteristic.
 
@@ -842,7 +843,9 @@ class LovenseToy(Toy):
         response = await self._execute_command(command)
         return response == "OK"
 
-    async def _strict_execute_level_command(self, command_name: str, level: int):
+    async def _strict_execute_level_command(
+        self, command_name: str, level: int
+    ) -> None:
         """
         Execute a command with a level parameter.
 

@@ -33,7 +33,8 @@ import time
 from logging import getLogger
 from typing import Any, Callable, Protocol, Type
 
-from bleak import BleakClient, BleakScanner, BLEDevice
+from bleak import BleakClient, BleakScanner
+from bleak.backends.device import BLEDevice
 
 from .brands import build_handlers
 from .brands.mock_estim import MockConnectionBuilder
@@ -111,7 +112,7 @@ class BLEConnectionBuilder:
         self._all_seen_addresses: set[str] = set()  # address
 
         # Continuous scan state
-        self._continuous_task: asyncio.Task | None = None
+        self._continuous_task: asyncio.Task[None] | None = None
         self._stop_event: asyncio.Event | None = None
         self._continuous_exception: Exception | None = None
         self._on_update: Callable[[list[ToyData] | Exception], Any] | None = None
@@ -220,6 +221,7 @@ class BLEConnectionBuilder:
         if self._continuous_task is None or self._continuous_task.done():
             return
         # Stop the continuous scan and reset internal state
+        assert self._stop_event is not None
         self._stop_event.set()
         await self._continuous_task
         self._stop_event = None
@@ -348,7 +350,7 @@ class BLEConnectionBuilder:
     # Private helpers
     # -----------------------------------------------------------------------
 
-    async def _continuous_worker(self):
+    async def _continuous_worker(self) -> None:
         """
         Worker coroutine that runs the continuous scanner and the stale‑device cleanup.
         Any unhandled exception will be stored and re‑raised by :meth retrieve_continuous.
@@ -359,6 +361,7 @@ class BLEConnectionBuilder:
             scanner = self._scanner_class(detection_callback=self._on_device_detected)
             await scanner.start()
             cleanup_task = asyncio.create_task(self._cleanup_stale_devices())
+            assert self._stop_event is not None
             await self._stop_event.wait()
         except Exception as e:
             self._continuous_exception = e
@@ -373,7 +376,7 @@ class BLEConnectionBuilder:
             if scanner:
                 await scanner.stop()
 
-    async def _on_device_detected(self, device: BLEDevice, _):
+    async def _on_device_detected(self, device: BLEDevice, _: Any) -> None:
         """Callback invoked by BleakScanner when a BLE advertisement is received"""
         addr = device.address
         now = time.time()
@@ -395,9 +398,11 @@ class BLEConnectionBuilder:
                 self._emit_snapshot()
                 break
 
-    async def _cleanup_stale_devices(self):
+    async def _cleanup_stale_devices(self) -> None:
         """Remove devices that were not seen for more than 5 seconds."""
-        while not self._stop_event.is_set():
+        stop_event = self._stop_event
+        assert stop_event is not None
+        while not stop_event.is_set():
             await asyncio.sleep(5.0)  # timeout for stale devices
             now = time.time()
             for addr, (_, ts) in list(self._discovered.items()):
@@ -406,7 +411,7 @@ class BLEConnectionBuilder:
                     self._log.debug(f"Removed stale device {addr}")
                     self._emit_snapshot()
 
-    def _emit_snapshot(self):
+    def _emit_snapshot(self) -> None:
         """Emit a snapshot of the current discovered devices to the user callback"""
         if not self._on_update:
             return

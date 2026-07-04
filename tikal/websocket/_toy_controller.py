@@ -6,6 +6,8 @@ Comparable to the ToyController class of the tikal library, but offering async m
 Meant to be consumed by _ToyHub, which in turn is consumed by ToyServer. ToyServer defines a public API.
 """
 
+from typing import Any
+
 from .._private import PatternHandler
 from ..low_level import LovenseToy, MockEstimToy, Toy
 
@@ -37,7 +39,7 @@ class _ToyController:
         self._battery = initial_battery
 
     @property
-    def model_name(self):
+    def model_name(self) -> str:
         """
         Get the model name of the toy.
 
@@ -47,7 +49,7 @@ class _ToyController:
         return self._toy.model_name
 
     @property
-    def toy_id(self):
+    def toy_id(self) -> str:
         """
         Get the unique identifier for this toy.
 
@@ -97,7 +99,7 @@ class _ToyController:
         return self._battery
 
     @property
-    def is_paused(self):
+    def is_paused(self) -> bool:
         """
         Check if pattern playback is currently paused.
 
@@ -109,7 +111,7 @@ class _ToyController:
         return self._pattern_handler.is_paused
 
     @property
-    def is_blocked(self):
+    def is_blocked(self) -> bool:
         """
         Check if the toy is currently blocked.
 
@@ -227,7 +229,7 @@ class _ToyController:
         if not pattern:  # ensure that intensities are 0 if pattern is cleared
             await self.stop()
 
-    async def set_intensity1_limit(self, level: int | None):
+    async def set_intensity1_limit(self, level: int | None) -> None:
         """
         Set the upper limit for the primary intensity. All future intensity1 commands are clamped to this value.
 
@@ -239,7 +241,7 @@ class _ToyController:
         else:
             self._intensity_limits[0] = min(level, self._toy.max_intensity)
 
-    async def set_intensity2_limit(self, level: int | None):
+    async def set_intensity2_limit(self, level: int | None) -> None:
         """
         Set the upper limit for the secondary intensity. All future intensity2 commands are clamped to this value.
 
@@ -388,7 +390,7 @@ class _ToyController:
         )
         return result
 
-    def get_state(self) -> dict:
+    def get_state(self) -> dict[str, Any]:
         """
         Retrieve the current state of the toy (in-memory, no BLE communication).
 
@@ -544,7 +546,7 @@ class _LovenseController(_ToyController):
 
     async def get_info(
         self, full: bool
-    ) -> dict[str, str | list[str] | list[int] | bool | int | None]:
+    ) -> dict[str, str | list[str] | bool | int | None]:
         """
         Gather information about the toy.
 

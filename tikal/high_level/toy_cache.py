@@ -55,7 +55,7 @@ class ToyCache:
     def __init__(self, cache_path: Path, default_model: str, logger_name: str):
         self._cache_path = cache_path
         self._default_model = default_model
-        self._cache = dict()
+        self._cache: dict[str, str] = {}
         self._log = getLogger(logger_name)
         if cache_path.name:
             self._read()
@@ -143,7 +143,7 @@ class ToyCache:
         if not self._cache_path.exists():
             self._cache_path.write_text("{}", encoding="utf-8")
 
-    def _read(self):
+    def _read(self) -> None:
         """
         Load the cache from the disk.
 

@@ -15,7 +15,7 @@ class PatternHandler:
     - Pattern data for visualization
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Pattern state
         self._pattern: list[tuple[int, int, int]] = []
         self._pattern_wraparound = True

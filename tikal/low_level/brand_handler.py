@@ -15,7 +15,8 @@ from abc import ABC, abstractmethod
 from logging import getLogger
 from typing import Any, Callable, Type
 
-from bleak import BleakClient, BLEDevice
+from bleak import BleakClient
+from bleak.backends.device import BLEDevice
 
 from .toy import Toy
 from .toy_data import ToyData

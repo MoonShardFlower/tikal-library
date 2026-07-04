@@ -5,7 +5,7 @@ Renders a self-refreshing HTML dashboard showing server metadata and per-toy inf
 """
 
 import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ._toy_hub import _ToyHub
@@ -47,7 +47,7 @@ class ToyServerStatusPage:
         except Exception:
             toy_ids = []
 
-        toys_data: list[dict] = []
+        toys_data: list[dict[str, Any]] = []
         for toy_id in toy_ids:
             try:
                 info = await self._hub.get_info(toy_id, full=False)
@@ -69,7 +69,7 @@ class ToyServerStatusPage:
         return self._render_page(client_count, len(toy_ids), toys_data)
 
     def _render_page(
-        self, client_count: int, toy_count: int, toys_data: list[dict]
+        self, client_count: int, toy_count: int, toys_data: list[dict[str, Any]]
     ) -> str:
         uptime = self._format_uptime()
         now = datetime.datetime.now().strftime("%H:%M:%S")
@@ -137,7 +137,8 @@ class ToyServerStatusPage:
 </body>
 </html>"""
 
-    def _render_toy_card(self, toy: dict) -> str:
+    @staticmethod
+    def _render_toy_card(toy: dict[str, Any]) -> str:
         info = toy["info"]
         state = toy["state"]
         status = toy["status"]

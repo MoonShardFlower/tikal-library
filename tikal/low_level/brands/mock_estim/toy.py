@@ -136,7 +136,7 @@ class MockEstimToy(Toy):
     async def disconnect(self) -> None:
         """Stop all actions and close the simulated connection. Does not raise."""
 
-        def log_disconnect_error(exception):
+        def log_disconnect_error(exception: Exception) -> None:
             self._log.warning(
                 f"Disconnect error for '{self._model_name}' at '{self._toy_id}': '{exception}'"
             )

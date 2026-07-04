@@ -96,7 +96,7 @@ import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import websockets
 from pydantic import BaseModel, ValidationError
@@ -153,7 +153,7 @@ from .toy_server_models import (
 # -----------------------------------------------------------------------------
 
 
-async def _cmd_get_brands(hub: _ToyHub, _: _EmptyData) -> dict:
+async def _cmd_get_brands(hub: _ToyHub, _: _EmptyData) -> dict[str, Any]:
     """
     Return the full brand -> model-name mapping from _ToyHub.
 
@@ -167,7 +167,7 @@ async def _cmd_get_brands(hub: _ToyHub, _: _EmptyData) -> dict:
     return {"brands": await hub.get_brands()}
 
 
-async def _cmd_get_toy_ids(hub: _ToyHub, _: _EmptyData) -> dict:
+async def _cmd_get_toy_ids(hub: _ToyHub, _: _EmptyData) -> dict[str, Any]:
     """
     Return a snapshot of all toy identifiers currently managed by the Server.
 
@@ -181,7 +181,7 @@ async def _cmd_get_toy_ids(hub: _ToyHub, _: _EmptyData) -> dict:
     return {"toy_ids": await hub.get_toy_ids()}
 
 
-async def _cmd_get_state(hub: _ToyHub, data: ToyIdData) -> dict:
+async def _cmd_get_state(hub: _ToyHub, data: ToyIdData) -> dict[str, Any]:
     """
     Returns the current state of a toy. This is an inexpensive in-memory read (no BLE communication).
 
@@ -208,7 +208,7 @@ async def _cmd_get_state(hub: _ToyHub, data: ToyIdData) -> dict:
     return await hub.get_state(data.toy_id)
 
 
-async def _cmd_get_connection_status(hub: _ToyHub, data: ToyIdData) -> dict:
+async def _cmd_get_connection_status(hub: _ToyHub, data: ToyIdData) -> dict[str, Any]:
     """
     Return the current connection status of a toy.
 
@@ -228,7 +228,7 @@ async def _cmd_get_connection_status(hub: _ToyHub, data: ToyIdData) -> dict:
     }
 
 
-async def _cmd_get_battery(hub: _ToyHub, data: ToyIdData) -> dict:
+async def _cmd_get_battery(hub: _ToyHub, data: ToyIdData) -> dict[str, Any]:
     """
     Retrieve the in-memory battery level for a toy. No communication to the toy is performed. Kept up to date in the background
     Args:
@@ -244,7 +244,7 @@ async def _cmd_get_battery(hub: _ToyHub, data: ToyIdData) -> dict:
     }
 
 
-async def _cmd_get_info(hub: _ToyHub, data: GetInfoData) -> dict:
+async def _cmd_get_info(hub: _ToyHub, data: GetInfoData) -> dict[str, Any]:
     """
     Gather information about the toy.
 
@@ -272,7 +272,7 @@ async def _cmd_get_info(hub: _ToyHub, data: GetInfoData) -> dict:
     return await hub.get_info(data.toy_id, data.full)
 
 
-async def _cmd_get_all(hub: _ToyHub, data: GetInfoData) -> dict:
+async def _cmd_get_all(hub: _ToyHub, data: GetInfoData) -> dict[str, Any]:
     """
     Return combined state, info, connection status, get_battery for a toy.
 
@@ -291,7 +291,7 @@ async def _cmd_get_all(hub: _ToyHub, data: GetInfoData) -> dict:
     return await hub.get_all(data.toy_id, data.full)
 
 
-async def _cmd_direct_command(hub: _ToyHub, data: DirectCommandData) -> dict:
+async def _cmd_direct_command(hub: _ToyHub, data: DirectCommandData) -> dict[str, Any]:
     """
     Send a raw command string directly to a toy. Use this to access toy functionality not exposed by the API.
     Do not use it to change the tracked state (e.g., intensities) as _ToyHub will not be aware of the resulting state change.
@@ -313,7 +313,9 @@ async def _cmd_direct_command(hub: _ToyHub, data: DirectCommandData) -> dict:
     }
 
 
-async def _cmd_change_rotation_direction(hub: _ToyHub, data: ToyIdData) -> dict:
+async def _cmd_change_rotation_direction(
+    hub: _ToyHub, data: ToyIdData
+) -> dict[str, Any]:
     """
     Toggle the rotation direction of a toy if the toy supports it.
 
@@ -334,7 +336,7 @@ async def _cmd_change_rotation_direction(hub: _ToyHub, data: ToyIdData) -> dict:
     }
 
 
-async def _cmd_add(hub: _ToyHub, data: AddRequestData) -> dict:
+async def _cmd_add(hub: _ToyHub, data: AddRequestData) -> dict[str, Any]:
     """
     Connect to a discovered toy and register it on the Server.
 
@@ -357,7 +359,7 @@ async def _cmd_add(hub: _ToyHub, data: AddRequestData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_remove(hub: _ToyHub, data: ToyIdData) -> dict:
+async def _cmd_remove(hub: _ToyHub, data: ToyIdData) -> dict[str, Any]:
     """
     Disconnect a toy, then deregister it from the Server.
 
@@ -376,7 +378,7 @@ async def _cmd_remove(hub: _ToyHub, data: ToyIdData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_set_model(hub: _ToyHub, data: SetModelData) -> dict:
+async def _cmd_set_model(hub: _ToyHub, data: SetModelData) -> dict[str, Any]:
     """
     Change the model name assigned to an already-added toy.
 
@@ -394,7 +396,7 @@ async def _cmd_set_model(hub: _ToyHub, data: SetModelData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_stop(hub: _ToyHub, data: ToyIdData) -> dict:
+async def _cmd_stop(hub: _ToyHub, data: ToyIdData) -> dict[str, Any]:
     """
     Stop the toy by setting both intensities to zero and pausing any active pattern.
 
@@ -413,7 +415,7 @@ async def _cmd_stop(hub: _ToyHub, data: ToyIdData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_intensity1(hub: _ToyHub, data: IntensityData) -> dict:
+async def _cmd_intensity1(hub: _ToyHub, data: IntensityData) -> dict[str, Any]:
     """
     Set the primary intensity of a toy and pause any active pattern.
 
@@ -435,7 +437,7 @@ async def _cmd_intensity1(hub: _ToyHub, data: IntensityData) -> dict:
     return {"ack": ack, "toy_id": data.toy_id}
 
 
-async def _cmd_intensity2(hub: _ToyHub, data: IntensityData) -> dict:
+async def _cmd_intensity2(hub: _ToyHub, data: IntensityData) -> dict[str, Any]:
     """
     Set the secondary intensity of a toy and pause any active pattern. For single-intensity toys, this command has no effect.
 
@@ -457,7 +459,7 @@ async def _cmd_intensity2(hub: _ToyHub, data: IntensityData) -> dict:
     return {"ack": ack, "toy_id": data.toy_id}
 
 
-async def _cmd_toggle_pause(hub: _ToyHub, data: ToyIdData) -> dict:
+async def _cmd_toggle_pause(hub: _ToyHub, data: ToyIdData) -> dict[str, Any]:
     """
     Toggle the pause state of a toy's pattern playback.
 
@@ -480,7 +482,7 @@ async def _cmd_toggle_pause(hub: _ToyHub, data: ToyIdData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_toggle_block(hub: _ToyHub, data: ToyIdData) -> dict:
+async def _cmd_toggle_block(hub: _ToyHub, data: ToyIdData) -> dict[str, Any]:
     """
     Toggle the blocked state of a toy.
 
@@ -503,7 +505,7 @@ async def _cmd_toggle_block(hub: _ToyHub, data: ToyIdData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_set_paused(hub: _ToyHub, data: SetPausedData) -> dict:
+async def _cmd_set_paused(hub: _ToyHub, data: SetPausedData) -> dict[str, Any]:
     """
     Set the paused state of a toy's pattern playback.
 
@@ -526,7 +528,7 @@ async def _cmd_set_paused(hub: _ToyHub, data: SetPausedData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_set_blocked(hub: _ToyHub, data: SetBlockedData) -> dict:
+async def _cmd_set_blocked(hub: _ToyHub, data: SetBlockedData) -> dict[str, Any]:
     """
     Set the blocked state of a toy.
 
@@ -548,7 +550,7 @@ async def _cmd_set_blocked(hub: _ToyHub, data: SetBlockedData) -> dict:
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_set_pattern(hub: _ToyHub, data: SetPatternData) -> dict:
+async def _cmd_set_pattern(hub: _ToyHub, data: SetPatternData) -> dict[str, Any]:
     """
     Load a new intensity pattern onto a toy and start playback.
 
@@ -578,7 +580,7 @@ async def _cmd_set_pattern(hub: _ToyHub, data: SetPatternData) -> dict:
 
 async def _cmd_limit_noop(
     hub: _ToyHub, data: IntensityLimitData
-) -> dict:  # pragma: no cover
+) -> dict[str, Any]:  # pragma: no cover
     """
     Placeholder handler for limit commands (set_intensity1_limit / set_intensity2_limit).
 
@@ -588,7 +590,9 @@ async def _cmd_limit_noop(
     return {"ack": True, "toy_id": data.toy_id}
 
 
-async def _cmd_scan_noop(hub: _ToyHub, data: _EmptyData) -> dict:  # pragma: no cover
+async def _cmd_scan_noop(
+    hub: _ToyHub, data: _EmptyData
+) -> dict[str, Any]:  # pragma: no cover
     """
     Placeholder handler for scan commands (start_scan / stop_scan).
 
@@ -599,7 +603,9 @@ async def _cmd_scan_noop(hub: _ToyHub, data: _EmptyData) -> dict:  # pragma: no 
     return {"ack": True}
 
 
-async def _cmd_heartbeat_noop(hub: _ToyHub, data) -> dict:  # pragma: no cover
+async def _cmd_heartbeat_noop(
+    hub: _ToyHub, data: Any
+) -> dict[str, Any]:  # pragma: no cover
     """
     Placeholder handler for heartbeat commands (enable_heartbeat / heartbeat).
 
@@ -609,7 +615,9 @@ async def _cmd_heartbeat_noop(hub: _ToyHub, data) -> dict:  # pragma: no cover
     return {"ack": True}
 
 
-async def _cmd_shutdown(hub: _ToyHub, data: _EmptyData) -> dict:  # pragma: no cover
+async def _cmd_shutdown(
+    hub: _ToyHub, data: _EmptyData
+) -> dict[str, Any]:  # pragma: no cover
     """
     Prepare the server to shut down as soon as the requesting client disconnects.
     The actual shutdown is triggered in _handle_connection after the client leaves.
@@ -644,7 +652,7 @@ class CommandEntry:
 
     req_model: type[BaseModel]
     resp_model: type[BaseModel]
-    handler: Callable
+    handler: Callable[..., Any]
     is_scan: bool = False
     is_shutdown: bool = False
     is_heartbeat: bool = False
@@ -743,13 +751,15 @@ class ToyServer:
 
         # All currently connected WebSocket clients.
         self._clients: set[ServerConnection] = set()
+        # Clients that requested shutdown; the server stops once they disconnect.
+        self._shutdown_requested_clients: set[ServerConnection] = set()
         # Subset of _clients that have subscribed to scan results.
         self._scan_subscribers: set[ServerConnection] = set()
         # Lock that serializes start_scan/stop_scan calls.
         self._scan_lock = asyncio.Lock()
         # Task that fires idle_shutdown_delay seconds after the last client leaves and shuts down the server.
         self.idle_shutdown_delay = idle_shutdown_delay
-        self._shutdown_task: asyncio.Task | None = None
+        self._shutdown_task: asyncio.Task[None] | None = None
         # The underlying websockets server object; set in serve().
         self._server: websockets.Server | None = None
 
@@ -759,7 +769,7 @@ class ToyServer:
         self._heartbeat_clients: dict[ServerConnection, float] = {}
         self._heartbeat_timeout = 3.0  # seconds
         self._heartbeat_check_interval = 1.0  # seconds
-        self._heartbeat_task: asyncio.Task | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
 
         # Per-client intensity limits: ws -> toy_id -> [limit1_or_None, limit2_or_None]
         self._client_limits: dict[ServerConnection, dict[str, list[int | None]]] = {}
@@ -846,8 +856,9 @@ class ToyServer:
         try:
             async for raw in ws:
                 # Spawn a task per message so the receiver loop stays responsive.
+                message = raw if isinstance(raw, str) else raw.decode("utf-8")
                 asyncio.get_running_loop().create_task(
-                    self._handle_message(ws, raw), name="handle-message"
+                    self._handle_message(ws, message), name="handle-message"
                 )
         except websockets.exceptions.ConnectionClosed:
             pass
@@ -878,7 +889,8 @@ class ToyServer:
                         except Exception:
                             pass
 
-            if getattr(ws, "shutdown_requested", False):
+            if ws in self._shutdown_requested_clients:
+                self._shutdown_requested_clients.discard(ws)
                 await self._shutdown()
                 self._log.info("Client disconnected (shutdown requested).")
             else:
@@ -976,7 +988,7 @@ class ToyServer:
                 return
 
             if entry.is_shutdown:
-                ws.shutdown_requested = True
+                self._shutdown_requested_clients.add(ws)
                 await self._send_response(
                     ws,
                     req_id,
@@ -984,6 +996,7 @@ class ToyServer:
                     entry.resp_model(ack=True).model_dump(),
                     success=True,
                 )
+                return
 
             result = await entry.handler(self._hub, data)
             await self._send_response(
@@ -1211,7 +1224,7 @@ class ToyServer:
         ws: ServerConnection,
         req_id: str,
         cmd: str,
-        data,
+        data: Any,
         resp_model: type[BaseModel],
     ) -> None:
         """Route enable_heartbeat / heartbeat to the appropriate handler."""
@@ -1242,7 +1255,7 @@ class ToyServer:
         ws: ServerConnection,
         req_id: str,
         cmd: str,
-        data,
+        data: Any,
         resp_model: type[BaseModel],
     ) -> None:
         """Store per-client limit, compute effective minimum, and forward to _ToyHub."""
@@ -1278,11 +1291,13 @@ class ToyServer:
 
     def _compute_effective_limit(self, toy_id: str, axis: int) -> int | None:
         """Minimum of all clients' limits for a toy axis, or None if no limit is set."""
-        values = []
+        values: list[int] = []
         for client_toys in self._client_limits.values():
             limits = client_toys.get(toy_id)
-            if limits is not None and limits[axis] is not None:
-                values.append(limits[axis])
+            if limits is not None:
+                value = limits[axis]
+                if value is not None:
+                    values.append(value)
         return min(values) if values else None
 
     async def _heartbeat_check_loop(self) -> None:
@@ -1317,7 +1332,7 @@ class ToyServer:
                 if not self._heartbeat_clients:
                     break
 
-    async def _handle_http_request(self, _, request) -> Response | None:
+    async def _handle_http_request(self, _: Any, request: Any) -> Response | None:
         """
         Intercept plain HTTP requests and serve a status page.
         WebSocket upgrade requests (Upgrade: websocket) are passed through by returning None.
@@ -1343,7 +1358,13 @@ class ToyServer:
     # Messaging helpers
 
     async def _send_response(
-        self, ws: ServerConnection, req_id: str, cmd: str, data: dict, *, success: bool
+        self,
+        ws: ServerConnection,
+        req_id: str,
+        cmd: str,
+        data: dict[str, Any],
+        *,
+        success: bool,
     ) -> None:
         """Serialize and send a response envelope to *ws*."""
         resp = ResponseEnvelope(reply=cmd, id=req_id, success=success, data=data)
@@ -1358,7 +1379,7 @@ class ToyServer:
             pass
 
     async def _broadcast(
-        self, event_name: str, payload: dict, *, success: bool = True
+        self, event_name: str, payload: dict[str, Any], *, success: bool = True
     ) -> None:
         """Broadcast an event to all connected clients."""
         clients = set(self._clients)
@@ -1370,7 +1391,7 @@ class ToyServer:
         await asyncio.gather(*(ws.send(msg) for ws in clients), return_exceptions=True)
 
     async def _broadcast_to_subscribers(
-        self, event_name: str, payload: dict, *, success: bool = True
+        self, event_name: str, payload: dict[str, Any], *, success: bool = True
     ) -> None:
         """Broadcast an event to scan-subscribed clients only."""
         subscribers = set(self._scan_subscribers)
@@ -1401,11 +1422,11 @@ class ToyServer:
                     del client_toys[stale_id]
         await self._broadcast("toy_ids_changed", dict(toy_ids=toy_ids))
 
-    async def _on_toy_state_change(self, state: dict) -> None:
+    async def _on_toy_state_change(self, state: dict[str, Any]) -> None:
         """Broadcast a ``toy_state_changed`` event to all connected clients when any part of a toy's state changes."""
         await self._broadcast("toy_state_changed", state)
 
-    async def _on_model_change(self, update: dict) -> None:
+    async def _on_model_change(self, update: dict[str, Any]) -> None:
         """Broadcast a ``model_changed`` event to all connected clients when a toy's assigned model name changes."""
         await self._broadcast("model_changed", update)
 
@@ -1413,7 +1434,7 @@ class ToyServer:
         """Broadcast a ``battery_changed`` event to all connected clients when one or more toys report a new battery level."""
         await self._broadcast("battery_changed", updates)
 
-    async def _on_scan_update(self, update: Exception | list[dict]) -> None:
+    async def _on_scan_update(self, update: Exception | list[dict[str, Any]]) -> None:
         """Forward a ``scan_update`` event to scan-subscribed clients only."""
         if isinstance(update, DiscoveryError):
             await self._broadcast_to_subscribers(

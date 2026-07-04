@@ -125,7 +125,7 @@ class DiscoveryError(ConnectionError):
         self.tb = tb
 
 
-async def _retry(fn, *args):
+async def _retry(fn: Callable[..., Awaitable[T]], *args: Any) -> T:
     """Call ``await fn(*args)``. On a *first* ConnectionError, wait _RETRY_DELAY seconds and try once more. A second ConnectionError propagates to the caller."""
     try:
         return await fn(*args)
@@ -140,8 +140,8 @@ class _ToyHub:
         self,
         on_status_change: Callable[[str, ToyStatus], Any] | None = None,
         on_toy_ids_change: Callable[[list[str]], Any] | None = None,
-        on_toy_state_change: Callable[[dict], Any] | None = None,
-        on_model_change: Callable[[dict], Any] | None = None,
+        on_toy_state_change: Callable[[dict[str, Any]], Any] | None = None,
+        on_model_change: Callable[[dict[str, Any]], Any] | None = None,
         on_battery_change: Callable[[dict[str, int | None]], Any] | None = None,
         toy_cache_path: Path = Path(),
         default_model: str = "",
@@ -193,9 +193,10 @@ class _ToyHub:
 
         # Discovery lifecycle
         self._shutting_down: bool = False
-        self._discovery_retry_task: asyncio.Task | None = None
+        self._discovery_retry_task: asyncio.Task[None] | None = None
 
-        # Toy builder
+        scanner: Any
+        client: Any
         if mock_toys:
             scanner = MockBleakScanner
             client = MockBleakClient
@@ -203,7 +204,7 @@ class _ToyHub:
             scanner = BleakScanner
             client = BleakClient
 
-        def on_disconnect_helper(toy_id: str):
+        def on_disconnect_helper(toy_id: str) -> None:
             asyncio.create_task(self._on_disconnect(toy_id))
 
         self._connection_builder = ConnectionBuilder(
@@ -216,11 +217,11 @@ class _ToyHub:
         )
 
         # Background loop tasks
-        self._process_task: asyncio.Task | None = None
-        self._battery_poll_task: asyncio.Task | None = None
+        self._process_task: asyncio.Task[None] | None = None
+        self._battery_poll_task: asyncio.Task[None] | None = None
 
         # at most one reconnect task per toy. Keyed by toy_id.
-        self._reconnect_tasks: dict[str, asyncio.Task] = {}
+        self._reconnect_tasks: dict[str, asyncio.Task[None]] = {}
 
     # -------------------------------------------------------------------------
     # Startup / Shutdown
@@ -275,7 +276,9 @@ class _ToyHub:
             return_exceptions=True,
         )
 
-    async def start_scan(self, callback: Callable[[Exception | list[dict]], Any]):
+    async def start_scan(
+        self, callback: Callable[[Exception | list[dict[str, Any]]], Any]
+    ) -> None:
         """
         Start continuous background discovery of Toys.
 
@@ -290,7 +293,7 @@ class _ToyHub:
         self._log.info("Starting toy discovery")
         loop = asyncio.get_running_loop()
 
-        def on_discovery(update: Exception | list[ToyData]):
+        def on_discovery(update: Exception | list[ToyData]) -> None:
             # Dispatch the async update onto the event loop.
             # Using call_soon_threadsafe makes this safe even if Bleak calls this callback from a worker thread.
             loop.call_soon_threadsafe(
@@ -302,7 +305,7 @@ class _ToyHub:
         except Exception as e:
             raise DiscoveryStartError(traceback.format_exc()) from e
 
-    async def stop_scan(self):
+    async def stop_scan(self) -> None:
         """Stop continuous background discovery of Toys. After this call, the callback provided to `start_scan` will no longer be invoked."""
         self._log.info("Stopping toy discovery")
         async with self._toy_lock:
@@ -316,7 +319,7 @@ class _ToyHub:
     async def _apply_discovery(
         self,
         update: Exception | list[ToyData],
-        callback: Callable[[Exception | list[dict]], Any],
+        callback: Callable[[Exception | list[dict[str, Any]]], Any],
     ) -> None:
         """
         Updates the discovery state under self._toy_lock, serializes ToyData to dicts, and delivers them to callback
@@ -325,6 +328,7 @@ class _ToyHub:
             callback: The user callback that will receive a list of serialized ToyData dicts.
         """
         async with self._toy_lock:
+            result: DiscoveryError | list[dict[str, str]]
             if isinstance(update, Exception):
                 self._toy_data.clear()
                 result = DiscoveryError(str(traceback.format_exception(update)))
@@ -495,7 +499,7 @@ class _ToyHub:
         task.add_done_callback(lambda t: self._prune_reconnect_task(toy_id, t))
         self._reconnect_tasks[toy_id] = task
 
-    def _prune_reconnect_task(self, toy_id: str, task: asyncio.Task) -> None:
+    def _prune_reconnect_task(self, toy_id: str, task: asyncio.Task[None]) -> None:
         """
         Remove a completed reconnect task from the tracking dictionary if it is still the current entry. Call after completing a reconnect task.
 
@@ -573,7 +577,7 @@ class _ToyHub:
                 raise UnknownToyError(toy_id)
             return toy, self._toy_cmd_locks[toy_id]
 
-    async def _fire_callback(self, callback: Callable, payload) -> None:
+    async def _fire_callback(self, callback: Callable[..., Any], payload: Any) -> None:
         """
         Invoke a callback with the given payload, supporting both sync and async callables.
         Exceptions are logged but not raised, so a misbehaving callback cannot affect command execution.
@@ -596,7 +600,7 @@ class _ToyHub:
         toy: _ToyController,
         command_name: str,
         command: Callable[..., Awaitable[T]],
-        *args,
+        *args: Any,
     ) -> T:
         """
         Execute a toy command with one automatic retry on ConnectionError. If the command fails after retry, triggers reconnection and raises ToyConnectionError.
@@ -1077,7 +1081,7 @@ class _ToyHub:
         async with self._toy_lock:
             return list(self._toys.keys())
 
-    async def get_state(self, toy_id: str) -> dict:
+    async def get_state(self, toy_id: str) -> dict[str, Any]:
         """
         Returns the current state of a toy in-memory, no BLE communication).
 
@@ -1120,7 +1124,7 @@ class _ToyHub:
         toy = await self._get_toy(toy_id)
         return toy.battery
 
-    async def get_info(self, toy_id: str, full: bool) -> dict:
+    async def get_info(self, toy_id: str, full: bool) -> dict[str, Any]:
         """
         Gather information about the toy.
 
@@ -1152,7 +1156,7 @@ class _ToyHub:
         async with cmd_lock:
             return await self._run_toy_command(toy, "get_info", toy.get_info, True)
 
-    async def get_all(self, toy_id: str, full: bool) -> dict:
+    async def get_all(self, toy_id: str, full: bool) -> dict[str, Any]:
         """
         Combines get_info, get_state, get_status, get_battery.
 

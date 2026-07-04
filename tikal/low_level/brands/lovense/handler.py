@@ -5,7 +5,8 @@ Encapsulates all Lovense-specific BLE logic: identification (``LVS-`` name prefi
 notification setup. Instantiated by ``BLEConnectionBuilder`` via the brand registry; you are not meant to use it directly.
 """
 
-from bleak import BleakClient, BLEDevice
+from bleak import BleakClient
+from bleak.backends.device import BLEDevice
 
 from ...brand_handler import BLEBrandHandler
 from ...toy import Toy

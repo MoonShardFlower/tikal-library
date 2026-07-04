@@ -8,7 +8,7 @@ Each model is built with Pydantic for data validation and serialization purposes
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # -----------------------------------------------------------------------------
 # Protocol envelopes
@@ -62,7 +62,7 @@ class EventEnvelope(BaseModel):
 
     event: str
     success: bool
-    data: dict
+    data: dict[str, Any]
 
 
 # -----------------------------------------------------------------------------
@@ -118,7 +118,7 @@ class ErrorData(BaseModel):
 # Request models
 # -----------------------------------------------------------------------------
 
-_STRICT = {"extra": "forbid"}
+_STRICT = ConfigDict(extra="forbid")
 
 
 class _EmptyData(BaseModel):
@@ -247,7 +247,7 @@ class SetPatternData(BaseModel):
     @classmethod
     def coerce_pattern(cls, v: Any) -> list[tuple[int, int, int]]:
         """Accept either list-of-tuples or list-of-lists and normalize to list-of-tuples."""
-        return [tuple(seg) for seg in v]  # type: ignore[return-value]
+        return [tuple(seg) for seg in v]
 
     @model_validator(mode="after")
     def check_segments(self) -> "SetPatternData":

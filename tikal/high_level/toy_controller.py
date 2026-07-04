@@ -68,9 +68,9 @@ class ToyController(ABC):
         self._log = getLogger(logger_name)
 
         # State
-        self._command_queue: deque[tuple[Callable, Optional[Callable[[Any], None]]]] = (
-            deque()
-        )
+        self._command_queue: deque[
+            tuple[Callable[[], Any], Optional[Callable[[Any], None]]]
+        ] = deque()
         self._pattern_handler = PatternHandler()
         self._last_values: dict[str, int | None] = {
             "intensity1": None,
@@ -83,7 +83,7 @@ class ToyController(ABC):
         self._log.info(f"ToyController initialized for {toy.toy_id}")
 
     @property
-    def model_name(self):
+    def model_name(self) -> str:
         """
         Get the model name of the toy.
 
@@ -93,7 +93,7 @@ class ToyController(ABC):
         return self._toy.model_name
 
     @property
-    def toy_id(self):
+    def toy_id(self) -> str:
         """
         Get the unique identifier for this toy.
 
@@ -113,7 +113,7 @@ class ToyController(ABC):
         return self._toy.brand
 
     @property
-    def is_connected(self):
+    def is_connected(self) -> bool:
         """
         Check if the toy is currently connected.
 
@@ -123,6 +123,18 @@ class ToyController(ABC):
             bool: True if connected, False otherwise.
         """
         return self._connected
+
+    @is_connected.setter
+    def is_connected(self, value: bool) -> None:
+        """
+        Set the connection state (internal use only).
+
+        This setter is called by ToyHub when the connection state changes. You should not call this
+
+        Args:
+            value: New connection state.
+        """
+        self._connected = value
 
     @property
     def change_rotation_direction_available(self) -> bool:
@@ -186,7 +198,7 @@ class ToyController(ABC):
         return self._toy.current_intensities
 
     @property
-    def is_paused(self):
+    def is_paused(self) -> bool:
         """
         Check if pattern playback is currently paused.
 
@@ -199,7 +211,7 @@ class ToyController(ABC):
         return self._pattern_handler.is_paused
 
     @property
-    def is_blocked(self):
+    def is_blocked(self) -> bool:
         """
         Check if the toy is currently blocked.
 
@@ -247,7 +259,7 @@ class ToyController(ABC):
             For a blocking call that surfaces validation errors directly, use :meth:`ToyHub.update_model_name` instead.
         """
 
-        async def _execute():
+        async def _execute() -> Any:
             await self._toy.set_model_name(model_name)
             return self._toy.model_name
 
@@ -321,7 +333,7 @@ class ToyController(ABC):
             self._is_blocked = False
             return False
 
-    def set_paused(self, pause: bool):
+    def set_paused(self, pause: bool) -> None:
         """
         Set the pattern playback pause state.
 
@@ -341,7 +353,7 @@ class ToyController(ABC):
             self.stop()
             self._is_blocked = False  # I don't want to pause and block at the same time
 
-    def set_blocked(self, block: bool):
+    def set_blocked(self, block: bool) -> None:
         """
         Set the block state.
 
@@ -477,7 +489,7 @@ class ToyController(ABC):
             If disconnected, the command is queued and sent upon reconnection.
         """
 
-        async def _execute():
+        async def _execute() -> Any:
             return await self._toy.intensity1(level)
 
         if self._is_blocked:
@@ -507,7 +519,7 @@ class ToyController(ABC):
                 toy.intensity2(toy.max_intensity // 2)  # Set secondary capability intensity to medium
         """
 
-        async def _execute():
+        async def _execute() -> Any:
             return await self._toy.intensity2(level)
 
         if self._is_blocked:
@@ -539,7 +551,7 @@ class ToyController(ABC):
             You can use property:`change_rotation_direction_available` to check support before calling.
         """
 
-        async def _execute():
+        async def _execute() -> Any:
             return await self._toy.change_rotation_direction()
 
         self._schedule_command(_execute, callback)
@@ -560,7 +572,7 @@ class ToyController(ABC):
                 toy.stop(callback=lambda ok: print("Stopped" if ok else "Failed"))
         """
 
-        async def _execute():
+        async def _execute() -> Any:
             return await self._toy.stop()
 
         # avoid the pattern overriding the command
@@ -588,7 +600,7 @@ class ToyController(ABC):
             invokes the hub's battery callback. This method serves as an alternative to querying the battery level
         """
 
-        async def _execute():
+        async def _execute() -> Any:
             return await self._toy.get_battery_level()
 
         self._schedule_command(_execute, callback)
@@ -636,7 +648,7 @@ class ToyController(ABC):
                 toy.direct_command("DeviceType", callback=handle_response)
         """
 
-        async def _execute():
+        async def _execute() -> Any:
             return await self._toy.direct_command(command)
 
         self._schedule_command(_execute, callback)
@@ -645,20 +657,8 @@ class ToyController(ABC):
     # Private Methods
     # ------------------------------------------------------------------------------------------------------------------
 
-    @is_connected.setter
-    def is_connected(self, value: bool):
-        """
-        Set the connection state (internal use only).
-
-        This setter is called by ToyHub when the connection state changes. You should not call this
-
-        Args:
-            value: New connection state.
-        """
-        self._connected = value
-
     @property
-    def toy(self):
+    def toy(self) -> Toy:
         """
         Get the underlying low-level toy object (internal use only)
 
@@ -735,7 +735,9 @@ class ToyController(ABC):
                     callback(None)
 
     def _schedule_command(
-        self, command: Callable, callback: Optional[Callable[[Any], None]] = None
+        self,
+        command: Callable[[], Any],
+        callback: Optional[Callable[[Any], None]] = None,
     ) -> None:
         """
         Add a command to the execution queue.
@@ -817,7 +819,7 @@ class LovenseController(ToyController):
                 toy.get_information(show_info)
         """
 
-        async def _execute():
+        async def _execute() -> Any:
             info = dict()
             battery = await self._toy.get_battery_level()
             status = await self._toy.get_status()
@@ -872,7 +874,7 @@ class MockEstimController(ToyController):
                 Keys describe the Information type, values contain the information.
         """
 
-        async def _execute():
+        async def _execute() -> Any:
             battery = await self._toy.get_battery_level()
             return {
                 "Battery level": f"{battery}%" if battery is not None else "Unknown",

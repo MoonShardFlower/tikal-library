@@ -46,7 +46,7 @@ from logging import getLogger
 from pathlib import Path
 from threading import Lock
 from time import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from bleak import BleakClient, BleakScanner
 
@@ -221,7 +221,7 @@ class ToyHub:
             Should any exception occur, it is provided to self.error_callback. Any exception stops discovery.
         """
 
-        def callback(toys: list[ToyData] | Exception):
+        def callback(toys: list[ToyData] | Exception) -> None:
             if isinstance(toys, Exception):
                 self._log.error(f"Discovery failed: {toys}")
                 self._error_callback(
@@ -312,7 +312,7 @@ class ToyHub:
         """
         self._log.info("Starting toy discovery (callback)...")
 
-        async def discovery_task():
+        async def discovery_task() -> list[ToyData] | Exception:
             result: list[ToyData] = []
             try:
                 toy_data = await self._connection_builder.discover_toys(timeout)
@@ -421,7 +421,7 @@ class ToyHub:
         """
         self._log.info(f"Connecting to {len(to_connect)} toy(s) (callback)...")
 
-        async def connection_task():
+        async def connection_task() -> list[ToyController | BaseException]:
             controllers: list["ToyController | BaseException"] = []
             cache_updates = {}
             toys = await self._connection_builder.create_toys(to_connect)
@@ -440,7 +440,9 @@ class ToyHub:
 
         self._runner.run_callback(connection_task(), on_connected, timeout)
 
-    def disconnect_toys_blocking(self, to_disconnect: list[str], timeout: float = 10.0):
+    def disconnect_toys_blocking(
+        self, to_disconnect: list[str], timeout: float = 10.0
+    ) -> Sequence[BaseException | None]:
         """
         Disconnect specified toys synchronously (blocking call).
 
@@ -512,7 +514,7 @@ class ToyHub:
         """
         self._log.info(f"Disconnecting from {len(to_disconnect)} toy(s) (callback)...")
 
-        async def disconnect_task():
+        async def disconnect_task() -> list[Any]:
             coroutines = []
             for toy_id in to_disconnect:
                 if toy_id not in self._toy_controllers:
@@ -647,7 +649,7 @@ class ToyHub:
 
         sleep_time = COMMUNICATION_INTERVAL
 
-        async def communication_iteration():
+        async def communication_iteration() -> None:
             try:
                 # Get a snapshot of controllers (avoid holding lock during I/O)
                 with self._lock:
@@ -736,7 +738,6 @@ class ToyHub:
         self._log.warning(
             f"Disconnected from {toy_id}. Will attempt to reconnect once."
         )
-        toy_controller = self._toy_controllers[toy_id]
         self._unregister_controller(toy_id)
         if self._disconnect_callback:
             self._disconnect_callback(toy_id)
@@ -744,7 +745,7 @@ class ToyHub:
         async def reconnect_task() -> bool:
             return await toy_controller.toy.reconnect()
 
-        def on_reconnect_complete(result):
+        def on_reconnect_complete(result: bool | BaseException) -> None:
             if isinstance(result, Exception):
                 self._log.error(
                     f"Unable to recover connection to toy at address {toy_id} due to {result!r}"
@@ -787,12 +788,11 @@ class ToyHub:
             This is an internal callback. Do not call directly.
         """
         self._log.warning(f"Powered off toy at {toy_id}")
-        controller = self._toy_controllers[toy_id]
         self._unregister_controller(toy_id)
         if self._power_off_callback:
             self._power_off_callback(toy_id)
 
-        def on_disconnect_complete(_):
+        def on_disconnect_complete(_: Any) -> None:
             pass  # We don't care about the result, the toy is gone either way
 
         try:

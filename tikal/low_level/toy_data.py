@@ -98,7 +98,7 @@ class ToyData:
     _model_name: str
     _brand: str
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self._name, str):
             raise TypeError("name must be str")
         if not isinstance(self._toy_id, str):
@@ -121,7 +121,7 @@ class ToyData:
         return self._model_name
 
     @model_name.setter
-    def model_name(self, value: str):
+    def model_name(self, value: str) -> None:
         if not isinstance(value, str):
             raise TypeError("model_name must be str")
         self._model_name = value

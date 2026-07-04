@@ -3,23 +3,25 @@
 import asyncio
 import threading
 import time
-from typing import Awaitable, Callable, Optional, Sequence, TypeVar
+from typing import Any, Awaitable, Callable, Coroutine, Optional, Sequence, TypeVar
 
 T = TypeVar("T")
 
 
 class AsyncRunner:
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         AsyncRunner is a utility class for executing asyncio coroutines within a synchronous Application.
         Besides supporting single coroutines, it can run multiple coroutines in parallel for increased speed.
         """
-        self.loop = None
-        self.loop_thread = None
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.loop_thread: threading.Thread | None = None
         self._setup_event_loop()
 
-    def run_async(self, coro: Awaitable[T], timeout: Optional[float] = 30.0) -> T:
+    def run_async(
+        self, coro: Coroutine[Any, Any, T], timeout: Optional[float] = 30.0
+    ) -> T:
         """
         Run an async coroutine using the dedicated event loop.
         This function blocks until the coroutine is finished or the timeout occurs!
@@ -69,7 +71,7 @@ class AsyncRunner:
         if self.loop is None:
             raise RuntimeError("Event loop not initialized")
 
-        async def gather_safe():
+        async def gather_safe() -> Sequence[T | BaseException]:
             return await asyncio.gather(*coroutines, return_exceptions=True)
 
         future = asyncio.run_coroutine_threadsafe(gather_safe(), self.loop)
@@ -78,7 +80,7 @@ class AsyncRunner:
     def run_callback(
         self,
         coro: Awaitable[T],
-        callback: Callable[[T | BaseException], None],
+        callback: Callable[[Any], Any],
         timeout: Optional[float] = 30.0,
     ) -> None:
         """
@@ -96,7 +98,7 @@ class AsyncRunner:
         if self.loop is None:
             raise RuntimeError("Event loop not initialized")
 
-        async def run_with_callback():
+        async def run_with_callback() -> None:
             try:
                 result = await asyncio.wait_for(coro, timeout=timeout)
                 callback(result)
@@ -127,7 +129,7 @@ class AsyncRunner:
         task_handle = None
         cancelled = False
 
-        async def recurring_task():
+        async def recurring_task() -> None:
             while not cancelled:
                 try:
                     await coro_factory()
@@ -135,7 +137,7 @@ class AsyncRunner:
                     pass  # Silently continue on error
                 await asyncio.sleep(interval)
 
-        def cancel():
+        def cancel() -> None:
             nonlocal cancelled
             cancelled = True
             if task_handle:
@@ -144,10 +146,10 @@ class AsyncRunner:
         task_handle = asyncio.run_coroutine_threadsafe(recurring_task(), self.loop)
         return cancel
 
-    def _setup_event_loop(self):
+    def _setup_event_loop(self) -> None:
         """Set up a dedicated event loop in a separate thread."""
 
-        def run_loop():
+        def run_loop() -> None:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
             self.loop.run_forever()
@@ -163,7 +165,7 @@ class AsyncRunner:
         """
         if self.loop and self.loop.is_running():
 
-            async def _cleanup():
+            async def _cleanup() -> None:
                 tasks = [
                     t for t in asyncio.all_tasks() if t is not asyncio.current_task()
                 ]
@@ -180,7 +182,7 @@ class AsyncRunner:
         if self.loop_thread and self.loop_thread.is_alive():
             self.loop_thread.join(timeout=2.0)
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Clean up the event loop when the object is destroyed."""
         if self.loop and self.loop.is_running():
             self.loop.call_soon_threadsafe(self.loop.stop)

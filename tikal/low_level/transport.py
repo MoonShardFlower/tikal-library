@@ -8,10 +8,11 @@ Concrete implementations wrap bleak or pyserial-asyncio-fast.
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Awaitable, Callable, Type
+from typing import Any, Awaitable, Callable, Type
 
 import serial_asyncio_fast
-from bleak import BleakClient, BLEDevice
+from bleak import BleakClient
+from bleak.backends.device import BLEDevice
 
 
 class Transport(ABC):
@@ -124,7 +125,9 @@ class BleTransport(Transport):
             if not self._intentional_disconnect and on_disconnect:
                 on_disconnect(self.toy_id)
 
-        self._client = client_class(device, disconnected_callback=_bleak_disconnect_cb)
+        self._client: BleakClient | None = client_class(
+            device, disconnected_callback=_bleak_disconnect_cb
+        )
 
     async def connect(self) -> None:
         """
@@ -136,6 +139,7 @@ class BleTransport(Transport):
         Raises:
             ConnectionError: If the BLE connection fails or if UUID resolution raises.
         """
+        assert self._client is not None
         try:
             await self._client.connect()
             self._tx_uuid, self._rx_uuid = await self._uuid_resolver(self._client)
@@ -163,6 +167,7 @@ class BleTransport(Transport):
             return
         if self._intentional_disconnect:
             raise RuntimeError("Cannot reconnect after intentional disconnect")
+        assert self._client is not None
         try:
             await self._client.connect()
         except Exception as e:
@@ -180,6 +185,7 @@ class BleTransport(Transport):
         Raises:
             ConnectionError: If the transport is not connected or the operation fails.
         """
+        assert self._client is not None and self._tx_uuid is not None
         try:
             await self._client.write_gatt_char(self._tx_uuid, data, response=False)
         except Exception as e:
@@ -198,10 +204,11 @@ class BleTransport(Transport):
             ConnectionError: If the transport is not connected or the operation fails.
         """
 
-        # Bleak passes (handle, data: bytes); we only forward data.
-        def _bleak_cb(_, data: bytes) -> None:
-            callback(data)
+        # Bleak passes (characteristic, data: bytearray); we forward the data as bytes.
+        def _bleak_cb(_: Any, data: bytearray) -> None:
+            callback(bytes(data))
 
+        assert self._client is not None and self._rx_uuid is not None
         try:
             await self._client.start_notify(self._rx_uuid, _bleak_cb)
         except Exception as e:
@@ -329,13 +336,13 @@ class UsbTransport(Transport):
         writer: asyncio.StreamWriter,
     ):
         super().__init__(toy_id=port, name="usb")
-        self._reader = reader
-        self._writer = writer
+        self._reader: asyncio.StreamReader | None = reader
+        self._writer: asyncio.StreamWriter | None = writer
         self._port = port
         self._baudrate = baudrate
         self._connected = True
-        self._notify_callback: Callable | None = None
-        self._read_task: asyncio.Task | None = None
+        self._notify_callback: Callable[[bytes], None] | None = None
+        self._read_task: asyncio.Task[None] | None = None
 
     @classmethod
     async def connect(cls, port: str, baudrate: int) -> "UsbTransport":
@@ -350,7 +357,7 @@ class UsbTransport(Transport):
         return self._connected
 
     async def send(self, data: bytes) -> None:
-        if not self._connected:
+        if not self._connected or self._writer is None:
             raise ConnectionError(f"USB transport {self._toy_id} is not connected")
         self._writer.write(data)
         await self._writer.drain()
@@ -377,6 +384,7 @@ class UsbTransport(Transport):
                     url=self._port, baudrate=self._baudrate
                 )
             )
+            self._connected = True
             await self.start_notify(self._notify_callback)
         except Exception as e:
             raise ConnectionError(f"Error connecting to toy at {self.toy_id}: {e!r}")
@@ -394,10 +402,13 @@ class UsbTransport(Transport):
 
         # TODO: Assumes readline strategy. Other read strategies (fixed-size ``read``) might be possible.
         #  Might need multiple USB Transport layer classes to handle different USB toy protocols.
-        async def _read_loop():
+        async def _read_loop() -> None:
+            reader = self._reader
+            if reader is None:
+                return
             try:
                 while self._connected:
-                    data = await self._reader.readline()
+                    data = await reader.readline()
                     if data:
                         callback(data)
             except asyncio.CancelledError:
@@ -419,8 +430,9 @@ class UsbTransport(Transport):
                 self._read_task.cancel()
                 await asyncio.gather(self._read_task, return_exceptions=True)
                 self._read_task = None
-            self._writer.close()
-            await self._writer.wait_closed()
+            if self._writer is not None:
+                self._writer.close()
+                await self._writer.wait_closed()
         except Exception as e:
             raise ConnectionError(
                 f"Error disconnecting from toy at {self.toy_id}: {e!r}"
