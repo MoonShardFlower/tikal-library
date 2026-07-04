@@ -378,7 +378,7 @@ class _ToyController:
         intensity1, intensity2 = self._toy.intensity_names
         if intensity2 is None:
             intensity2 = ""
-        result = dict(
+        result: dict[str, str | list[str] | bool | int | None] = dict(
             toy_id=self._toy.toy_id,
             name=self._toy.name,
             model_name=self._toy.model_name,
