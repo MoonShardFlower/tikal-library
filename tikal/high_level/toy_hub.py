@@ -224,11 +224,12 @@ class ToyHub:
         def callback(toys: list[ToyData] | Exception) -> None:
             if isinstance(toys, Exception):
                 self._log.error(f"Discovery failed: {toys}")
-                self._error_callback(
-                    toys,
-                    "Toy Discovery process failed. Is the Bluetooth still on?",
-                    traceback.format_exc(),
-                )
+                if self._error_callback:
+                    self._error_callback(
+                        toys,
+                        "Toy Discovery process failed. Is the Bluetooth still on?",
+                        traceback.format_exc(),
+                    )
                 on_update([])  # Clear any now stale toy
                 return
             else:
@@ -701,11 +702,15 @@ class ToyHub:
         battery_results = await asyncio.gather(
             *battery_coroutines, return_exceptions=True
         )
-        # Map results to toy IDs
-        batteries = dict(
-            zip([controller.toy_id for controller in controllers], battery_results)
-        )
-        self._battery_update_callback(batteries)
+        # Map results to toy IDs, treating any failed query as an unknown (None) level.
+        batteries: dict[str, int | None] = {
+            controller.toy_id: (
+                result if not isinstance(result, BaseException) else None
+            )
+            for controller, result in zip(controllers, battery_results)
+        }
+        if self._battery_update_callback is not None:
+            self._battery_update_callback(batteries)
         self._log.info("Battery levels updated")
 
     @staticmethod
@@ -738,6 +743,10 @@ class ToyHub:
         self._log.warning(
             f"Disconnected from {toy_id}. Will attempt to reconnect once."
         )
+        toy_controller = self._toy_controllers.get(toy_id)
+        if toy_controller is None:
+            self._log.debug(f"Ignoring disconnect for unknown toy {toy_id}")
+            return
         self._unregister_controller(toy_id)
         if self._disconnect_callback:
             self._disconnect_callback(toy_id)
@@ -788,6 +797,10 @@ class ToyHub:
             This is an internal callback. Do not call directly.
         """
         self._log.warning(f"Powered off toy at {toy_id}")
+        controller = self._toy_controllers.get(toy_id)
+        if controller is None:
+            self._log.debug(f"Ignoring power-off for unknown toy {toy_id}")
+            return
         self._unregister_controller(toy_id)
         if self._power_off_callback:
             self._power_off_callback(toy_id)
