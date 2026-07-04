@@ -7,9 +7,20 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 
 ## [Unreleased]
 
+### Added
+    - Packaging: Added a py.typed marker. Downstream type checkers now see tikal's inline type hints.
+
 ### Changed
     - Web API:  Expanded Status webpage 
                 (found at http://<host>:<port>/ where host and port are replaced with the configuration used to start the server e.g. http://localhost:8142/)
+
+### Fixed
+    - Low-Level API: set_model_name now validates the NEW model's commands (and restores the previous model name if they fail) instead of validating the already-set model. Changing a connected toy to a different valid-but-wrong model is now correctly rejected.
+    - Low-Level API: Connecting with a lower-case model_name no longer fails. Model names are now case-insensitive on every path, as documented.
+    - High-Level API: Discovery failures no longer raise TypeError when no on_error callback was provided to ToyHub.
+    - High-Level API: An unexpected disconnect or power-off for an already-removed toy no longer raises KeyError.
+    - Web API: The shutdown command now sends a single response instead of two.
+    - High-Level API: A failed battery query during background polling is now reported as None to the on_battery_update callback, instead of leaking the raised exception into the results dict.
 
 
 ## [1.1.0] - 2026-06-27
