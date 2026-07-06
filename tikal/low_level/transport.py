@@ -250,13 +250,23 @@ class MockTransport(Transport):
         toy_id: Unique identifier for the fake device (e.g. ``"Thunder_ID"``).
         name: Human-readable device name (e.g. ``"Thunder1"``).
         battery: Battery percentage the device reports in response to a ``Battery`` command.
+        on_disconnect: Optional callback invoked with ``toy_id`` on every :meth:`disconnect`
+            (intentional or not). Used by the ``MockConnectionBuilder`` to make the device
+            discoverable again once it is no longer connected.
     """
 
-    def __init__(self, toy_id: str, name: str, battery: int = 77):
+    def __init__(
+        self,
+        toy_id: str,
+        name: str,
+        battery: int = 77,
+        on_disconnect: Callable[[str], None] | None = None,
+    ):
         super().__init__(toy_id, name)
         self._connected = True
         self._battery = battery
         self._notify_callback: Callable[[bytes], None] | None = None
+        self._on_disconnect = on_disconnect
 
     @property
     def is_connected(self) -> bool:
@@ -304,6 +314,8 @@ class MockTransport(Transport):
         self._intentional_disconnect = True
         self._connected = False
         self._notify_callback = None
+        if self._on_disconnect is not None:
+            self._on_disconnect(self._toy_id)
 
     def _respond(self, command: str) -> str | None:
         """Compute the device's canned reply to a command (without the ``;`` terminator)."""

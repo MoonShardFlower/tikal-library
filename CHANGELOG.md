@@ -21,6 +21,7 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     - High-Level API: An unexpected disconnect or power-off for an already-removed toy no longer raises KeyError.
     - Web API: The shutdown command now sends a single response instead of two.
     - High-Level API: A failed battery query during background polling is now reported as None to the on_battery_update callback, instead of leaking the raised exception into the results dict.
+    - Low-Level API: MockEstimToys discovery now mirrors real toys' advertising: a toy is hidden from scans while connected and reappears once it is disconnected or removed. Previously connected mock toys showed up as duplicates in scan results.
 
 
 ## [1.1.0] - 2026-06-27

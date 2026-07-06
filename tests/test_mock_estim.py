@@ -164,6 +164,57 @@ async def test_continuous_reports_then_clears(callbacks):
     assert await builder.retrieve_continuous() == []
 
 
+@pytest.mark.asyncio
+async def test_connected_toy_is_hidden_from_discovery(callbacks):
+    builder = MockConnectionBuilder(*callbacks, logger_name="test")
+    assert {t.toy_id for t in await builder.discover_toys()} == {
+        "Thunder_ID",
+        "Lightning_ID",
+    }
+
+    toy = await builder.create_toy(_thunder())
+    # A connected toy stops "advertising" -> only Lightning remains discoverable.
+    assert {t.toy_id for t in await builder.discover_toys()} == {"Lightning_ID"}
+
+    await toy.disconnect()
+    # Disconnecting makes it discoverable again.
+    assert {t.toy_id for t in await builder.discover_toys()} == {
+        "Thunder_ID",
+        "Lightning_ID",
+    }
+
+
+@pytest.mark.asyncio
+async def test_strict_disconnect_makes_toy_discoverable_again(callbacks):
+    # strict_disconnect is the path taken by the High-Level/WebSocket remove flow, so it
+    # must un-hide the toy just like the non-strict disconnect does.
+    builder = MockConnectionBuilder(*callbacks, logger_name="test")
+    toy = await builder.create_toy(_thunder())
+    assert {t.toy_id for t in await builder.discover_toys()} == {"Lightning_ID"}
+
+    await toy.strict_disconnect()
+    assert {t.toy_id for t in await builder.discover_toys()} == {
+        "Thunder_ID",
+        "Lightning_ID",
+    }
+
+
+@pytest.mark.asyncio
+async def test_continuous_scan_re_emits_when_connection_changes(callbacks):
+    builder = MockConnectionBuilder(*callbacks, logger_name="test")
+    updates = []
+    await builder.start_continuous(updates.append)
+    assert {t.toy_id for t in updates[-1]} == {"Thunder_ID", "Lightning_ID"}
+
+    toy = await builder.create_toy(_thunder())
+    # Connecting re-emits a snapshot that excludes the now-connected toy.
+    assert {t.toy_id for t in updates[-1]} == {"Lightning_ID"}
+
+    await toy.disconnect()
+    # Disconnecting re-emits with the toy present again.
+    assert {t.toy_id for t in updates[-1]} == {"Thunder_ID", "Lightning_ID"}
+
+
 # ---------------------------------------------------------------------------
 # Composite ConnectionBuilder integration
 # ---------------------------------------------------------------------------

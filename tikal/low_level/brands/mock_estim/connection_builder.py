@@ -47,6 +47,10 @@ class MockConnectionBuilder:
         self._on_power_off = on_power_off
         self._log = getLogger(logger_name)
         self._scanning = False
+        # toy_ids of currently connected toys. A connected device stops "advertising" and is excluded from discovery until it disconnects again.
+        self._connected: set[str] = set()
+        # The active continuous-scan callback, kept so we can re-emit when connection state changes.
+        self._on_update: Callable[[list[ToyData] | Exception], Any] | None = None
 
     # -----------------------------------------------------------------------
     # Public API
@@ -83,6 +87,7 @@ class MockConnectionBuilder:
                 devices, mirroring the contract of the real builders.
         """
         self._scanning = True
+        self._on_update = on_update
         if on_update:
             on_update([])  # mirror real builders clearing their cache on start
             on_update(self._discovered_toy_data())
@@ -90,6 +95,7 @@ class MockConnectionBuilder:
     async def stop_continuous(self) -> None:
         """Stop "continuous" discovery. Idempotent."""
         self._scanning = False
+        self._on_update = None
 
     async def retrieve_continuous(self) -> list[ToyData]:
         """Return the current snapshot: the fake devices while scanning, otherwise an empty list."""
@@ -121,7 +127,9 @@ class MockConnectionBuilder:
                 f"Invalid model name '{to_connect.model_name}' for MockEstimToys at '{to_connect.toy_id}'."
             )
 
-        transport = MockTransport(to_connect.toy_id, to_connect.name)
+        transport = MockTransport(
+            to_connect.toy_id, to_connect.name, on_disconnect=self._on_toy_disconnect
+        )
         try:
             toy = MockEstimToy(
                 transport,
@@ -131,6 +139,9 @@ class MockConnectionBuilder:
             )
             await toy.start_notifications()
             await toy.set_model_name(to_connect.model_name)
+            # Hide the now-connected toy from discovery and re-emit so any active scan updates.
+            self._connected.add(to_connect.toy_id)
+            self._emit()
             self._log.info(
                 "Connected to %s as %s", to_connect.toy_id, to_connect.model_name
             )
@@ -143,9 +154,20 @@ class MockConnectionBuilder:
     # Private helpers
     # -----------------------------------------------------------------------
 
+    def _on_toy_disconnect(self, toy_id: str) -> None:
+        """A connected toy disconnected: make it discoverable again and re-emit the snapshot."""
+        self._connected.discard(toy_id)
+        self._emit()
+
+    def _emit(self) -> None:
+        """Push the current connection-filtered snapshot to the continuous-scan callback, if scanning."""
+        if self._scanning and self._on_update is not None:
+            self._on_update(self._discovered_toy_data())
+
     def _discovered_toy_data(self) -> list[ToyData]:
-        """Build a fresh ``ToyData`` list for every fake device."""
+        """Build a fresh ``ToyData`` list for every fake device that is not currently connected."""
         return [
             ToyData(device.name, device.toy_id, device.model_name, _BRAND)
             for device in MOCK_ESTIM_DEVICES
+            if device.toy_id not in self._connected
         ]

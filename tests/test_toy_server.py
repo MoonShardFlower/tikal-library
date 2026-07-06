@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import socket
+from typing import Callable
 
 import pytest
 import pytest_asyncio
@@ -80,22 +81,28 @@ class _Client:
                 if msg["event"] == name:
                     return msg
 
-    async def wait_scan_update(self, toy_id: str, timeout: float = 5.0) -> dict:
-        """Wait for a ``scan_update`` whose ``discovered`` list contains ``toy_id``."""
+    async def wait_scan(
+        self, predicate: Callable[[set[str]], bool], timeout: float = 5.0
+    ) -> dict:
+        """Wait for a ``scan_update`` whose set of discovered toy_ids satisfies ``predicate``."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
             for event in self.events:
-                if event.get("event") == "scan_update" and any(
-                    d["toy_id"] == toy_id for d in event["data"].get("discovered", [])
-                ):
-                    return event
+                if event.get("event") == "scan_update":
+                    ids = {d["toy_id"] for d in event["data"].get("discovered", [])}
+                    if predicate(ids):
+                        return event
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise asyncio.TimeoutError(f"{toy_id} not discovered within {timeout}s")
+                raise asyncio.TimeoutError(f"no matching scan_update within {timeout}s")
             msg = json.loads(await asyncio.wait_for(self.raw.recv(), timeout=remaining))
             if "event" in msg:
                 self.events.append(msg)
+
+    async def wait_scan_update(self, toy_id: str, timeout: float = 5.0) -> dict:
+        """Wait for a ``scan_update`` whose ``discovered`` list contains ``toy_id``."""
+        return await self.wait_scan(lambda ids: toy_id in ids, timeout)
 
 
 @pytest_asyncio.fixture
@@ -248,6 +255,34 @@ async def test_scan_surfaces_mock_toys(ws_server):
     update = await client.wait_scan_update("Thunder_ID")
     ids = {d["toy_id"] for d in update["data"]["discovered"]}
     assert {"Thunder_ID", "Lightning_ID"} <= ids
+
+
+async def test_connected_toy_drops_from_scan(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    # Once connected, Thunder stops appearing in scan results; Lightning still does.
+    event = await client.wait_scan(
+        lambda ids: "Thunder_ID" not in ids and "Lightning_ID" in ids
+    )
+    assert "Thunder_ID" not in {d["toy_id"] for d in event["data"]["discovered"]}
+
+
+async def test_removed_toy_reappears_in_scan(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    await client.wait_scan(
+        lambda ids: "Thunder_ID" not in ids
+    )  # hidden while connected
+
+    # Removing the toy (which disconnects via strict_disconnect) must re-advertise it.
+    client.events.clear()  # only consider scan updates emitted after removal
+    remove = await client.request("remove", {"toy_id": "Thunder_ID"})
+    assert remove["success"] is True and remove["data"]["ack"] is True
+
+    event = await client.wait_scan(lambda ids: "Thunder_ID" in ids)
+    assert "Thunder_ID" in {d["toy_id"] for d in event["data"]["discovered"]}
 
 
 # ---------------------------------------------------------------------------
