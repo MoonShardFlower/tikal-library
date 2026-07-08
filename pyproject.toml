@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=82.0.0", "wheel"]
+requires = ["setuptools==83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -16,10 +16,10 @@ authors = [
 ]
 
 dependencies = [
-    "bleak~=2.1.1",
-    "pyserial-asyncio-fast~=0.16",
-    "pydantic~=2.13.4",
-    "websockets~=16.0",
+    "bleak==2.1.1",
+    "pyserial-asyncio-fast==0.16",
+    "pydantic==2.13.4",
+    "websockets==16.0",
 ]
 
 keywords = [
@@ -41,17 +41,24 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = [
-    "black>=26.5.1",
-    "isort>=8.0.1",
-    "pytest>=9.0.3",
-    "pytest-asyncio>=1.4.0",
-    "pytest-cov>=7.0.0",
-    "flake8>=7.3.0",
-    "mypy>=2.1.0",
+    "black~=26.5.1",
+    "isort~=8.0.1",
+    "pytest~=9.0.3",
+    "pytest-asyncio~=1.4.0",
+    "pytest-cov~=7.1.0",
+    "flake8~=7.3.0",
+    "mypy~=2.1.0",
 ]
 
 [project.urls]
 Homepage = "https://github.com/MoonShardFlower/tikal-library"
+Repository = "https://github.com/MoonShardFlower/tikal-library"
+Documentation = "https://tikal-library.readthedocs.io/en/latest/"
+Changelog = "https://github.com/MoonShardFlower/tikal-library/blob/main/CHANGELOG.md"
+Issues = "https://github.com/MoonShardFlower/tikal-library/issues"
+
+[project.scripts]
+tikal-server = "tikal.websocket.cli:main"
 
 [tool.setuptools]
 packages = { find = {} }
@@ -68,6 +75,11 @@ profile = "black"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "strict"
+
+[tool.coverage.run]
+# relative_files lets Codecov merge the coverage reports from the Windows and Linux CI and map them back to the repo
+relative_files = true
+source = ["tikal"]
 
 [tool.mypy]
 python_version = "3.13"
