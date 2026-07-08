@@ -18,20 +18,22 @@ Note:
 """
 
 import traceback
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections import deque
 from logging import getLogger
 from typing import Any, Callable, Optional
 
-from .._private import PatternHandler
+from .._private import BaseToyController
 from ..low_level import LovenseToy, MockEstimToy, Toy
 
 
-class ToyController(ABC):
+class ToyController(BaseToyController):
     """
     Abstract base class for high-level toy control.
 
     Extends the low-level Toy interface with synchronous methods, command queueing, and pattern playback capabilities.
+    The read-only passthroughs to the toy and the pattern-playback engine are inherited from
+    :class:`tikal._private.BaseToyController`; this class adds the synchronous, queue-based control surface.
 
     Example::
 
@@ -64,53 +66,15 @@ class ToyController(ABC):
     """
 
     def __init__(self, toy: Toy, logger_name: str):
-        self._toy = toy
+        super().__init__(toy)
         self._log = getLogger(logger_name)
 
-        # State
         self._command_queue: deque[
             tuple[Callable[[], Any], Optional[Callable[[Any], None]]]
         ] = deque()
-        self._pattern_handler = PatternHandler()
-        self._last_values: dict[str, int | None] = {
-            "intensity1": None,
-            "intensity2": None,
-        }
-        self._accepted_pause = False
         self._connected = False
-        self._is_blocked = False
 
         self._log.info(f"ToyController initialized for {toy.toy_id}")
-
-    @property
-    def model_name(self) -> str:
-        """
-        Get the model name of the toy.
-
-        Returns:
-            str: Model name (e.g., "Nora", "Lush").
-        """
-        return self._toy.model_name
-
-    @property
-    def toy_id(self) -> str:
-        """
-        Get the unique identifier for this toy.
-
-        Returns:
-            str: Toy ID (typically the Bluetooth address).
-        """
-        return self._toy.toy_id
-
-    @property
-    def name(self) -> str:
-        """Returns a human-readable identifier of the toy e.g., Bluetooth name."""
-        return self._toy.name
-
-    @property
-    def brand(self) -> str:
-        """Returns a human-readable identifier of the toy brand e.g., 'Lovense'."""
-        return self._toy.brand
 
     @property
     def is_connected(self) -> bool:
@@ -168,71 +132,6 @@ class ToyController(ABC):
         """
         return self._toy.intensity_names
 
-    @property
-    def max_intensity(self) -> int:
-        """
-        Get the maximum intensity value for this toy.
-
-        Returns:
-            int: Maximum intensity value (e.g., 20 for Lovense toys).
-
-        Example::
-
-                max_val = toy.max_intensity
-                await toy.intensity1(max_val)  # Set to maximum
-        """
-        return self._toy.max_intensity
-
-    @property
-    def current_intensities(self) -> tuple[int, int]:
-        """
-        Get the current intensity values for the toy's capabilities.
-
-        Returns:
-            tuple[int, int]: A tuple of (primary_intensity, secondary_intensity). The secondary intensity is always 0 if the toy has only one capability.
-
-        Example::
-            intensity1, intensity2 = toy.current_intensities
-            print(f"Primary intensity: {intensity1}, Secondary intensity: {intensity2}")")
-        """
-        return self._toy.current_intensities
-
-    @property
-    def is_paused(self) -> bool:
-        """
-        Check if pattern playback is currently paused.
-
-        When paused, the pattern timer stops advancing and toy intensities are set to zero.
-        Manual commands can override the intensity levels
-
-        Returns:
-            bool: True if paused, False otherwise.
-        """
-        return self._pattern_handler.is_paused
-
-    @property
-    def is_blocked(self) -> bool:
-        """
-        Check if the toy is currently blocked.
-
-        When blocked, all intensity commands (manual and pattern-based) are rejected.
-        Toy's intensities are forced to 0.
-
-        Returns:
-            bool: True if blocked, False otherwise.
-        """
-        return self._is_blocked
-
-    @property
-    def pattern_version(self) -> int:
-        """
-        Each time the pattern state changes, the version number is incremented.
-
-        Returns:
-            current version number.
-        """
-        return self._pattern_handler.pattern_version
-
     def set_model_name(
         self,
         model_name: str,
@@ -247,8 +146,8 @@ class ToyController(ABC):
 
         Args:
             model_name: New model name. Must be a valid model for this toy's brand.
-            callback: Optional callback invoked when the command completes. Receives the toy's new model name on success,
-                or None if the update failed (e.g. an invalid model name).
+            callback: Optional callback is invoked when the command completes. Receives the toy's new model name on
+                success, or None if the update failed (e.g., an invalid model name).
 
         Example::
 
@@ -416,51 +315,6 @@ class ToyController(ABC):
         self._pattern_handler.set_pattern(pattern, wraparound, reset_time)
         if not pattern:  # ensure that intensities are 0 if pattern is cleared
             self.stop()
-
-    def get_pattern_time(self) -> float:
-        """
-        Get elapsed time in the current pattern (Time spent paused does not count toward elapsed time).
-
-        Returns:
-            float: Time elapsed in milliseconds since the pattern start or last wraparound. Returns 0.0 if no pattern is set
-
-        Example::
-
-                elapsed = toy.get_pattern_time()
-                print(f"Pattern position: {elapsed}ms")
-        """
-        return self._pattern_handler.get_pattern_time()
-
-    def get_pattern_values(self, pattern_time: float) -> tuple[int, int]:
-        """
-        Get intensity values at a specific time in the pattern.
-
-        Args:
-            pattern_time: Time position in the pattern (milliseconds).
-
-        Returns:
-            tuple[int, int]: (intensity1, intensity2) values at that time.
-
-        Note:
-            For wraparound patterns, time is taken modulo the total pattern duration.
-            For non-wraparound patterns, returns (0, 0) after the pattern completes.
-        """
-        return self._pattern_handler.get_pattern_values(pattern_time)
-
-    def get_pattern_data(self) -> tuple[list[tuple[int, int, int]], bool, bool, float]:
-        """Gets the complete pattern state for visualization.
-
-        Pattern state consists of:
-        - pattern: List of tuples (duration, intensity1, intensity2) defining the pattern segments.
-        - wraparound: Whether the pattern repeats from the beginning after completing the last segment. If False, both
-        Intensities are 0 after the last segment.
-        - is_paused: Whether the pattern is currently paused. Paused patterns do not advance
-        - elapsed_time: Time elapsed since the start of the pattern or last wraparound in ms
-
-        Returns:
-            tuple: (pattern, wraparound, is_paused, elapsed_time)
-        """
-        return self._pattern_handler.get_pattern_data()
 
     def intensity1(
         self, level: int, callback: Optional[Callable[[bool], None]] = None
@@ -685,35 +539,20 @@ class ToyController(ABC):
         # Process queued commands first
         await self._process_command_queue()
 
-        # Then handle pattern playback
-        if not self._pattern_handler.has_active_pattern:
-            return
+        # Then handle pattern playback (shared engine on BaseToyController)
+        await self._run_pattern_playback()
 
-        # Handle a paused or blocked state
-        if self._pattern_handler.is_paused or self._is_blocked:
-            if not self._accepted_pause:
-                # First time entering paused/blocked state - send stop command
-                await self._toy.stop()
-                self._last_values["intensity1"] = None
-                self._last_values["intensity2"] = None
-                self._accepted_pause = True
-            # If already paused/blocked, do nothing (no repeated stop commands)
+    async def _send_stop(self) -> None:
+        """Playback primitive: stop via the non-strict toy method (errors swallowed to a bool)."""
+        await self._toy.stop()
 
-        # Handle active state
-        else:
-            self._accepted_pause = False
+    async def _send_intensity1(self, level: int) -> None:
+        """Playback primitive: set the primary capability via the non-strict toy method."""
+        await self._toy.intensity1(level)
 
-            # Get current values and send commands if values have changed
-            pattern_time = self._pattern_handler.get_pattern_time()
-            intensity1_value, intensity2_value = self.get_pattern_values(pattern_time)
-
-            if intensity1_value != self._last_values["intensity1"]:
-                await self._toy.intensity1(intensity1_value)
-                self._last_values["intensity1"] = intensity1_value
-
-            if intensity2_value != self._last_values["intensity2"]:
-                await self._toy.intensity2(intensity2_value)
-                self._last_values["intensity2"] = intensity2_value
+    async def _send_intensity2(self, level: int) -> None:
+        """Playback primitive: set the secondary capability via the non-strict toy method."""
+        await self._toy.intensity2(level)
 
     async def _process_command_queue(self) -> None:
         """

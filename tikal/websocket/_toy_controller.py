@@ -8,15 +8,17 @@ Meant to be consumed by _ToyHub, which in turn is consumed by ToyServer. ToyServ
 
 from typing import Any
 
-from .._private import PatternHandler
+from .._private import BaseToyController
 from ..low_level import LovenseToy, MockEstimToy, Toy
 
 
-class _ToyController:
+class _ToyController(BaseToyController):
     """
     Parent class for high-level toy control.
 
     Extends the low-level Toy class with additional methods mostly related to pattern playback capabilities.
+    The read-only passthroughs to the toy and the pattern-playback engine are inherited from
+    :class:`tikal._private.BaseToyController`; We add the async control surface, intensity limits, and the battery cache
 
     Args:
         toy: Low-level toy object (Toy instance) for BLE communication.
@@ -24,69 +26,13 @@ class _ToyController:
     """
 
     def __init__(self, toy: Toy, initial_battery: int | None = None):
-        self._toy = toy
-        self._pattern_handler = PatternHandler()
-        self._last_values: dict[str, int | None] = {
-            "intensity1": None,
-            "intensity2": None,
-        }
+        super().__init__(toy)
+        # WebSocket-only state (shared state lives on BaseToyController)
         self._intensity_limits: list[int] = [
             self._toy.max_intensity,
             self._toy.max_intensity,
         ]
-        self._accepted_pause = False
-        self._is_blocked = False
         self._battery = initial_battery
-
-    @property
-    def model_name(self) -> str:
-        """
-        Get the model name of the toy.
-
-        Returns:
-            str: Model name (e.g., "Nora", "Lush").
-        """
-        return self._toy.model_name
-
-    @property
-    def toy_id(self) -> str:
-        """
-        Get the unique identifier for this toy.
-
-        Returns:
-            str: Toy ID (typically the Bluetooth address).
-        """
-        return self._toy.toy_id
-
-    @property
-    def name(self) -> str:
-        """
-        Get a human-readable identifier for this toy.
-
-        Returns:
-             Human-readable identifier of the toy e.g., Bluetooth name.
-        """
-        return self._toy.name
-
-    @property
-    def brand(self) -> str:
-        """
-        Get the brand of the toy.
-
-        Returns:
-            Human-readable identifier of the toy brand e.g., 'Lovense'.
-        """
-        return self._toy.brand
-
-    @property
-    def max_intensity(self) -> int:
-        """
-        Get the maximum intensity value for this toy.
-
-        Returns:
-            int: Maximum intensity value (e.g., 20 for Lovense toys).
-        """
-        return self._toy.max_intensity
 
     @property
     def battery(self) -> int | None:
@@ -97,30 +43,6 @@ class _ToyController:
             Current battery level (0-100) or None if the toy has no battery.
         """
         return self._battery
-
-    @property
-    def is_paused(self) -> bool:
-        """
-        Check if pattern playback is currently paused.
-
-        When paused, the pattern timer stops advancing and toy intensities are set to zero. Manual commands can override the intensity levels
-
-        Returns:
-            bool: True if paused, False otherwise.
-        """
-        return self._pattern_handler.is_paused
-
-    @property
-    def is_blocked(self) -> bool:
-        """
-        Check if the toy is currently blocked.
-
-        When blocked, all intensity commands (manual and pattern-based) are rejected. Toy's intensities are forced to 0.
-
-        Returns:
-            bool: True if blocked, False otherwise.
-        """
-        return self._is_blocked
 
     async def set_model_name(self, model_name: str) -> None:
         """
@@ -445,41 +367,26 @@ class _ToyController:
         """
         Process pattern playback. This method is called periodically by the _ToyHub to execute pattern playback.
 
+        Delegates to the shared engine on :class:`tikal._private.BaseToyController`; the strict ``_send_*`` primitives
+        below let its ``ConnectionError`` / ``UnexpectedToyResponse`` escape so ``_ToyHub`` can retry and reconnect.
+
         Raises:
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
             ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout
         """
-        # Handle pattern playback
-        if not self._pattern_handler.has_active_pattern:
-            return
+        await self._run_pattern_playback()
 
-        # Handle a paused or blocked state
-        if self._pattern_handler.is_paused or self._is_blocked:
-            if not self._accepted_pause:
-                # First time entering paused/blocked state - send stop command
-                await self._toy.strict_stop()
-                self._last_values["intensity1"] = None
-                self._last_values["intensity2"] = None
-                self._accepted_pause = True
-            # If already paused/blocked, do nothing (no repeated stop commands)
+    async def _send_stop(self) -> None:
+        """Playback primitive: stop via the strict toy method (raises on failure)."""
+        await self._toy.strict_stop()
 
-        # Handle active state
-        else:
-            self._accepted_pause = False
+    async def _send_intensity1(self, level: int) -> None:
+        """Playback primitive: set the primary capability via the strict toy method (raises on failure)."""
+        await self._toy.strict_intensity1(level)
 
-            # Get current values and send commands if values have changed
-            pattern_time = self._pattern_handler.get_pattern_time()
-            intensity1_value, intensity2_value = (
-                self._pattern_handler.get_pattern_values(pattern_time)
-            )
-
-            if intensity1_value != self._last_values["intensity1"]:
-                await self._toy.strict_intensity1(intensity1_value)
-                self._last_values["intensity1"] = intensity1_value
-
-            if intensity2_value != self._last_values["intensity2"]:
-                await self._toy.strict_intensity2(intensity2_value)
-                self._last_values["intensity2"] = intensity2_value
+    async def _send_intensity2(self, level: int) -> None:
+        """Playback primitive: set the secondary capability via the strict toy method (raises on failure)."""
+        await self._toy.strict_intensity2(level)
 
     async def fetch_and_update_battery(self) -> int | None:
         """
