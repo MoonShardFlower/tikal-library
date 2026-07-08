@@ -12,12 +12,14 @@ from .data import (
     MIN_SEGMENT_LENGTH,
     MOCK_ESTIM_DEVICES,
     MOCK_ESTIM_TOY_NAMES,
+    MOCK_ESTIM_TOY_SPECIFICATIONS,
 )
 from .toy import MockEstimToy
 
 __all__ = [
     "MockConnectionBuilder",
     "MockEstimToy",
+    "MOCK_ESTIM_TOY_SPECIFICATIONS",
     "MOCK_ESTIM_TOY_NAMES",
     "MOCK_ESTIM_DEVICES",
     "MIN_SEGMENT_LENGTH",

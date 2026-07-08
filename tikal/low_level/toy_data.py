@@ -160,3 +160,31 @@ class ToyCommands:
     intensity1_command: str
     intensity2_name: str | None = None
     intensity2_command: str | None = None
+
+
+@dataclass(frozen=True)
+class ToySpecification:
+    """
+    The complete per-model definition of a toy: its capabilities plus behavior hints.
+
+    Lets a brand keep its per-model data in **one** place. The brand's public lookup tables (command mapping,
+    recommended interval, rotation support) are then derived from a mapping of ``model_name -> ToySpecification``
+
+    Attributes:
+        commands: The model's capability/command mapping (see :class:`ToyCommands`).
+        min_interval: Recommended minimum interval between intensity changes, in milliseconds. Callers are free to ignore it.
+        supports_rotation: Whether the model can change its rotation direction. Defaults to ``False``.
+
+    Example:
+        ::
+
+            spec = ToySpecification(
+                ToyCommands("Vibration", "Vibrate", "Rotation", "Rotate"),
+                min_interval=200,
+                supports_rotation=True,
+            )
+    """
+
+    commands: ToyCommands
+    min_interval: int
+    supports_rotation: bool = False

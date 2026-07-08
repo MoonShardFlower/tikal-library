@@ -2,6 +2,7 @@ from .brand_handler import BLEBrandHandler
 from .brands import BRANDS
 from .brands.lovense import (
     LOVENSE_TOY_NAMES,
+    LOVENSE_TOY_SPECIFICATIONS,
     MIN_SEGMENT_LENGTH,
     ROTATION_TOY_NAMES,
     LovenseToy,
@@ -20,7 +21,9 @@ from .toy import Toy, UnexpectedToyResponse
 from .toy_data import (
     BadModelError,
     InvalidModelError,
+    ToyCommands,
     ToyData,
+    ToySpecification,
     ValidationError,
 )
 from .transport import BleTransport, MockTransport, Transport, UsbTransport
@@ -41,12 +44,15 @@ __all__ = [
     "Toy",
     "UnexpectedToyResponse",
     "BRANDS",
+    "LOVENSE_TOY_SPECIFICATIONS",
     "LOVENSE_TOY_NAMES",
     "ROTATION_TOY_NAMES",
     "MIN_SEGMENT_LENGTH",
     "BadModelError",
     "InvalidModelError",
+    "ToyCommands",
     "ToyData",
+    "ToySpecification",
     "ValidationError",
     "Transport",
     "UsbTransport",
