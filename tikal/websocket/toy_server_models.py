@@ -232,7 +232,7 @@ class SetPatternData(BaseModel):
 
     Attributes:
         toy_id (str): Identifier for the toy for which the pattern is being set.
-        pattern (list[tuple[int, int, int]]): The sequence of segments in the pattern, where each segment is (intensity1, intensity2, duration in ms)
+        pattern (list[tuple[int, int, int]]): The sequence of segments in the pattern, where each segment is (duration_ms, intensity1, intensity2)
         wraparound (bool): Determines if the pattern should wrap around when the end is reached.
         reset_time (bool): Indicates whether the pattern should reset the time counter after being set.
     """

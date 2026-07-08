@@ -554,7 +554,7 @@ async def _cmd_set_pattern(hub: _ToyHub, data: SetPatternData) -> dict[str, Any]
     """
     Load a new intensity pattern onto a toy and start playback.
 
-    Each segment of the pattern specifies intensity1, intensity2, duration_ms.
+    Each segment of the pattern specifies duration_ms, intensity1, intensity2.
     The toy steps through segments in order, advancing every duration_ms millisecond.
     If wraparound is True, the pattern loops back to the first segment upon completing the last segment; else both intensities are set to zero and playback stops.
 
@@ -562,7 +562,7 @@ async def _cmd_set_pattern(hub: _ToyHub, data: SetPatternData) -> dict[str, Any]
         hub: _ToyHub instance managing the toy.
         data: Validated SetPatternData containing:
             - toy_id: Identifier of the target toy.
-            - pattern: Sequence of (intensity1, intensity2, duration_ms) tuples.
+            - pattern: Sequence of (duration_ms, intensity1, intensity2) tuples.
             - wraparound: Whether the pattern loops after its final segment.
             - reset_time: If True, reset the elapsed-time counter before starting playback; if False, continue from the current elapsed time.
 

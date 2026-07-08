@@ -110,6 +110,7 @@ class ToyHub:
         self._lock = Lock()
         self._last_battery_update = 0.0
         self._cancel_communication_loop: Optional[Callable[[], None]] = None
+        self._shut_down = False
         # Single transport-agnostic entry point composing every per-transport connection builder.
         self._connection_builder = ConnectionBuilder(
             self._handle_disconnect,
@@ -559,20 +560,21 @@ class ToyHub:
                     print(f"Model updated to {result.model_name}")
         """
         with self._lock:
-            if toy_id not in self._toy_controllers:
+            controller = self._toy_controllers.get(toy_id)
+            if controller is None:
                 return ValueError(
                     f"Attempted to update model name for unknown toy {toy_id}"
                 )
-            name = self._toy_controllers[toy_id].toy.name
-            self._toy_cache.update({name: model_name})
-            try:
-                self._runner.run_async(
-                    self._toy_controllers[toy_id].toy.set_model_name(model_name)
-                )
-            except Exception as e:
-                return e
-            self._log.info(f"Updated model name for toy {toy_id} to {model_name}")
-            return self._toy_controllers[toy_id]
+            self._toy_cache.update({controller.toy.name: model_name})
+
+        # Must NOT run while holding self._lock: the background communication loop also acquires
+        # self._lock every tick, so blocking on run_async here would stall the loop thread.
+        try:
+            self._runner.run_async(controller.toy.set_model_name(model_name))
+        except Exception as e:
+            return e
+        self._log.info(f"Updated model name for toy {toy_id} to {model_name}")
+        return controller
 
     # ------------------------------------------------------------------------------------------------------------------
     # Controller Management
@@ -836,7 +838,13 @@ class ToyHub:
         Note:
             After calling shutdown(), the ToyHub instance should not be reused.
             Create a new instance if you need to start working with toys again.
+            The method is idempotent: calling it again after the first shutdown is a no-op.
         """
+        if self._shut_down:
+            self._log.debug("shutdown() called again; already shut down.")
+            return
+        self._shut_down = True
+
         self._log.info("Shutting down CommunicationHandler...")
         # Stop communication loop
         if self._cancel_communication_loop is not None:
