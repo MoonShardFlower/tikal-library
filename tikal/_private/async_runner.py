@@ -2,7 +2,6 @@
 
 import asyncio
 import threading
-import time
 from typing import Any, Awaitable, Callable, Coroutine, Optional, Sequence, TypeVar
 
 T = TypeVar("T")
@@ -147,16 +146,25 @@ class AsyncRunner:
         return cancel
 
     def _setup_event_loop(self) -> None:
-        """Set up a dedicated event loop in a separate thread."""
+        """
+        Set up a dedicated event loop in a separate thread.
+
+        Blocks until the background thread has created the loop. Callers may schedule work immediately after construction.
+        """
+        loop_ready = threading.Event()
 
         def run_loop() -> None:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
+            loop_ready.set()
             self.loop.run_forever()
 
         self.loop_thread = threading.Thread(target=run_loop, daemon=True)
         self.loop_thread.start()
-        time.sleep(0.1)  # Wait a moment for the loop to be ready
+        if not loop_ready.wait(timeout=5.0):
+            raise RuntimeError(
+                "AsyncRunner event loop failed to start within 5 seconds"
+            )
 
     def shutdown(self) -> None:
         """
