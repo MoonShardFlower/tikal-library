@@ -12,7 +12,7 @@ import logging
 import traceback
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, Awaitable, Callable, Coroutine, TypeVar
 
 from bleak import BleakClient, BleakScanner
 
@@ -204,12 +204,17 @@ class _ToyHub:
             scanner = BleakScanner
             client = BleakClient
 
+        self._loop: asyncio.AbstractEventLoop | None = None
+
         def on_disconnect_helper(toy_id: str) -> None:
-            asyncio.create_task(self._on_disconnect(toy_id))
+            self._schedule_on_loop(self._on_disconnect(toy_id))
+
+        def on_power_off_helper(toy_id: str) -> None:
+            self._schedule_on_loop(self._on_power_off(toy_id))
 
         self._connection_builder = ConnectionBuilder(
             on_disconnect_helper,
-            self._on_power_off,
+            on_power_off_helper,
             log_name,
             scanner,
             client,
@@ -231,6 +236,7 @@ class _ToyHub:
         """Start the background processing and battery polling loops. Call before using _ToyHub. Idempotent."""
         self._log.info("Starting _ToyHub.")
         self._shutting_down = False
+        self._loop = asyncio.get_running_loop()
         if self._process_task is None or self._process_task.done():
             self._process_task = asyncio.get_running_loop().create_task(
                 self._process_loop(), name="toy-process-loop"
@@ -315,6 +321,20 @@ class _ToyHub:
     # -------------------------------------------------------------------------
     # Private
     # -------------------------------------------------------------------------
+
+    def _schedule_on_loop(self, coro: Coroutine[Any, Any, Any]) -> None:
+        """
+        Schedule *coro* on the hub's event loop from any thread.
+
+        The low-level BLE callbacks (unexpected disconnect, power-off) can be invoked from a Bleak worker thread, so we
+        marshal the coroutine onto the loop captured in :meth:`startup`. If the loop is not available yet
+        (no toy can be connected before startup), the coroutine is closed to avoid a "coroutine was never awaited" warning.
+        """
+        loop = self._loop
+        if loop is None:
+            coro.close()
+            return
+        loop.call_soon_threadsafe(lambda: loop.create_task(coro))
 
     async def _apply_discovery(
         self,
