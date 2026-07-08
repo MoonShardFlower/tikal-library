@@ -83,4 +83,4 @@ Please note that I am NOT affiliated to the Lovense Company in any way. All bugs
 
 
 ## License
-This project is licensed under MIT. See LICENSE.txt
+This project is licensed under MIT. See LICENSE

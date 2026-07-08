@@ -9,10 +9,14 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 
 ### Added
     - Packaging: Added a py.typed marker. Downstream type checkers now see tikal's inline type hints.
+    - Low-Level API: Added ToySpecification, a per-model dataclass (commands + recommended interval + rotation support). Each brand now defines its models once (LOVENSE_TOY_SPECIFICATIONS / MOCK_ESTIM_TOY_SPECIFICATIONS) and derives its existing lookup tables from it. 
+        The public LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES and MIN_SEGMENT_LENGTH constants are unchanged in type and value.
 
 ### Changed
     - Web API:  Expanded Status webpage 
                 (found at http://<host>:<port>/ where host and port are replaced with the configuration used to start the server e.g. http://localhost:8142/)
+    - Internal: The High-Level ToyController and the WebSocket _ToyController now share a common base (BaseToyController) that owns the read-only toy passthroughs and the pattern-playback engine. No changes to the API.
+    - High-Level API: ToyHub.shutdown() is now idempotent.
 
 ### Fixed
     - Low-Level API: set_model_name now validates the NEW model's commands (and restores the previous model name if they fail) instead of validating the already-set model. Changing a connected toy to a different valid-but-wrong model is now correctly rejected.
@@ -22,6 +26,8 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     - Web API: The shutdown command now sends a single response instead of two.
     - High-Level API: A failed battery query during background polling is now reported as None to the on_battery_update callback, instead of leaking the raised exception into the results dict.
     - Low-Level API: MockEstimToys discovery now mirrors real toys' advertising: a toy is hidden from scans while connected and reappears once it is disconnected or removed. Previously connected mock toys showed up as duplicates in scan results.
+    - Low-Level API: Per-model brand data (commands, recommended interval, rotation support) is now derived from a single source of truth per brand, so the lookup tables can no longer drift out of sync.
+    - Docs: Corrected the pattern-segment order in the WebSocket set_pattern docstrings to (duration_ms, intensity1, intensity2), matching the actual protocol and docs/websocket/actions.md.
 
 
 ## [1.1.0] - 2026-06-27
