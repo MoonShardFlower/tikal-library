@@ -108,14 +108,23 @@ jobs:
         shell: pwsh
         run: |
           .\venv\Scripts\Activate.ps1
-          python -m pytest tests/ -v --cov=tikal --cov-report=term-missing
+          python -m pytest tests/ -v --cov=tikal --cov-report=term-missing --cov-report=xml
 
       - name: Run Tests (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           source venv/bin/activate
-          python -m pytest tests/ -v --cov=tikal --cov-report=term-missing
+          python -m pytest tests/ -v --cov=tikal --cov-report=term-missing --cov-report=xml
+
+      # Upload coverage to Codecov. Runs on every matrix job; Codecov merges the reports for a commit.
+      # relative_files (see pyproject.toml) lets the Windows and Linux reports line up.
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          fail_ci_if_error: false
 
   # Static type checking with mypy. Config is in [tool.mypy] in pyproject.toml.
   type-check:
