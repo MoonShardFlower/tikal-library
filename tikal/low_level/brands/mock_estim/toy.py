@@ -46,6 +46,7 @@ class MockEstimToy(Toy):
     ):
         super().__init__(transport, model_name, logger_name)
         self._on_power_off = on_power_off
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def brand(self) -> str:
@@ -281,15 +282,18 @@ class MockEstimToy(Toy):
         Raises:
             ConnectionError: Failed to start notifications.
         """
+        self._loop = asyncio.get_running_loop()
         await self._transport.start_notify(self._notification_callback)
 
     def _notification_callback(self, data: bytes) -> None:
         """Decode an inbound message, queue it, and handle power-off notifications."""
         try:
             msg = data.decode("utf-8").rstrip(";")
-            asyncio.get_event_loop().call_soon_threadsafe(
-                self._response_queue.put_nowait, msg
-            )
+            # Hand the message to the event loop thread-safely. The loop is captured in start_notifications().
+            if self._loop is not None:
+                self._loop.call_soon_threadsafe(self._response_queue.put_nowait, msg)
+            else:
+                self._response_queue.put_nowait(msg)
             if msg.strip().upper() == "POWEROFF":
                 self._on_power_off(self._toy_id)
         except Exception as e:

@@ -41,6 +41,7 @@ Example:
 """
 
 import asyncio
+import copy
 import traceback
 from logging import getLogger
 from pathlib import Path
@@ -234,9 +235,14 @@ class ToyHub:
                 on_update([])  # Clear any now stale toy
                 return
             else:
+                # Copy before mutating: in continuous-scan mode the builder re-emits the same ToyData objects,
+                # so writing model_name in place would corrupt its shared snapshot.
+                filled = []
                 for td in toys:
+                    td = copy.copy(td)
                     td.model_name = self._toy_cache.get_model_name(td.name)
-                on_update(toys)
+                    filled.append(td)
+                on_update(filled)
 
         self._runner.run_async(self._connection_builder.start_continuous(callback))
 
@@ -279,6 +285,8 @@ class ToyHub:
             self._connection_builder.discover_toys(timeout), timeout * 2
         )
         for td in toy_data:
+            # Copy so filling in the cached model name can't mutate the connection builder's shared discovery snapshot.
+            td = copy.copy(td)
             td.model_name = self._toy_cache.get_model_name(td.name)
             result.append(td)
         self._log.info(f"Discovered {len(result)} toy(s)")
@@ -319,6 +327,8 @@ class ToyHub:
             try:
                 toy_data = await self._connection_builder.discover_toys(timeout)
                 for td in toy_data:
+                    # Copy before mutating (see discover_toys_blocking / start_discovery).
+                    td = copy.copy(td)
                     td.model_name = self._toy_cache.get_model_name(td.name)
                     result.append(td)
                 self._log.info(f"Discovered {len(result)} toy(s)")

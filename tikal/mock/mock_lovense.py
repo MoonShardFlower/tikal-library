@@ -280,7 +280,7 @@ class MockBleakClient:
             MockBleakClient.is_intensity_command(command)
             and self._first_intensity_time is None
         ):
-            self._first_intensity_time = asyncio.get_event_loop().time()
+            self._first_intensity_time = asyncio.get_running_loop().time()
 
             # Schedule behavior-specific actions
             if self._behavior == MockBehavior.CONNECTION_FAILURE:
@@ -318,7 +318,7 @@ class MockBleakClient:
         if self._first_intensity_time is None:
             return False
 
-        elapsed = asyncio.get_event_loop().time() - self._first_intensity_time
+        elapsed = asyncio.get_running_loop().time() - self._first_intensity_time
         return elapsed >= 5.0
 
     async def _trigger_connection_failure(self) -> None:

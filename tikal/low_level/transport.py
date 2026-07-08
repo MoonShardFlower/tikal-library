@@ -231,7 +231,7 @@ class BleTransport(Transport):
         except Exception as e:
             raise ConnectionError(
                 f"Error disconnecting from toy at {self.toy_id}: {e!r}"
-            )
+            ) from e
         finally:
             self._client = None
 
@@ -399,7 +399,9 @@ class UsbTransport(Transport):
             self._connected = True
             await self.start_notify(self._notify_callback)
         except Exception as e:
-            raise ConnectionError(f"Error connecting to toy at {self.toy_id}: {e!r}")
+            raise ConnectionError(
+                f"Error connecting to toy at {self.toy_id}: {e!r}"
+            ) from e
 
     async def start_notify(self, callback: Callable[[bytes], None]) -> None:
         """
@@ -448,7 +450,7 @@ class UsbTransport(Transport):
         except Exception as e:
             raise ConnectionError(
                 f"Error disconnecting from toy at {self.toy_id}: {e!r}"
-            )
+            ) from e
         finally:
             self._reader = None
             self._writer = None
