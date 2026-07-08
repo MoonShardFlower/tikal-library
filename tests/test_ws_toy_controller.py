@@ -188,3 +188,45 @@ async def test_clearing_pattern_stops_toy(controller, mock_toy):
     await controller.set_pattern([])
     mock_toy.strict_stop.assert_awaited()
     assert controller.get_state()["pattern"] == []
+
+
+@pytest.mark.asyncio
+async def test_resume_after_pause_redrives_pattern(controller, mock_toy):
+    # Drive -> pause (latches a stop, forgets last-sent values) -> resume must re-send the values.
+    await controller.set_pattern([(10_000, 5, 3)])
+    await controller.process_communication()
+
+    await controller.toggle_pause()  # pause (strict_stop)
+    await controller.process_communication()  # latch: last_values reset
+
+    mock_toy.reset_mock()
+    await controller.toggle_pause()  # resume
+    await controller.process_communication()  # re-drive from scratch
+    mock_toy.strict_intensity1.assert_awaited_once_with(5)
+    mock_toy.strict_intensity2.assert_awaited_once_with(3)
+
+
+@pytest.mark.asyncio
+async def test_blocked_pattern_latches_single_stop(controller, mock_toy):
+    # While blocked, playback sends exactly one stop and then holds (no repeated stops).
+    await controller.set_pattern([(10_000, 5, 3)])
+    await controller.process_communication()  # drive
+    await controller.toggle_block()  # blocks + stop
+
+    mock_toy.reset_mock()
+    await controller.process_communication()  # playback stop, latch
+    mock_toy.strict_stop.assert_awaited_once()
+
+    mock_toy.reset_mock()
+    await controller.process_communication()  # latched -> no further stop
+    mock_toy.strict_stop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_playback_propagates_connection_error(controller, mock_toy):
+    # The strict playback path must let ConnectionError escape process_communication;
+    # _ToyHub relies on this to trigger its retry / reconnect handling.
+    await controller.set_pattern([(10_000, 5, 3)])
+    mock_toy.strict_intensity1.side_effect = ConnectionError("boom")
+    with pytest.raises(ConnectionError):
+        await controller.process_communication()

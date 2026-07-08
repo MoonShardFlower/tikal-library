@@ -156,3 +156,33 @@ async def test_clearing_pattern_stops_toy(controller, mock_toy):
 
     mock_toy.stop.assert_awaited()
     assert controller.get_pattern_data()[0] == []  # pattern cleared
+
+
+@pytest.mark.asyncio
+async def test_resume_after_pause_redrives_pattern(controller, mock_toy):
+    # Drive -> pause (latches a stop, forgets last-sent values) -> resume must re-send the values.
+    controller.set_pattern([(10_000, 5, 3)])
+    await controller.process_communication()
+
+    controller.set_paused(True)
+    await controller.process_communication()  # pause latch: stop + last_values reset
+
+    mock_toy.reset_mock()
+    controller.set_paused(False)
+    await controller.process_communication()  # resume: re-drive from scratch
+    mock_toy.intensity1.assert_awaited_once_with(5)
+    mock_toy.intensity2.assert_awaited_once_with(3)
+
+
+@pytest.mark.asyncio
+async def test_blocked_pattern_latches_single_stop(controller, mock_toy):
+    # While blocked, playback sends exactly one stop and then holds (no repeated stops).
+    controller.set_pattern([(10_000, 5, 3)])
+    await controller.process_communication()  # drive
+    controller.toggle_block()  # queues a stop + blocks
+    await controller.process_communication()  # drain queued + playback stop, latch
+
+    mock_toy.reset_mock()
+    await controller.process_communication()  # latched -> no further stop
+    mock_toy.stop.assert_not_called()
+    mock_toy.intensity1.assert_not_called()
