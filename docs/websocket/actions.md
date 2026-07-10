@@ -756,7 +756,11 @@ Send `null` to withdraw your limit, letting the remaining clients' limits (or `m
 ### 23. `enable_heartbeat`
 Subscribe or unsubscribe to the heartbeat watchdog. Clients that enable the heartbeat watchdog **must** send a `heartbeat` command
 at least every 3 seconds. If the server does not receive a heartbeat in time, it stops **all** toys as a safety measure
-and broadcasts a `heartbeat_timeout` event (see **events.md**). The subscription is automatically removed on disconnect.
+and broadcasts a `heartbeat_timeout` event (see **events.md**).
+
+The safety stop also fires if a subscribed client **disconnects** while still subscribed (a crash or dropped connection
+is regarded as client malfunction). If you want to disconnect *without* stopping the toys, send `enable_heartbeat` with 
+`enable: false` first.
 
 This is an optional protective measure against client malfunction (e.g., the client freezing or crashing while toys are active).
 

@@ -197,11 +197,14 @@ Similar to replies, you can use the success field of the event envelope to deter
 ---
 
 ### 7. `heartbeat_timeout`
-A client subscribed to the heartbeat watchdog failed to send a `heartbeat` command within 3 seconds.
-As a safety measure, the server stops **all** toys. The timed-out client's heartbeat subscription is removed automatically.
+Fired when the heartbeat watchdog triggers a safety stop. This happens in two cases:
+- A client subscribed to the heartbeat watchdog failed to send a `heartbeat` command within 3 seconds, or
+- A subscribed client **disconnected** while still subscribed (crash or dropped connection).
+
+In both cases the server stops **all** toys as a safety measure and removes the affected client's subscription.
 See the `enable_heartbeat` and `heartbeat` actions in **actions.md** for details.
 
-This event is broadcast to **all** connected clients, not just the one that timed out.
+This event is broadcast to **all** connected clients, not just the affected one.
 
 **Data**
 ```json
@@ -210,8 +213,8 @@ This event is broadcast to **all** connected clients, not just the one that time
 }
 ```
 
-| Field     | Type   | Description                                  |
-|-----------|--------|----------------------------------------------|
-| `message` | string | Human-readable description of what happened. |
+| Field     | Type   | Description                                                                                       |
+|-----------|--------|---------------------------------------------------------------------------------------------------|
+| `message` | string | Human-readable description of what happened (distinguishes a missed heartbeat from a disconnect). |
 
 ---
