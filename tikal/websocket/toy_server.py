@@ -1408,6 +1408,17 @@ class ToyServer:
         WebSocket upgrade requests (Upgrade: websocket) are passed through by returning None.
         """
         if request.headers.get("upgrade", "").lower() == "websocket":
+            if "origin" in request.headers:
+                self._log.warning(
+                    "Rejected WebSocket with Origin header: %s",
+                    request.headers["origin"],
+                )
+                return Response(
+                    status_code=http.HTTPStatus.FORBIDDEN.value,
+                    reason_phrase=http.HTTPStatus.FORBIDDEN.phrase,
+                    headers=Headers(),
+                    body=b"Browser connections are not allowed",
+                )
             return None
 
         body = (await self._status_page.build_html(len(self._clients))).encode("utf-8")
