@@ -7,9 +7,14 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 
 ## [Unreleased]
 
+
+## [1.2.0] - 2026-07-10
+
 ### Added
+    - Packaging: Added a `tikal-server` console entry point. `pip install tikal` now provides the `tikal-server` command (previously only the bundled Windows executable or `python -m tikal.websocket.cli` worked).
     - Packaging: Added a py.typed marker. Downstream type checkers now see tikal's inline type hints.
-    - Low-Level API: Added ToySpecification, a per-model dataclass (commands + recommended interval + rotation support). Each brand now defines its models once (LOVENSE_TOY_SPECIFICATIONS / MOCK_ESTIM_TOY_SPECIFICATIONS) and derives its existing lookup tables from it. 
+    - Low-Level API: Added ToySpecification, a per-model dataclass (commands + recommended interval + rotation support). 
+        Each brand now defines its models once (LOVENSE_TOY_SPECIFICATIONS / MOCK_ESTIM_TOY_SPECIFICATIONS) and derives its existing lookup tables from it. 
         The public LOVENSE_TOY_NAMES, ROTATION_TOY_NAMES and MIN_SEGMENT_LENGTH constants are unchanged in type and value.
 
 ### Changed
@@ -19,15 +24,23 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     - High-Level API: ToyHub.shutdown() is now idempotent.
 
 ### Fixed
-    - Low-Level API: set_model_name now validates the NEW model's commands (and restores the previous model name if they fail) instead of validating the already-set model. Changing a connected toy to a different valid-but-wrong model is now correctly rejected.
+    - Low-Level API: set_model_name now validates the NEW model's commands (and restores the previous model name if they fail) instead of validating the already-set model. 
+        Changing a connected toy to a different valid-but-wrong model is now correctly rejected.
     - Low-Level API: Connecting with a lower-case model_name no longer fails. Model names are now case-insensitive on every path, as documented.
     - High-Level API: Discovery failures no longer raise TypeError when no on_error callback was provided to ToyHub.
     - High-Level API: An unexpected disconnect or power-off for an already-removed toy no longer raises KeyError.
     - Web API: The shutdown command now sends a single response instead of two.
     - High-Level API: A failed battery query during background polling is now reported as None to the on_battery_update callback, instead of leaking the raised exception into the results dict.
-    - Low-Level API: MockEstimToys discovery now mirrors real toys' advertising: a toy is hidden from scans while connected and reappears once it is disconnected or removed. Previously connected mock toys showed up as duplicates in scan results.
+    - Low-Level API: MockEstimToys discovery now mirrors real toys' advertising: a toy is hidden from scans while connected and reappears once it is disconnected or removed.
+        Previously connected mock toys showed up as duplicates in scan results.
     - Low-Level API: Per-model brand data (commands, recommended interval, rotation support) is now derived from a single source of truth per brand, so the lookup tables can no longer drift out of sync.
     - Docs: Corrected the pattern-segment order in the WebSocket set_pattern docstrings to (duration_ms, intensity1, intensity2), matching the actual protocol and docs/websocket/actions.md.
+    - WebSocket API: Toy power-off notifications are now handled. The async power-off handler had been passed to the connection builder as a sync callback, so the resulting coroutine was never awaited: 
+        a toy powering off never produced a `powered_off` status and was only cleaned up later via the disconnect/lost path.
+    - Low-Level API: MockEstimToy now captures the running event loop when notifications start (mirroring LovenseToy) instead of calling asyncio.get_event_loop().
+    - Mock: MockBleakClient now uses asyncio.get_running_loop() instead of the deprecated asyncio.get_event_loop().
+    - High-Level API: The discover_* methods now return defensive copies of ToyData, so filling in cached model names can no longer mutate the connection builder's shared continuous-scan snapshot.
+    - Low-Level API: BleTransport.disconnect and UsbTransport.reconnect/disconnect now chain the underlying exception (raise ... from e).
 
 
 ## [1.1.0] - 2026-06-27
