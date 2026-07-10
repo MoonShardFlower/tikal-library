@@ -7,6 +7,16 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 
 ## [Unreleased]
 
+### Added
+    - Web API: New documentation file in ./docs/websocket/security.md
+
+### Changed
+    - Web API: Status webpage performs an origin check. Other webpages are forbidden to access the status page.
+    - Web API: binding the websocket server to a non-localhost address is now only allowed if the server is started with the --insecure flag. Else an error message is logged and the server terminated.
+
+### Fixed
+    - Low-Level API: In-memory ToyCache now properly updates. Previously if the cache path was empty, the in-memory cache was not updated.
+    - High-Level API + WebSocket API: Control loop now runs at interval = 50ms instead of interval + work_time ms
 
 ## [1.2.0] - 2026-07-10
 

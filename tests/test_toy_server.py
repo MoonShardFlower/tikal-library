@@ -26,7 +26,7 @@ from tikal.websocket._toy_hub import (
     ToyStatus,
     UnavailableToyError,
 )
-from tikal.websocket.toy_server import ToyServer
+from tikal.websocket.toy_server import InsecureBindError, ToyServer
 
 pytestmark = pytest.mark.asyncio
 
@@ -402,9 +402,108 @@ async def test_heartbeat_timeout_stops_toys(ws_server):
     assert state["data"]["current_intensities"] == [0, 0]
 
 
+async def test_heartbeat_client_disconnect_stops_toys(ws_server):
+    """Dead-man's switch: an armed heartbeat client vanishing stops all toys and notifies the others."""
+    server, connect = ws_server
+    controller = await connect()  # arms the heartbeat and drives the toy
+    observer = await connect()  # stays connected to observe the safety stop
+
+    await _scan_and_add(controller, "Thunder_ID", "Thunder")
+    await controller.request("intensity1", {"toy_id": "Thunder_ID", "intensity": 50})
+    await controller.request("enable_heartbeat", {"enable": True})
+
+    # The controller crashes / drops the connection without disabling the heartbeat first.
+    await controller.raw.close()
+
+    event = await observer.wait_event("heartbeat_timeout")
+    assert event["success"] is True
+
+    state = await observer.request("get_state", {"toy_id": "Thunder_ID"})
+    assert state["data"]["current_intensities"] == [0, 0]
+
+
+async def test_heartbeat_disabled_client_disconnect_does_not_stop_toys(ws_server):
+    """A client that unsubscribes before leaving must NOT trigger the safety stop."""
+    server, connect = ws_server
+    controller = await connect()
+    observer = await connect()
+
+    await _scan_and_add(controller, "Thunder_ID", "Thunder")
+    await controller.request("intensity1", {"toy_id": "Thunder_ID", "intensity": 50})
+    await controller.request("enable_heartbeat", {"enable": True})
+    await controller.request("enable_heartbeat", {"enable": False})  # graceful opt-out
+    await controller.raw.close()
+    await asyncio.sleep(0.1)  # let the server-side disconnect handler run
+
+    # No safety stop fired: the toy keeps its intensity.
+    state = await observer.request("get_state", {"toy_id": "Thunder_ID"})
+    assert state["data"]["current_intensities"] == [50, 0]
+    assert not any(e.get("event") == "heartbeat_timeout" for e in observer.events)
+
+
+# ---------------------------------------------------------------------------
+# Origin check (cross-site WebSocket hijacking guard)
+# ---------------------------------------------------------------------------
+
+
+async def test_origin_check_rejects_browser_origin(ws_server):
+    """A browser-style Origin is rejected at the handshake; native clients (no Origin) connect fine."""
+    server, connect = ws_server
+
+    native = await connect()  # fixture client sends no Origin header
+    assert (await native.request("get_brands"))["success"] is True
+
+    with pytest.raises(websockets.exceptions.InvalidStatus):
+        await websockets.connect(
+            f"ws://localhost:{server._port}",
+            additional_headers={"Origin": "http://evil.example"},
+        )
+
+# ---------------------------------------------------------------------------
+# Insecure-bind guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "host", ["0.0.0.0", "::", "192.168.1.10", "toys.example.com", ""]
+)
+async def test_exposed_bind_without_insecure_is_refused(host):
+    """A non-loopback bind is refused unless insecure=True (fail closed)."""
+    with pytest.raises(InsecureBindError):
+        ToyServer(host=host, port=8142, mock_toys=True, log_name="test_ws")
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "127.0.0.5", "::1"])
+async def test_loopback_bind_is_allowed(host):
+    """Loopback binds construct without opting into insecure mode."""
+    server = ToyServer(host=host, port=8142, mock_toys=True, log_name="test_ws")
+    assert server._host == host
+
+
+async def test_exposed_bind_with_insecure_is_allowed():
+    """insecure=True permits a non-loopback bind (with a logged warning)."""
+    server = ToyServer(
+        host="0.0.0.0", port=8142, mock_toys=True, insecure=True, log_name="test_ws"
+    )
+    assert server._host == "0.0.0.0"
+
+
 # ---------------------------------------------------------------------------
 # Shutdown
 # ---------------------------------------------------------------------------
+
+
+async def test_idle_shutdown_disabled_when_delay_zero():
+    """idle_shutdown_delay <= 0 disables auto-shutdown: _idle_shutdown returns without tearing down."""
+    server = ToyServer(
+        host="localhost",
+        port=_free_port(),
+        mock_toys=True,
+        idle_shutdown_delay=0.0,
+        log_name="test_ws",
+    )
+    await server._idle_shutdown()  # must return immediately without shutting down
+    assert server._shutdown_initiated is False
 
 
 async def test_shutdown_sends_single_response(ws_server):
@@ -426,7 +525,7 @@ async def test_shutdown_sends_single_response(ws_server):
 
 
 async def test_get_info_direct_command_and_rotation(ws_server):
-    """get_info (cheap + full), direct_command, and change_rotation_direction handlers."""
+    """get_info (inexpensive and full), direct_command, and change_rotation_direction handlers."""
     _, connect = ws_server
     client = await connect()
     await _scan_and_add(client, "Thunder_ID", "Thunder")

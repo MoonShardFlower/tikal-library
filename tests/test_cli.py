@@ -101,6 +101,34 @@ def test_file_logging_is_configured(tmp_path):
     logger.handlers.clear()
 
 
+def test_insecure_flag_is_forwarded():
+    toy_server, _ = _run_main(
+        ["tikal-server", "--host", "0.0.0.0", "--insecure", "--log-path", "None"]
+    )
+    assert toy_server.call_args.kwargs["insecure"] is True
+
+
+def test_insecure_defaults_false():
+    toy_server, _ = _run_main(["tikal-server", "--log-path", "None"])
+    assert toy_server.call_args.kwargs["insecure"] is False
+
+
+def test_insecure_bind_error_exits_cleanly():
+    """An exposed bind without --insecure exits non-zero (code 2) instead of dumping a traceback."""
+    with (
+        patch.object(cli, "ToyServer", side_effect=cli.InsecureBindError("nope")),
+        patch.object(cli.asyncio, "run") as run,
+        patch.object(
+            sys, "argv", ["tikal-server", "--host", "0.0.0.0", "--log-path", "None"]
+        ),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+
+    assert exc_info.value.code == 2
+    run.assert_not_called()
+
+
 def test_serve_exception_is_logged_not_raised():
     with (
         patch.object(cli, "ToyServer"),

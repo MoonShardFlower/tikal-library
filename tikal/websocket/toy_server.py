@@ -91,6 +91,7 @@ They are handled by dedicated methods flagged via CommandEntry.is_scan.
 import asyncio
 import datetime
 import http
+import ipaddress
 import logging
 import time
 import traceback
@@ -711,6 +712,30 @@ _COMMAND_REGISTRY: dict[str, CommandEntry] = {
 _NO_LIMIT = 0x7FFF_FFFF
 
 
+class InsecureBindError(ValueError):
+    """
+    Raised when a :class:`ToyServer` is asked to bind a non-loopback host without opting into insecure mode.
+    See ``docs/websocket/security.md``.
+    """
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    """
+    Return ``True`` only if *host* provably refers to the loopback interface (safe to serve without auth).
+
+    Fails closed: anything not provably loopback -- ``0.0.0.0``/``::`` (all interfaces), a LAN IP, a hostname,
+    or ``None``/``""`` -- is treated as exposed so the caller must opt into it explicitly.
+    """
+    if not host:
+        return False  # None / "" binds all interfaces -> exposed
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False  # hostnames and other unparseable values -> treat as exposed
+
+
 # -----------------------------------------------------------------------------
 # ToyServer
 # -----------------------------------------------------------------------------
@@ -731,6 +756,7 @@ class ToyServer:
         idle_shutdown_delay: float = 3.0,
         mock_toys: bool = False,
         log_name: str = "tikal_ws",
+        insecure: bool = False,
     ) -> None:
         """
         Initialize the server and wire it up to a new _ToyHub instance. Call await self.serve() to begin accepting connections.
@@ -738,16 +764,40 @@ class ToyServer:
         Args:
             toy_cache_path: Path to the toy-cache file used by _ToyHub to persist previously added toys across restarts. If empty, no persistent cache is used.
             host:           Network interface to bind the WebSocket server to. Defaults to "localhost".
-                            There are no security measures, so using anything other than localhost is not recommended.
+                            tikal performs no authentication, so binding a non-loopback host is refused unless
+                            ``insecure=True``; the supported way to expose it is behind a reverse proxy (TLS + auth)
+                            with tikal on localhost. See ``docs/websocket/security.md``.
             port:           TCP port to listen on. Defaults to 8142.
             idle_shutdown_delay:  How long to wait for clients to disconnect before shutting down the server. Defaults to 3 seconds. If 0, the Server does not shut down automatically.
             mock_toys:      If True, _ToyHub uses mock toys instead of real toys.
             log_name:       Name of the Python logger used by both the server and the underlying _ToyHub instance. Defaults to "tikal_ws".
+            insecure:       Allow binding a non-loopback ``host`` even though tikal has no built-in authentication.
+                            Off by default: an exposed bind raises :class:`InsecureBindError`. Only set this when the
+                            server is protected another way (reverse proxy, firewall, trusted LAN, or testing).
+
+        Raises:
+            InsecureBindError: ``host`` is not a loopback interface and ``insecure`` is False.
         """
 
         self._host = host
         self._port = port
         self._log = logging.getLogger(log_name)
+
+        # Never expose an unauthenticated server to the network by accident.
+        if not _is_loopback_host(host):
+            if not insecure:
+                raise InsecureBindError(
+                    f"Refusing to bind ToyServer to non-loopback host {host!r}: tikal has no built-in "
+                    f"authentication, so this would expose full toy control to anyone who can reach the port. "
+                    f"Put a reverse proxy (TLS + auth) in front and keep tikal on localhost "
+                    f"(see docs/websocket/security.md), or pass insecure=True (CLI: --insecure) to override."
+                )
+            self._log.warning(
+                "ToyServer is bound to non-loopback host %r WITHOUT authentication (insecure=True). "
+                "Anyone who can reach this port has full control of connected toys. Prefer a reverse "
+                "proxy (TLS + auth) in front of a localhost bind. See docs/websocket/security.md.",
+                host,
+            )
 
         # All currently connected WebSocket clients.
         self._clients: set[ServerConnection] = set()
@@ -806,6 +856,10 @@ class ToyServer:
 
     async def _idle_shutdown(self) -> None:
         """Sleep for self.idle_shutdown_delay, then tear down _ToyHub, and close the server."""
+        if self.idle_shutdown_delay <= 0:
+            # Auto-shutdown disabled: the server stays up until an explicit shutdown request.
+            self._log.info("Idle shutdown disabled (delay <= 0); server will stay up.")
+            return
         self._log.info("Entering IdleShutdown")
         try:
             await asyncio.sleep(self.idle_shutdown_delay)
@@ -864,10 +918,20 @@ class ToyServer:
             pass
         finally:
             self._clients.discard(ws)
-            self._heartbeat_clients.pop(ws, None)
+            was_heartbeat_client = self._heartbeat_clients.pop(ws, None) is not None
             if not self._heartbeat_clients and self._heartbeat_task is not None:
                 self._heartbeat_task.cancel()
                 self._heartbeat_task = None
+            if was_heartbeat_client:
+                # Dead-man's switch: a client that armed the heartbeat vanished (crash or abrupt close).
+                try:
+                    await self._safety_stop_all_toys(
+                        "Heartbeat client disconnected. All toys stopped."
+                    )
+                except Exception:
+                    self._log.exception(
+                        "Failed to stop toys after heartbeat client disconnect."
+                    )
             async with self._scan_lock:
                 self._scan_subscribers.discard(ws)
                 if not self._scan_subscribers:
@@ -1317,20 +1381,26 @@ class ToyServer:
                 )
                 for ws in timed_out:
                     self._heartbeat_clients.pop(ws, None)
-                toy_ids = await self._hub.get_toy_ids()
-                for toy_id in toy_ids:
-                    try:
-                        await self._hub.stop(toy_id)
-                    except Exception:
-                        self._log.exception(
-                            "Failed to stop toy %s during heartbeat timeout.", toy_id
-                        )
-                await self._broadcast(
-                    "heartbeat_timeout",
-                    dict(message="Heartbeat timeout. All toys stopped."),
-                )
+                await self._safety_stop_all_toys("Heartbeat timeout. All toys stopped.")
                 if not self._heartbeat_clients:
                     break
+
+    async def _safety_stop_all_toys(self, message: str) -> None:
+        """
+        Stop every managed toy and broadcast a ``heartbeat_timeout`` safety event to all clients.
+
+        Shared by the heartbeat watchdog (a client stopped sending heartbeats) and the disconnect handler
+        (a client that armed the heartbeat vanished): both are "we lost the controlling client, make the toys safe".
+        """
+        toy_ids = await self._hub.get_toy_ids()
+        for toy_id in toy_ids:
+            try:
+                await self._hub.stop(toy_id)
+            except Exception:
+                self._log.exception(
+                    "Failed to stop toy %s during heartbeat safety stop.", toy_id
+                )
+        await self._broadcast("heartbeat_timeout", dict(message=message))
 
     async def _handle_http_request(self, _: Any, request: Any) -> Response | None:
         """

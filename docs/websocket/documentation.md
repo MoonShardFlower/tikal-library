@@ -6,27 +6,32 @@ Multiple clients can connect to the server at the same time (Warning: unlike sin
 I suggest reading the documentation in the following order:
 - **documentation.md** (this file)
 - **actions.md** while keeping **error.md** open in parallel
-- **events.md** while keeping **error.md** (this file) open in parallel
+- **events.md** while keeping **error.md** open in parallel
+- **security.md** before exposing the server beyond localhost
 
 ## Starting the Server
-The server can be started with the command `python3 -m tikal_web_server.toy_server`.
+The server can be started with the command `tikal-server` (installed with the package) or, equivalently, `python -m tikal.websocket.cli`.
+
+> **Security:** tikal performs **no authentication of its own** — anyone who can reach the port has full control of the connected toys.
+> The server therefore refuses to bind a non-loopback `--host` unless you also pass `--insecure`.
+> To expose it safely, keep it on `localhost` and put a reverse proxy (TLS + auth) in front. See **security.md**.
 
 Optional arguments are:
-- `--host <host>`: defaults to `localhost` and defines the host to bind to.
-No authentication is performed, so I strongly disadvise choosing a different host.
+- `--host <host>`: defaults to `localhost` and defines the host to bind to. Binding a non-loopback host (including `0.0.0.0`) is refused unless `--insecure` is also passed. See **security.md**.
 - `--port <port>`: defaults to `8142` and defines the port to bind to.
-- `--timeout <seconds_to_timeout>`: defaults to `3` and defines how long the server waits for a client to connect. If timeout expires, the server shuts itself down.
+- `--insecure`: allow binding a non-loopback `--host`. Only use this when the server is protected (reverse proxy, firewall, trusted LAN, or testing). See **security.md**.
+- `--timeout <seconds_to_timeout>`: defaults to `3` and defines how long the server stays up after the last client disconnects before shutting itself down. Set to `0` to disable auto-shutdown.
 - `--toy-cache-path <path_to_cache_file>`: defaults to `./data/toy_cache.json` and defines the path and name of the toy cache file.
 If set to the string "None", the cache degrades to in-memory only (No persistence)
 If the file does not exist, it will be created. If the path up to the file does not exist, it will be created.
-- `--log-level <level>`: defaults to `ERROR` and defines the log level. Must be one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.
-- `--log-file <path_to_log_file>`: defaults to `"./data/tikal_ws.log"` and defines the path and name of the log file.
+- `--log-level <level>`: defaults to `INFO` and defines the log level. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`.
+- `--log-path <path_to_log_file>`: defaults to `./data/tikal_ws.log` and defines the path and name of the log file.
 If set to the string "None", no log file is used. If the file does not exist, it will be created. If the path up to the file does not exist, it will be created.
 
 Example including all arguments:
-`python3 -m tikal_web_server.toy_server --host 0.0.0.0 --port 8081  --timeout 4 --toy_cache_path ./pretty/cache.json --log-level DEBUG --log-file ./important/log.txt`
+`tikal-server --host 0.0.0.0 --insecure --port 8081 --timeout 4 --toy-cache-path ./pretty/cache.json --log-level DEBUG --log-path ./important/log.txt`
 
-The server shuts down automatically if no client is connected to it for a period of 3 seconds.
+The server shuts down automatically if no client is connected to it for a period of `--timeout` seconds (default 3).
 
 
 ## Message Format

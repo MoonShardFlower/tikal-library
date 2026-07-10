@@ -39,7 +39,7 @@ import logging
 import traceback
 from pathlib import Path
 
-from .toy_server import ToyServer
+from .toy_server import InsecureBindError, ToyServer
 
 
 def main() -> None:
@@ -84,6 +84,13 @@ def main() -> None:
         help="Use mock toys instead of real Bluetooth",
     )
     parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help="Allow binding to a non-loopback --host even though tikal has no built-in authentication. "
+        "By default an exposed bind is refused. Only use this when the server is protected another way "
+        "(e.g. firewall, trusted LAN, or testing). See docs/websocket/security.md.",
+    )
+    parser.add_argument(
         "--log-path",
         default="./data/tikal_ws.log",
         help="File to write the log to (default: ./data/tikal_ws.log). If the string 'None' is passed disables logging.",
@@ -113,13 +120,18 @@ def main() -> None:
     toy_cache_path = (
         Path(args.toy_cache_path) if args.toy_cache_path != "None" else Path()
     )
-    server = ToyServer(
-        toy_cache_path=toy_cache_path,
-        host=args.host,
-        port=args.port,
-        idle_shutdown_delay=args.timeout,
-        mock_toys=args.mock_toys,
-    )
+    try:
+        server = ToyServer(
+            toy_cache_path=toy_cache_path,
+            host=args.host,
+            port=args.port,
+            idle_shutdown_delay=args.timeout,
+            mock_toys=args.mock_toys,
+            insecure=args.insecure,
+        )
+    except InsecureBindError as e:
+        logging.error("Failed to bind to %s:%d: %s", args.host, args.port, e)
+        raise SystemExit(2)
 
     try:
         asyncio.run(server.serve())
