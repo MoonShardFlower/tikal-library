@@ -428,8 +428,9 @@ class _ToyHub:
         Background task that periodically calls `process_communication` on all connected toys.
         Runs every `COMMUNICATION_INTERVAL` seconds. Only toys with status CONNECTED are processed.
         """
+        loop = asyncio.get_running_loop()
         while True:
-            await asyncio.sleep(COMMUNICATION_INTERVAL)
+            start = loop.time()
             async with self._toy_lock:
                 toys_and_locks = [
                     (toy, self._toy_cmd_locks[toy_id])
@@ -444,6 +445,10 @@ class _ToyHub:
                     ),
                     return_exceptions=True,
                 )
+            # Sleep only the time left in this interval
+            await asyncio.sleep(
+                max(0.0, COMMUNICATION_INTERVAL - (loop.time() - start))
+            )
 
     async def _process_one_locked(
         self, toy: _ToyController, cmd_lock: asyncio.Lock

@@ -674,7 +674,7 @@ class ToyHub:
                     if time() - self._last_battery_update >= BATTERY_UPDATE_INTERVAL:
                         await self._update_battery_levels(controllers)
                 # Process controller communication (pattern playback, etc.)
-                await ToyHub._process_controller_communication(controllers, sleep_time)
+                await ToyHub._process_controller_communication(controllers)
             except Exception as e:
                 if self._error_callback:
                     self._error_callback(
@@ -727,22 +727,19 @@ class ToyHub:
 
     @staticmethod
     async def _process_controller_communication(
-        controllers: list[ToyController], sleep_time: float
+        controllers: list[ToyController],
     ) -> None:
         """
         Process communication for all controllers concurrently.
 
-        This includes pattern playback, command execution, and state management.
+        This includes pattern playback, command execution, and state management. The loop cadence is owned by
+        ``schedule_recurring`` (see :meth:`_start_communication_loop`); this method only does the work for one tick.
 
         Args:
             controllers: List of controllers to process.
-            sleep_time: Time to sleep between iterations.
         """
-        # Build list of coroutines for parallel execution
+        # Run every controller's tick concurrently.
         coroutines = [controller.process_communication() for controller in controllers]
-        # Add a sleep coroutine to control loop frequency
-        coroutines.append(asyncio.sleep(sleep_time))
-        # Execute all concurrently
         await asyncio.gather(*coroutines, return_exceptions=True)
 
     def _handle_disconnect(self, toy_id: str) -> None:
@@ -773,10 +770,8 @@ class ToyHub:
                 )
                 if self._reconnection_failure_callback:
                     self._reconnection_failure_callback(toy_id)
-                # We are on the runner's loop thread here (run_callback invokes this
-                # callback there), so block-waiting with run_async() would deadlock the
-                # loop until it times out. Schedule the cleanup disconnect on the loop
-                # instead, without waiting for it.
+                # We are on the runner's loop thread here, so block-waiting with run_async() would deadlock the loop.
+                # Schedule the cleanup disconnect on the loop instead, without waiting for it.
                 self._runner.run_callback(
                     toy_controller.toy.disconnect(), lambda _: None, 4.0
                 )
@@ -788,10 +783,8 @@ class ToyHub:
             else:
                 if self._reconnection_failure_callback:
                     self._reconnection_failure_callback(toy_id)
-                # We are on the runner's loop thread here (run_callback invokes this
-                # callback there), so block-waiting with run_async() would deadlock the
-                # loop until it times out. Schedule the cleanup disconnect on the loop
-                # instead, without waiting for it.
+                # We are on the runner's loop thread here, so block-waiting with run_async() would deadlock the loop.
+                # Schedule the cleanup disconnect on the loop instead, without waiting for it.
                 self._runner.run_callback(
                     toy_controller.toy.disconnect(), lambda _: None, 4.0
                 )

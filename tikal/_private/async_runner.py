@@ -129,12 +129,16 @@ class AsyncRunner:
         cancelled = False
 
         async def recurring_task() -> None:
+            loop = asyncio.get_running_loop()
             while not cancelled:
+                start = loop.time()
                 try:
                     await coro_factory()
                 except Exception:
                     pass  # Silently continue on error
-                await asyncio.sleep(interval)
+                # Sleep only the time left, so the true period stays ~interval instead of (interval + work_time).
+                remaining = interval - (loop.time() - start)
+                await asyncio.sleep(max(0.0, remaining))
 
         def cancel() -> None:
             nonlocal cancelled
