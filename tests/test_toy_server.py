@@ -459,6 +459,7 @@ async def test_origin_check_rejects_browser_origin(ws_server):
             additional_headers={"Origin": "http://evil.example"},
         )
 
+
 # ---------------------------------------------------------------------------
 # Insecure-bind guard
 # ---------------------------------------------------------------------------
