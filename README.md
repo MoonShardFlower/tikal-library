@@ -1,4 +1,11 @@
 # TIKAL
+
+[![CI/CD](https://github.com/MoonShardFlower/tikal-library/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/MoonShardFlower/tikal-library/actions/workflows/ci-cd.yml)
+[![codecov](https://codecov.io/gh/MoonShardFlower/tikal-library/branch/main/graph/badge.svg)](https://codecov.io/gh/MoonShardFlower/tikal-library)
+[![PyPI version](https://img.shields.io/pypi/v/tikal.svg)](https://pypi.org/project/tikal/)
+[![Python versions](https://img.shields.io/pypi/pyversions/tikal.svg)](https://pypi.org/project/tikal/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 'Toys I Know And Love' is a Python Library to connect to and control Lovense Toys (https://www.lovense.com) via Bluetooth.
 Only SolacePro and Gush2 (Toys that I own and therefore can test on) are fully supported, other toys might work fully,
 likely work at least partially, but also may not work at all.
