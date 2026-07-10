@@ -92,9 +92,9 @@ class ToyCache:
             If the cache was initialized with an empty path (``Path()``), no disk write is attempted.
         """
         self._log.info(f"Updating ToyCache with updates={updates}")
+        self._cache.update(updates)
         if not self._cache_path.name:
             return
-        self._cache.update(updates)
         try:
             self._cache_path.write_text(
                 json.dumps(self._cache, indent=2), encoding="utf-8"
