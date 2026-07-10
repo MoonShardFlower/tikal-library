@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tikal.high_level.toy_controller import MockEstimController
-from tikal.low_level import Toy
+from tikal.high_level.toy_controller import LovenseController, MockEstimController
+from tikal.low_level import LovenseToy, Toy
 
 
 @pytest.fixture
@@ -186,3 +186,137 @@ async def test_blocked_pattern_latches_single_stop(controller, mock_toy):
     await controller.process_communication()  # latched -> no further stop
     mock_toy.stop.assert_not_called()
     mock_toy.intensity1.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Command surface (queued -> executed in process_communication)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_change_rotation_direction_queues_and_reports(controller, mock_toy):
+    mock_toy.change_rotation_direction.return_value = True
+    results = []
+    controller.change_rotation_direction(results.append)
+    await controller.process_communication()
+    assert results == [True]
+    mock_toy.change_rotation_direction.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_battery_level_queues_and_reports(controller, mock_toy):
+    mock_toy.get_battery_level.return_value = 77
+    results = []
+    controller.get_battery_level(results.append)
+    await controller.process_communication()
+    assert results == [77]
+
+
+@pytest.mark.asyncio
+async def test_direct_command_queues_and_reports(controller, mock_toy):
+    mock_toy.direct_command.return_value = "PONG"
+    results = []
+    controller.direct_command("DeviceType", results.append)
+    await controller.process_communication()
+    assert results == ["PONG"]
+    mock_toy.direct_command.assert_awaited_once_with("DeviceType")
+
+
+@pytest.mark.asyncio
+async def test_intensity2_rejected_when_blocked(controller, mock_toy):
+    controller.toggle_block()  # block on (queues a stop)
+    await controller.process_communication()  # drain that stop
+    mock_toy.reset_mock()
+
+    results = []
+    controller.intensity2(5, results.append)
+    assert results == [False]  # rejected synchronously, via callback
+
+    await controller.process_communication()
+    mock_toy.intensity2.assert_not_called()  # never reached the toy
+
+
+@pytest.mark.asyncio
+async def test_process_communication_noop_when_disconnected(controller, mock_toy):
+    controller.set_pattern([(10_000, 5, 3)])
+    controller.is_connected = False
+    await controller.process_communication()  # early return: nothing sent
+    mock_toy.intensity1.assert_not_called()
+    mock_toy.stop.assert_not_called()
+
+
+def test_toggle_pause_second_toggle_unpauses(controller):
+    assert controller.toggle_pause() is True
+    assert controller.toggle_pause() is False  # second toggle unpauses
+    assert controller.is_paused is False
+
+
+def test_toggle_block_second_toggle_unblocks(controller):
+    assert controller.toggle_block() is True
+    assert controller.toggle_block() is False  # second toggle unblocks
+    assert controller.is_blocked is False
+
+
+def test_set_blocked_noop_when_unchanged(controller):
+    # Already unblocked -> setting False again hits the early-return guard.
+    controller.set_blocked(False)
+    assert controller.is_blocked is False
+
+
+def test_is_connected_and_rotation_available_passthrough(controller, mock_toy):
+    assert controller.is_connected is True  # reads the getter
+    mock_toy.change_rotation_direction_available = True
+    assert controller.change_rotation_direction_available is True
+
+
+# ---------------------------------------------------------------------------
+# LovenseController.get_information
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lovense_controller_get_information():
+    toy = AsyncMock(spec=LovenseToy)
+    toy.toy_id = "toy-1"
+    toy.name = "LVS-Z36D"
+    toy.get_battery_level.return_value = 88
+    toy.get_status.return_value = 2
+    toy.get_batch_number.return_value = "240815"
+    toy.get_device_type.return_value = "C:11:AAAA"
+
+    controller = LovenseController(toy, "test")
+    controller.is_connected = True
+
+    results = []
+    controller.get_information(results.append)
+    await controller.process_communication()
+
+    assert len(results) == 1
+    info = results[0]
+    assert info["Battery level"] == "88%"
+    assert info["Status"] == "2"
+    assert info["Batch number"] == "240815"
+    assert info["Bluetooth Name"] == "LVS-Z36D"
+    assert info["Device type"] == "C:11:AAAA"
+
+
+@pytest.mark.asyncio
+async def test_lovense_controller_get_information_handles_missing_battery():
+    toy = AsyncMock(spec=LovenseToy)
+    toy.toy_id = "toy-1"
+    toy.name = "LVS-Z36D"
+    toy.get_battery_level.return_value = None
+    toy.get_status.return_value = None
+    toy.get_batch_number.return_value = None
+    toy.get_device_type.return_value = None
+
+    controller = LovenseController(toy, "test")
+    controller.is_connected = True
+
+    results = []
+    controller.get_information(results.append)
+    await controller.process_communication()
+
+    info = results[0]
+    assert info["Battery level"] == "Unknown"
+    assert info["Status"] == "Unknown"

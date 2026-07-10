@@ -6,10 +6,14 @@ from tikal.low_level import (
     BLEConnectionBuilder,
     ConnectionBuilder,
     InvalidModelError,
+    LovenseToy,
     ToyData,
+    ValidationError,
 )
 from tikal.low_level.brands.lovense import LovenseHandler
 from tikal.low_level.connection_builder import StaleDeviceError
+from tikal.mock import MockBleakClient, MockBleakScanner
+from tikal.mock.mock_lovense import MockBLEDevice, MockCharacteristic, MockService
 
 
 class FakeBLEDevice:
@@ -256,3 +260,124 @@ async def test_connection_builder_continuous_merges_snapshots(callbacks):
 
     await builder.stop_continuous()
     assert first.stopped and second.stopped
+
+
+# ---------------------------------------------------------------------------
+# LovenseHandler: connection + TX/RX UUID resolution
+# ---------------------------------------------------------------------------
+
+_LOVENSE_BASE_UUID = "40300001-0023-4bd4-bbd5-a6920e4c5653"
+_LOVENSE_TX_UUID = "40300002-0023-4bd4-bbd5-a6920e4c5653"
+_LOVENSE_RX_UUID = "40300003-0023-4bd4-bbd5-a6920e4c5653"
+
+
+def _client_with_lovense_services():
+    """A stand-in client exposing a Lovense GATT service (base + tx + rx characteristics)."""
+    client = MagicMock()
+    client.address = "addr"
+    client.services = [
+        MockService(
+            _LOVENSE_BASE_UUID,
+            [
+                MockCharacteristic(_LOVENSE_TX_UUID),
+                MockCharacteristic(_LOVENSE_RX_UUID),
+            ],
+        )
+    ]
+    return client
+
+
+@pytest.mark.asyncio
+async def test_find_uuid_by_type_tx(handler):
+    client = _client_with_lovense_services()
+    assert await handler._find_uuid_by_type(client, "tx") == _LOVENSE_TX_UUID.upper()
+
+
+@pytest.mark.asyncio
+async def test_find_uuid_by_type_rx(handler):
+    client = _client_with_lovense_services()
+    assert await handler._find_uuid_by_type(client, "rx") == _LOVENSE_RX_UUID.upper()
+
+
+@pytest.mark.asyncio
+async def test_find_uuid_service_matches_but_characteristic_missing(handler):
+    """A matching service whose characteristics omit the target UUID still fails."""
+    client = MagicMock()
+    client.address = "addr"
+    client.services = [MockService(_LOVENSE_BASE_UUID, [])]  # no characteristics
+    with pytest.raises(ConnectionError):
+        await handler._find_uuid_by_type(client, "tx")
+
+
+@pytest.mark.asyncio
+async def test_resolve_uuids_returns_tx_and_rx(handler):
+    client = _client_with_lovense_services()
+    assert await handler._resolve_uuids(client) == (
+        _LOVENSE_TX_UUID.upper(),
+        _LOVENSE_RX_UUID.upper(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_toy_success(callbacks):
+    """create_toy connects via the (mock) client and returns a ready LovenseToy."""
+    on_disconnect, on_power_off = callbacks
+    MockBleakScanner.reset()
+    handler = LovenseHandler(on_disconnect, on_power_off, client_class=MockBleakClient)
+    device = MockBLEDevice("LVS-Gush", "00:00:00:00:00:02")
+    td = ToyData("LVS-Gush", "00:00:00:00:00:02", "Gush", "Lovense")
+
+    # MockBleakClient.connect() sleeps to imitate a real link; skip it to keep the test fast.
+    with patch("tikal.mock.mock_lovense.asyncio.sleep", new_callable=AsyncMock):
+        toy = await handler.create_toy(td, device)
+    try:
+        assert isinstance(toy, LovenseToy)
+        assert toy.model_name == "Gush"
+        assert toy.is_connected
+    finally:
+        MockBleakScanner.reset()
+
+
+@pytest.mark.asyncio
+async def test_create_toy_connection_failure_wraps_error(callbacks):
+    """A client that fails to connect surfaces as a ConnectionError from create_toy."""
+    on_disconnect, on_power_off = callbacks
+
+    class _FailingClient:
+        def __init__(self, device, disconnected_callback=None):
+            self.address = device.address
+            self.is_connected = False
+
+        async def connect(self):
+            raise RuntimeError("boom")
+
+        async def disconnect(self):
+            self.is_connected = False
+
+    handler = LovenseHandler(on_disconnect, on_power_off, client_class=_FailingClient)
+    device = FakeBLEDevice(name="LVS-Gush", address="addr")
+    td = ToyData("LVS-Gush", "addr", "Gush", "Lovense")
+
+    with pytest.raises(ConnectionError):
+        await handler.create_toy(td, device)
+
+
+@pytest.mark.asyncio
+async def test_create_toy_validation_error_disconnects_and_reraises(callbacks):
+    """A ValidationError raised during connection setup disconnects and propagates unchanged."""
+    on_disconnect, on_power_off = callbacks
+    MockBleakScanner.reset()
+    handler = LovenseHandler(on_disconnect, on_power_off, client_class=MockBleakClient)
+    device = MockBLEDevice("LVS-Gush", "00:00:00:00:00:02")
+    td = ToyData("LVS-Gush", "00:00:00:00:00:02", "Gush", "Lovense")
+
+    with (
+        patch("tikal.mock.mock_lovense.asyncio.sleep", new_callable=AsyncMock),
+        patch.object(
+            LovenseToy, "start_notifications", new_callable=AsyncMock
+        ) as mock_notify,
+    ):
+        mock_notify.side_effect = ValidationError("bad model during setup")
+        with pytest.raises(ValidationError):
+            await handler.create_toy(td, device)
+    MockBleakScanner.reset()

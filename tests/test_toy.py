@@ -2,7 +2,13 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from tikal.low_level import LOVENSE_TOY_NAMES, BleTransport, Lovense
+from tikal.low_level import (
+    LOVENSE_TOY_NAMES,
+    BleTransport,
+    InvalidModelError,
+    Lovense,
+    UnexpectedToyResponse,
+)
 
 
 class MockBleTransport(Mock):
@@ -755,6 +761,366 @@ class TestLovenseSpecialCommands(unittest.IsolatedAsyncioTestCase):
             mock_exec.return_value = "CustomResponse"
             await toy.direct_command("CustomCmd", timeout=5.0)
             mock_exec.assert_called_once_with("CustomCmd", 5.0)
+
+
+class TestLovenseStrictIntensity(unittest.IsolatedAsyncioTestCase):
+    """Tests for the exception-raising strict_* intensity commands."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.transport = MockBleTransport()
+        self.on_power_off = Mock()
+
+    async def test_strict_intensity1_success(self):
+        """strict_intensity1 sends the level command and records the new intensity."""
+        toy = Lovense(self.transport, "Gush", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "OK"
+            result = await toy.strict_intensity1(15)
+            self.assertTrue(result)
+            mock_exec.assert_called_once_with("Vibrate:15")
+            self.assertEqual(toy.current_intensities[0], 15)
+
+    async def test_strict_intensity1_clamps_level(self):
+        """strict_intensity1 clamps the level into the 0-20 range."""
+        toy = Lovense(self.transport, "Gush", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "OK"
+            await toy.strict_intensity1(999)
+            mock_exec.assert_called_once_with("Vibrate:20")
+
+    async def test_strict_intensity1_raises_on_bad_response(self):
+        """strict_intensity1 raises UnexpectedToyResponse when the toy does not reply OK."""
+        toy = Lovense(self.transport, "Gush", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "ERROR"
+            with self.assertRaises(UnexpectedToyResponse):
+                await toy.strict_intensity1(10)
+
+    async def test_strict_intensity2_secondary(self):
+        """strict_intensity2 sends the secondary command for a two-capability toy."""
+        toy = Lovense(self.transport, "Nora", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "OK"
+            result = await toy.strict_intensity2(12)
+            self.assertTrue(result)
+            mock_exec.assert_called_once_with("Rotate:12")
+
+    async def test_strict_intensity2_air_level_scaling(self):
+        """strict_intensity2 scales 0-20 down to 0-5 for Max's Air:Level command."""
+        toy = Lovense(self.transport, "Max", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "OK"
+            await toy.strict_intensity2(20)
+            mock_exec.assert_called_once_with("Air:Level:5")
+
+    async def test_strict_intensity2_no_secondary_returns_false(self):
+        """strict_intensity2 is a no-op (returns False) on a single-capability toy."""
+        toy = Lovense(self.transport, "Gush", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            result = await toy.strict_intensity2(10)
+            self.assertFalse(result)
+            mock_exec.assert_not_called()
+
+    async def test_strict_stop_zeroes_both_capabilities(self):
+        """strict_stop sends a zero to both capabilities of a two-capability toy."""
+        toy = Lovense(self.transport, "Nora", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "OK"
+            result = await toy.strict_stop()
+            self.assertTrue(result)
+            self.assertEqual(mock_exec.call_count, 2)
+            mock_exec.assert_any_call("Vibrate:0")
+            mock_exec.assert_any_call("Rotate:0")
+
+
+class TestLovenseStrictQueries(unittest.IsolatedAsyncioTestCase):
+    """Tests for the strict_* query commands (battery, status, batch, etc.)."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.transport = MockBleTransport()
+        self.on_power_off = Mock()
+        self.toy = Lovense(self.transport, "Nora", self.on_power_off, "")
+
+    async def test_strict_get_battery_level(self):
+        """strict_get_battery_level parses the percentage."""
+        with patch.object(
+            self.toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "85"
+            self.assertEqual(await self.toy.strict_get_battery_level(), 85)
+            mock_exec.assert_called_once_with("Battery")
+
+    async def test_strict_get_battery_level_s_prefix(self):
+        """strict_get_battery_level strips the 's' reconnection-quirk prefix."""
+        with patch.object(
+            self.toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "s72"
+            self.assertEqual(await self.toy.strict_get_battery_level(), 72)
+
+    async def test_strict_get_battery_level_raises_on_garbage(self):
+        """strict_get_battery_level raises UnexpectedToyResponse on a non-numeric reply."""
+        with patch.object(
+            self.toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "??"
+            with self.assertRaises(UnexpectedToyResponse):
+                await self.toy.strict_get_battery_level()
+
+    async def test_strict_get_status(self):
+        """strict_get_status parses the status code."""
+        with patch.object(
+            self.toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "2"
+            self.assertEqual(await self.toy.strict_get_status(), 2)
+            mock_exec.assert_called_once_with("Status:1")
+
+    async def test_strict_get_status_raises_on_garbage(self):
+        """strict_get_status raises UnexpectedToyResponse on a non-numeric reply."""
+        with patch.object(
+            self.toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "nope"
+            with self.assertRaises(UnexpectedToyResponse):
+                await self.toy.strict_get_status()
+
+    async def test_strict_get_batch_number(self):
+        """strict_get_batch_number returns the batch string."""
+        with patch.object(
+            self.toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "240815"
+            self.assertEqual(await self.toy.strict_get_batch_number(), "240815")
+            mock_exec.assert_called_once_with("GetBatch")
+
+    async def test_strict_get_batch_number_raises_on_non_digit(self):
+        """strict_get_batch_number raises UnexpectedToyResponse on a non-digit reply."""
+        with patch.object(
+            self.toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "24-08"
+            with self.assertRaises(UnexpectedToyResponse):
+                await self.toy.strict_get_batch_number()
+
+    async def test_strict_get_device_type_passthrough(self):
+        """strict_get_device_type returns the raw device-type string unverified."""
+        with patch.object(
+            self.toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "C:11:0082059AD3BD"
+            result = await self.toy.strict_get_device_type()
+            self.assertEqual(result, "C:11:0082059AD3BD")
+            mock_exec.assert_called_once_with("DeviceType")
+
+    async def test_strict_direct_command_forwards_timeout(self):
+        """strict_direct_command forwards the command and timeout and returns the reply."""
+        with patch.object(
+            self.toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "PONG"
+            result = await self.toy.strict_direct_command("PING", timeout=2.0)
+            self.assertEqual(result, "PONG")
+            mock_exec.assert_called_once_with("PING", 2.0)
+
+
+class TestLovenseStrictSpecialCommands(unittest.IsolatedAsyncioTestCase):
+    """Tests for strict rotation-direction and power-off commands."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.transport = MockBleTransport()
+        self.on_power_off = Mock()
+
+    async def test_strict_change_rotation_direction_success(self):
+        """strict_change_rotation_direction returns True on OK for a rotation toy."""
+        toy = Lovense(self.transport, "Nora", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "OK"
+            self.assertTrue(await toy.strict_change_rotation_direction())
+            mock_exec.assert_called_once_with("RotateChange")
+
+    async def test_strict_change_rotation_direction_unsupported(self):
+        """strict_change_rotation_direction returns False and sends nothing when unsupported."""
+        toy = Lovense(self.transport, "Gush", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            self.assertFalse(await toy.strict_change_rotation_direction())
+            mock_exec.assert_not_called()
+
+    async def test_strict_change_rotation_direction_raises_on_bad_response(self):
+        """strict_change_rotation_direction raises UnexpectedToyResponse on a non-OK reply."""
+        toy = Lovense(self.transport, "Nora", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "ERROR"
+            with self.assertRaises(UnexpectedToyResponse):
+                await toy.strict_change_rotation_direction()
+
+    async def test_strict_power_off_success(self):
+        """strict_power_off returns True on OK."""
+        toy = Lovense(self.transport, "Gush", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "OK"
+            self.assertTrue(await toy.strict_power_off())
+            mock_exec.assert_called_once_with("PowerOff")
+
+    async def test_strict_power_off_raises_on_bad_response(self):
+        """strict_power_off raises UnexpectedToyResponse on a non-OK reply."""
+        toy = Lovense(self.transport, "Gush", self.on_power_off, "")
+        with patch.object(
+            toy, "_strict_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = "ERROR"
+            with self.assertRaises(UnexpectedToyResponse):
+                await toy.strict_power_off()
+
+
+class TestLovenseReconnectAndDisconnect(unittest.IsolatedAsyncioTestCase):
+    """Tests for reconnect / strict_reconnect / strict_disconnect."""
+
+    # The reconnect paths sleep before retrying; patch it out so tests stay fast.
+    _SLEEP = "tikal.low_level.brands.lovense.toy.asyncio.sleep"
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.transport = MockBleTransport()
+        self.on_power_off = Mock()
+        self.toy = Lovense(self.transport, "Gush", self.on_power_off, "")
+
+    async def test_reconnect_already_connected(self):
+        """reconnect returns True and does nothing when already connected."""
+        self.transport.is_connected = True
+        with patch(self._SLEEP, new_callable=AsyncMock):
+            self.assertTrue(await self.toy.reconnect())
+        self.transport.reconnect.assert_not_called()
+
+    async def test_reconnect_success(self):
+        """reconnect returns True after the transport reconnects."""
+        self.transport.is_connected = False
+        with patch(self._SLEEP, new_callable=AsyncMock):
+            self.assertTrue(await self.toy.reconnect())
+        self.transport.reconnect.assert_called_once()
+
+    async def test_reconnect_failure_returns_false(self):
+        """reconnect swallows the error and returns False when the transport fails."""
+        self.transport.is_connected = False
+        self.transport.reconnect.side_effect = ConnectionError("still gone")
+        with patch(self._SLEEP, new_callable=AsyncMock):
+            self.assertFalse(await self.toy.reconnect())
+
+    async def test_strict_reconnect_already_connected(self):
+        """strict_reconnect returns True without reconnecting when already connected."""
+        self.transport.is_connected = True
+        with patch(self._SLEEP, new_callable=AsyncMock):
+            self.assertTrue(await self.toy.strict_reconnect())
+        self.transport.reconnect.assert_not_called()
+
+    async def test_strict_reconnect_success(self):
+        """strict_reconnect returns True after the transport reconnects."""
+        self.transport.is_connected = False
+        with patch(self._SLEEP, new_callable=AsyncMock):
+            self.assertTrue(await self.toy.strict_reconnect())
+        self.transport.reconnect.assert_called_once()
+
+    async def test_strict_reconnect_raises_on_failure(self):
+        """strict_reconnect re-raises the error when the transport fails."""
+        self.transport.is_connected = False
+        self.transport.reconnect.side_effect = ConnectionError("still gone")
+        with patch(self._SLEEP, new_callable=AsyncMock):
+            with self.assertRaises(ConnectionError):
+                await self.toy.strict_reconnect()
+
+    async def test_strict_disconnect_success(self):
+        """strict_disconnect stops the toy and closes the transport without raising."""
+        with patch.object(self.toy, "strict_stop", new_callable=AsyncMock):
+            await self.toy.strict_disconnect()
+        self.transport.disconnect.assert_called_once()
+
+    async def test_strict_disconnect_still_disconnects_when_stop_fails(self):
+        """strict_disconnect closes the transport (then raises) even if stop fails."""
+        with patch.object(self.toy, "strict_stop", new_callable=AsyncMock) as mock_stop:
+            mock_stop.side_effect = UnexpectedToyResponse("bad reply")
+            with self.assertRaises(ConnectionError):
+                await self.toy.strict_disconnect()
+        self.transport.disconnect.assert_called_once()
+
+    async def test_strict_disconnect_raises_when_transport_fails(self):
+        """strict_disconnect raises ConnectionError when the transport disconnect fails."""
+        self.transport.disconnect.side_effect = Exception("BLE error")
+        with patch.object(self.toy, "strict_stop", new_callable=AsyncMock):
+            with self.assertRaises(ConnectionError):
+                await self.toy.strict_disconnect()
+
+
+class TestLovenseNotificationAndModelEdgeCases(unittest.IsolatedAsyncioTestCase):
+    """Notification-callback branches and model-name validation."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.transport = MockBleTransport()
+        self.on_power_off = Mock()
+        self.toy = Lovense(self.transport, "Gush", self.on_power_off, "")
+
+    async def test_notification_before_start_queues_directly(self):
+        """Before notifications start (no captured loop) messages queue synchronously."""
+        # start_notifications() has not run, so self._loop is None -> the direct-queue branch.
+        self.toy._notification_callback(b"OK;")
+        self.assertEqual(self.toy._response_queue.get_nowait(), "OK")
+
+    async def test_notification_poweroff_before_start(self):
+        """A POWEROFF received before notifications start still fires the callback."""
+        self.toy._notification_callback(b"POWEROFF;")
+        self.on_power_off.assert_called_once_with(self.transport.toy_id)
+
+    async def test_notification_swallows_decode_error(self):
+        """Invalid UTF-8 is logged and swallowed (no raise) and fires no callback."""
+        self.toy._notification_callback(b"\xff\xfe")  # not valid UTF-8
+        self.on_power_off.assert_not_called()
+
+    async def test_set_model_name_invalid_raises(self):
+        """set_model_name rejects an unknown model and leaves the current name intact."""
+        with self.assertRaises(InvalidModelError):
+            await self.toy.set_model_name("NotARealModel")
+        self.assertEqual(self.toy.model_name, "Gush")
+
+    async def test_get_status_no_response_returns_none(self):
+        """get_status returns None when the toy gives no response."""
+        with patch.object(
+            self.toy, "_execute_command", new_callable=AsyncMock
+        ) as mock_exec:
+            mock_exec.return_value = None
+            self.assertIsNone(await self.toy.get_status())
+
+    async def test_disconnect_when_stop_fails_still_disconnects(self):
+        """disconnect logs a failing stop() and still closes the transport."""
+        await self.toy.start_notifications()
+        with patch.object(self.toy, "stop", new_callable=AsyncMock) as mock_stop:
+            mock_stop.side_effect = Exception("stop failed")
+            await self.toy.disconnect()  # must not raise
+        self.transport.disconnect.assert_called_once()
 
 
 if __name__ == "__main__":

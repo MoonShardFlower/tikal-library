@@ -11,11 +11,21 @@ import contextlib
 import json
 import socket
 from typing import Callable
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
 import websockets
 
+from tikal.websocket._toy_hub import (
+    AddConnectionError,
+    BadModelError,
+    DiscoveryError,
+    DiscoveryStartError,
+    ToyConnectionError,
+    ToyStatus,
+    UnavailableToyError,
+)
 from tikal.websocket.toy_server import ToyServer
 
 pytestmark = pytest.mark.asyncio
@@ -408,3 +418,306 @@ async def test_shutdown_sends_single_response(ws_server):
     # No duplicate reply should follow before the client disconnects.
     with pytest.raises((asyncio.TimeoutError, websockets.ConnectionClosed)):
         await asyncio.wait_for(client.raw.recv(), 0.5)
+
+
+# ---------------------------------------------------------------------------
+# Remaining command handlers
+# ---------------------------------------------------------------------------
+
+
+async def test_get_info_direct_command_and_rotation(ws_server):
+    """get_info (cheap + full), direct_command, and change_rotation_direction handlers."""
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+
+    info = await client.request("get_info", {"toy_id": "Thunder_ID", "full": False})
+    assert info["success"] and info["data"]["model_name"] == "Thunder"
+
+    info_full = await client.request("get_info", {"toy_id": "Thunder_ID", "full": True})
+    assert info_full["success"]
+
+    dc = await client.request(
+        "direct_command", {"toy_id": "Thunder_ID", "command": "Battery"}
+    )
+    assert dc["success"] and dc["data"]["toy_id"] == "Thunder_ID"
+
+    rot = await client.request("change_rotation_direction", {"toy_id": "Thunder_ID"})
+    # MockEstim toys have no rotation, so ack is False, but the handler ran.
+    assert rot["success"] and rot["data"]["ack"] is False
+
+
+async def test_control_toggles_and_setters(ws_server):
+    """stop / intensity2 / toggle_pause / toggle_block / set_paused / set_blocked handlers."""
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Lightning_ID", "Lightning")  # dual-channel toy
+
+    i2 = await client.request("intensity2", {"toy_id": "Lightning_ID", "intensity": 4})
+    assert i2["success"] and i2["data"]["ack"] is True
+
+    for cmd in ("stop", "toggle_pause", "toggle_block"):
+        reply = await client.request(cmd, {"toy_id": "Lightning_ID"})
+        assert reply["success"] and reply["data"]["ack"] is True
+
+    paused = await client.request(
+        "set_paused", {"toy_id": "Lightning_ID", "pause": True}
+    )
+    assert paused["success"]
+    blocked = await client.request(
+        "set_blocked", {"toy_id": "Lightning_ID", "block": True}
+    )
+    assert blocked["success"]
+
+
+async def test_set_model_updates_and_broadcasts(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+
+    reply = await client.request(
+        "set_model", {"toy_id": "Thunder_ID", "model_name": "Lightning"}
+    )
+    assert reply["success"] and reply["data"]["ack"] is True
+
+    event = await client.wait_event("model_changed")
+    assert event["data"]["model_name"] == "Lightning"
+
+
+# ---------------------------------------------------------------------------
+# Error mapping: exception type -> error envelope
+# ---------------------------------------------------------------------------
+
+
+async def test_add_already_added_toy(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    reply = await client.request(
+        "add", {"toy_id": "Thunder_ID", "model_name": "Thunder"}
+    )
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Toy Already Added"
+
+
+async def test_stop_scan_unsubscribes(ws_server):
+    """stop_scan acks and unsubscribes the client (covers the unsubscribe handler)."""
+    _, connect = ws_server
+    client = await connect()
+    await client.request("start_scan")
+    await client.wait_scan_update("Thunder_ID")
+    reply = await client.request("stop_scan")
+    assert reply["success"] is True and reply["data"]["ack"] is True
+
+
+async def test_add_unavailable_toy_maps_to_unavailable(ws_server):
+    """A toy that is no longer advertising maps to 'Unavailable Toy'."""
+    server, connect = ws_server
+    client = await connect()
+    with patch.object(
+        server._hub,
+        "add",
+        new=AsyncMock(side_effect=UnavailableToyError("Thunder_ID", "Thunder")),
+    ):
+        reply = await client.request(
+            "add", {"toy_id": "Thunder_ID", "model_name": "Thunder"}
+        )
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Unavailable Toy"
+
+
+async def test_add_connection_error_maps_to_connection_error(ws_server):
+    server, connect = ws_server
+    client = await connect()
+    with patch.object(
+        server._hub,
+        "add",
+        new=AsyncMock(side_effect=AddConnectionError("X", "Thunder")),
+    ):
+        reply = await client.request("add", {"toy_id": "X", "model_name": "Thunder"})
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Connection Error"
+
+
+async def test_add_bad_model_maps_to_bad_model(ws_server):
+    server, connect = ws_server
+    client = await connect()
+    with patch.object(
+        server._hub, "add", new=AsyncMock(side_effect=BadModelError("X", "Thunder"))
+    ):
+        reply = await client.request("add", {"toy_id": "X", "model_name": "Thunder"})
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Bad Model"
+
+
+async def test_command_connection_error_maps_to_connection_error(ws_server):
+    server, connect = ws_server
+    client = await connect()
+    with patch.object(
+        server._hub,
+        "stop",
+        new=AsyncMock(side_effect=ToyConnectionError("X", "Thunder", "stop")),
+    ):
+        reply = await client.request("stop", {"toy_id": "X"})
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Connection Error"
+
+
+async def test_unexpected_error_maps_to_developer_error(ws_server):
+    server, connect = ws_server
+    client = await connect()
+    with patch.object(
+        server._hub, "get_toy_ids", new=AsyncMock(side_effect=RuntimeError("boom"))
+    ):
+        reply = await client.request("get_toy_ids")
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Developer Error"
+
+
+async def test_start_scan_discovery_start_error(ws_server):
+    server, connect = ws_server
+    client = await connect()
+    with patch.object(
+        server._hub, "start_scan", new=AsyncMock(side_effect=DiscoveryStartError("tb"))
+    ):
+        reply = await client.request("start_scan")
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Discovery Start Error"
+
+
+async def test_start_scan_unexpected_error(ws_server):
+    server, connect = ws_server
+    client = await connect()
+    with patch.object(
+        server._hub, "start_scan", new=AsyncMock(side_effect=RuntimeError("boom"))
+    ):
+        reply = await client.request("start_scan")
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Developer Error"
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat enable / disable / received
+# ---------------------------------------------------------------------------
+
+
+async def test_heartbeat_enable_send_and_disable(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    assert (await client.request("enable_heartbeat", {"enable": True}))["success"]
+    assert (await client.request("heartbeat"))["success"]  # received while subscribed
+    assert (await client.request("enable_heartbeat", {"enable": False}))["success"]
+
+
+async def test_heartbeat_without_subscription_is_ignored(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    reply = await client.request("heartbeat")  # never enabled -> acked, ignored
+    assert reply["success"] and reply["data"]["ack"] is True
+
+
+# ---------------------------------------------------------------------------
+# Per-client intensity limits: axis 2, rollback, stale cleanup
+# ---------------------------------------------------------------------------
+
+
+async def test_set_intensity2_limit_clamps(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Lightning_ID", "Lightning")
+
+    await client.request("set_intensity2_limit", {"toy_id": "Lightning_ID", "limit": 3})
+    await client.request("intensity2", {"toy_id": "Lightning_ID", "intensity": 50})
+
+    state = await client.request("get_state", {"toy_id": "Lightning_ID"})
+    assert state["data"]["current_intensities"][1] == 3
+
+
+async def test_limit_rolls_back_on_hub_error(ws_server):
+    server, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+
+    with patch.object(
+        server._hub,
+        "set_intensity1_limit",
+        new=AsyncMock(side_effect=RuntimeError("boom")),
+    ):
+        reply = await client.request(
+            "set_intensity1_limit", {"toy_id": "Thunder_ID", "limit": 5}
+        )
+    assert reply["success"] is False
+    # The failed limit was rolled back, not left dangling.
+    assert all("Thunder_ID" not in toys for toys in server._client_limits.values())
+
+
+async def test_removing_toy_cleans_up_client_limits(ws_server):
+    server, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+
+    await client.request("set_intensity1_limit", {"toy_id": "Thunder_ID", "limit": 5})
+    assert any("Thunder_ID" in toys for toys in server._client_limits.values())
+
+    await client.request("remove", {"toy_id": "Thunder_ID"})
+    await client.wait_event("toy_ids_changed")
+    # on_toy_ids_change pruned the now-stale limit.
+    assert all("Thunder_ID" not in toys for toys in server._client_limits.values())
+
+
+# ---------------------------------------------------------------------------
+# HTTP status page, callback broadcasts, and low-level messaging helpers
+# ---------------------------------------------------------------------------
+
+
+async def test_http_request_serves_status_page_and_passes_through_upgrades(ws_server):
+    server, _ = ws_server
+
+    class _Req:
+        def __init__(self, upgrade: str):
+            self.headers = {"upgrade": upgrade}
+
+    resp = await server._handle_http_request(None, _Req(upgrade=""))
+    assert resp is not None and resp.status_code == 200
+    assert b"<" in resp.body  # some HTML was rendered
+
+    # A websocket upgrade must be passed through (None), not served a page.
+    assert await server._handle_http_request(None, _Req(upgrade="websocket")) is None
+
+
+async def test_status_and_battery_change_broadcasts(ws_server):
+    server, connect = ws_server
+    client = await connect()
+
+    await server._on_status_change("T_ID", ToyStatus.RECONNECTING)
+    status_evt = await client.wait_event("connection_status_changed")
+    assert status_evt["data"] == {"toy_id": "T_ID", "status": "reconnecting"}
+
+    await server._on_battery_change({"T_ID": 42})
+    battery_evt = await client.wait_event("battery_changed")
+    assert battery_evt["data"] == {"T_ID": 42}
+
+
+async def test_scan_update_maps_errors_and_success(ws_server):
+    server, _ = ws_server
+    calls = []
+
+    async def capture(event_name, payload, *, success=True):
+        calls.append((event_name, payload, success))
+
+    with patch.object(server, "_broadcast_to_subscribers", new=capture):
+        await server._on_scan_update(DiscoveryError("trace"))
+        await server._on_scan_update(RuntimeError("boom"))
+        await server._on_scan_update([{"toy_id": "T_ID"}])
+
+    assert calls[0][0] == "scan_update"
+    assert calls[0][1]["error"] == "Discovery Error" and calls[0][2] is False
+    assert calls[1][1]["error"] == "Developer Error"
+    assert calls[2][1] == {"discovered": [{"toy_id": "T_ID"}]} and calls[2][2] is True
+
+
+async def test_send_raw_swallows_send_error(ws_server):
+    server, _ = ws_server
+    dead_ws = AsyncMock()
+    dead_ws.send = AsyncMock(side_effect=ConnectionError("gone"))
+    await server._send_raw(dead_ws, "msg")  # must not raise
