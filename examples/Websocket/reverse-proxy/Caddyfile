@@ -1,0 +1,54 @@
+# Caddyfile: HTTPS + auth in front of the Tikal Toy Server
+#
+# tikal performs NO authentication of its own: anyone who can reach its port has full control of every connected toy.
+# So it stays bound to localhost, and THIS reverse proxy is what protects it. It terminates TLS and enforces a
+# username/password before any traffic reaches tikal.
+#
+# Caddy forwards the WebSocket upgrade automatically and does NOT inject an `Origin` header, which is what tikal needs
+# (it rejects any handshake that carries one). Don't add one yourself.
+#
+# See ./README.md for the full walkthrough.
+#
+# Quick start:
+#   1. Pick ONE of the two site blocks below, delete or comment out the other.
+#   2. Fill in your domain (or LAN IP) and your password hash (step 3).
+#   3. Generate the hash:   caddy hash-password (paste it after "tikal" — that word is the username).
+#   4. Start tikal on its default localhost bind:   tikal-server
+#   5. Start the proxy from this directory:         caddy run
+#
+# Clients then connect to  wss://<your-address>/  with HTTP Basic auth (username "tikal" + your password).
+# The read-only status page is at https://<your-address>/ in a browser.
+
+
+# Variant A: Public domain (Let's Encrypt certificate)
+# Use this if you own a domain, can point it at this machine, and ports 80 + 443 are reachable from the internet.
+# Caddy fetches and renews a real TLS cert for you, so clients get no certificate warnings.
+
+toys.example.com {
+    basic_auth {
+        # username    bcrypt hash (generate with:  caddy hash-password)
+        tikal $2a$14$Fq0m...replace-with-your-own-bcrypt-hash...
+    }
+
+    reverse_proxy 127.0.0.1:8142
+}
+
+
+# Variant B: LAN only (Caddy's internal CA, no domain needed)
+# Use this if clients live on the same network, and you don't want to expose anything to the internet.
+# Replace 192.168.1.50 with THIS machine's LAN IP. A hostname works too, if your clients can resolve it.
+#
+# `tls internal` makes Caddy issue the certificate from its own local CA. Each client device must trust that CA once.
+#   - On THIS machine:  run `caddy trust` (adds the local CA to the OS store).
+#   - On other devices: install Caddy's local-CA root certificate as a trusted root. Find it in Caddy's data directory
+#   (run `caddy environ` and look for the data dir); on Windows it is typically: %AppData%\Caddy\pki\authorities\local\root.crt
+#
+# Delete Variant A above if you use this one.
+#
+# 192.168.1.50 {
+#     tls internal
+#     basic_auth {
+#         tikal $2a$14$Fq0m...replace-with-your-own-bcrypt-hash...
+#     }
+#     reverse_proxy 127.0.0.1:8142
+# }

@@ -27,48 +27,18 @@ bindings by providing the --insecure flag:
 
 ## Recommended setup: a reverse proxy
 
-Run tikal bound to `localhost` and let a proxy handle TLS and authentication. Two examples that both do
-**HTTPS + HTTP Basic auth** and forward to a local tikal on `127.0.0.1:8142`.
+Run tikal bound to `localhost` and let a proxy handle TLS and authentication. The proxy terminates **HTTPS** and
+enforces **authentication** (e.g., HTTP Basic auth), then forwards the plain connection to tikal on `127.0.0.1:8142`.
 
-### Caddy
+Ready-to-run configs and a step-by-step walkthrough live in **`examples/Websocket/reverse-proxy/`**:
 
-Caddy provisions TLS automatically (public domain via Let's Encrypt, or a local CA for LAN names).
+- a complete **Caddyfile** with two variants — a public domain (automatic Let's Encrypt certificate) and a
+  LAN-only setup (Caddy's internal CA);
+- an **nginx** equivalent for setups that already run nginx;
+- a decision guide covering when to use a proxy versus a mesh VPN (**Tailscale**) to reach only your own
+  devices, plus a Windows quick-start.
 
-```caddy
-toys.example.com {
-    basic_auth {
-        # generate the hash with:  caddy hash-password
-        tikal $2a$14$Fq0m...replace-with-your-bcrypt-hash...
-    }
-    reverse_proxy 127.0.0.1:8142
-}
-```
-
-### nginx
-
-```nginx
-server {
-    listen 443 ssl;
-    server_name toys.example.com;
-
-    ssl_certificate     /etc/ssl/tikal.crt;
-    ssl_certificate_key /etc/ssl/tikal.key;
-
-    auth_basic           "tikal";
-    auth_basic_user_file /etc/nginx/tikal.htpasswd;   # created with: htpasswd -c ... tikal
-
-    location / {
-        proxy_pass http://127.0.0.1:8142;
-
-        # Required so the WebSocket upgrade is forwarded:
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-```
-
-Tikal is then started with no exposed bind (this stays on the default loopback host):
+Whichever proxy you choose, tikal itself stays on its default loopback bind:
 
 ```sh
 tikal-server
@@ -92,4 +62,4 @@ user has open silently opening a socket). Only native clients (which send no `Or
 Every browser origin is rejected.
 
 When you put a reverse proxy in front, make sure it does **not** inject an `Origin` header onto the forwarded
-handshake (the example configs above do not).
+handshake (the configs in `examples/Websocket/reverse-proxy/` do not).
