@@ -38,14 +38,77 @@ def controller(mock_toy):
 
 
 @pytest.mark.asyncio
-async def test_set_pattern_applies_intensity_limits(controller, mock_toy):
+async def test_set_pattern_stores_pattern_unclamped_and_limits_on_playback(
+    controller, mock_toy
+):
+    # The pattern is kept exactly as given; the limits are applied per tick instead.
     await controller.set_intensity1_limit(10)
     await controller.set_intensity2_limit(5)
 
     await controller.set_pattern([(100, 20, 20), (200, 3, 99)])
 
-    stored = controller.get_state()["pattern"]
-    assert stored == [(100, 10, 5), (200, 3, 5)]
+    assert controller.get_state()["pattern"] == [(100, 20, 20), (200, 3, 99)]
+
+    await controller.process_communication()
+    mock_toy.strict_intensity1.assert_awaited_once_with(10)
+    mock_toy.strict_intensity2.assert_awaited_once_with(5)
+
+
+@pytest.mark.asyncio
+async def test_lowering_limit_reins_in_a_running_pattern(controller, mock_toy):
+    # Regression: a limit lowered mid-playback used to leave the running pattern at its original values,
+    # because set_pattern baked the limits in once and nothing re-clamped afterwards.
+    await controller.set_pattern([(60_000, 90, 90)])
+    await controller.process_communication()
+    mock_toy.current_intensities = (90, 90)
+
+    mock_toy.reset_mock()
+    await controller.set_intensity1_limit(5)
+    await controller.set_intensity2_limit(7)
+
+    # Brought down straight away, without waiting for a playback tick or the next segment.
+    mock_toy.strict_intensity1.assert_awaited_once_with(5)
+    mock_toy.strict_intensity2.assert_awaited_once_with(7)
+    assert controller.get_state()["intensity_limits"] == [5, 7]
+
+    mock_toy.current_intensities = (5, 7)
+    mock_toy.reset_mock()
+    await controller.process_communication()  # already at the ceiling -> nothing to resend
+    mock_toy.strict_intensity1.assert_not_called()
+    mock_toy.strict_intensity2.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_raising_limit_restores_the_patterns_own_values(controller, mock_toy):
+    await controller.set_pattern([(60_000, 90, 90)])
+    await controller.set_intensity1_limit(5)
+    await controller.process_communication()
+    mock_toy.current_intensities = (5, 90)
+
+    mock_toy.reset_mock()
+    await controller.set_intensity1_limit(None)  # withdraw the limit
+    await controller.process_communication()
+    mock_toy.strict_intensity1.assert_awaited_once_with(90)
+
+
+@pytest.mark.asyncio
+async def test_lowering_limit_reins_in_a_manual_intensity(controller, mock_toy):
+    # No pattern is running, so nothing else would ever send a corrective command.
+    await controller.intensity1(90)
+    mock_toy.current_intensities = (90, 0)
+
+    mock_toy.reset_mock()
+    await controller.set_intensity1_limit(4)
+    mock_toy.strict_intensity1.assert_awaited_once_with(4)
+
+
+@pytest.mark.asyncio
+async def test_setting_limit_below_current_value_is_a_noop_when_already_lower(
+    controller, mock_toy
+):
+    mock_toy.current_intensities = (2, 0)
+    await controller.set_intensity1_limit(50)
+    mock_toy.strict_intensity1.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -61,6 +124,30 @@ async def test_intensity_limit_none_resets_to_max(controller, mock_toy):
     await controller.set_intensity1_limit(None)  # reset to max_intensity (100)
     await controller.intensity1(20)
     mock_toy.strict_intensity1.assert_awaited_once_with(20)
+
+
+@pytest.mark.asyncio
+async def test_negative_limit_is_clamped_to_zero(controller, mock_toy):
+    await controller.set_intensity1_limit(-5)
+    assert controller.get_state()["intensity_limits"][0] == 0
+    await controller.intensity1(20)
+    mock_toy.strict_intensity1.assert_awaited_once_with(0)
+
+
+@pytest.mark.asyncio
+async def test_set_model_name_invalidates_playback_tracking(controller, mock_toy):
+    # The switch stops the toy on the old command set, so playback must re-send rather than assume
+    # the toy still holds what it last sent.
+    await controller.set_pattern([(60_000, 5, 3)])
+    await controller.process_communication()
+
+    await controller.set_model_name("Lightning")
+    mock_toy.set_model_name.assert_awaited_once_with("Lightning")
+
+    mock_toy.reset_mock()
+    await controller.process_communication()
+    mock_toy.strict_intensity1.assert_awaited_once_with(5)
+    mock_toy.strict_intensity2.assert_awaited_once_with(3)
 
 
 # ---------------------------------------------------------------------------

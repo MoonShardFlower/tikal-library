@@ -162,6 +162,46 @@ class ToyCommands:
     intensity2_command: str | None = None
 
 
+def carried_over_capabilities(old: ToyCommands, new: ToyCommands) -> tuple[bool, bool]:
+    """
+    Work out which of a toy's capabilities survive a change of model name.
+
+    A capability is carried over iff both models drive it with the same command. In these cases the change is just a
+    relabeling (e.g., switching Solace to Sex Machine interrupts nothing, because they share every command).
+
+    A capability whose command the new model replaces (Lush's ``Vibrate`` vs. Solace's ``Thrusting``) or drops
+    (Nora has ``Rotate``, Lush has none) cannot be carried over: after the change nothing addresses the old command.
+
+    Whether a non-carried-over capability needs a command sent to it needs to be answered by the tracked level:
+
+    - A capability that was running could be stuck on after the change with no way to switch it off, so the caller
+      has to release it through the old command.
+    - A capability that was not running needs no action. That is the ordinary case when the previous model was simply
+      wrong: its commands were refused. Sending the old command would push a command the toy has already rejected.
+
+    Args:
+        old: Command mapping of the model the toy currently has.
+        new: Command mapping of the model it is changing to.
+
+    Returns:
+        tuple[bool, bool]: ``(keeps_intensity1, keeps_intensity2)``. ``True`` means the capability keeps its level.
+        ``False`` means the new model has different capabilities.
+
+    Example:
+        ::
+
+            keeps1, keeps2 = carried_over_capabilities(
+                LOVENSE_TOY_NAMES["Nora"], LOVENSE_TOY_NAMES["Lush"]
+            )
+            # keeps1 is True  (both use "Vibrate")
+            # keeps2 is False (Nora rotates, Lush has no second capability)
+    """
+    return (
+        old.intensity1_command == new.intensity1_command,
+        old.intensity2_command == new.intensity2_command,
+    )
+
+
 @dataclass(frozen=True)
 class ToySpecification:
     """

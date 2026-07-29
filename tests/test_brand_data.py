@@ -18,6 +18,7 @@ from tikal.low_level import (
     ROTATION_TOY_NAMES,
     ToyCommands,
     ToySpecification,
+    carried_over_capabilities,
 )
 from tikal.low_level.brands.mock_estim.data import (
     MIN_SEGMENT_LENGTH as MOCK_MIN_SEGMENT_LENGTH,
@@ -93,6 +94,69 @@ class TestEveryAdvertisedModelResolves(unittest.TestCase):
         for model in BRANDS["MockEstimToys"]:
             self.assertIn(model, MOCK_ESTIM_TOY_NAMES)
             self.assertIn(model, MOCK_MIN_SEGMENT_LENGTH)
+
+
+class TestCarriedOverCapabilities(unittest.TestCase):
+    """
+    ``carried_over_capabilities`` decides how much a model change has to disturb a running toy.
+
+    A capability is carried over only when both models drive it with the same command; anything else has to be
+    switched off during the change, because the new model could never address the old command again.
+    """
+
+    def test_identical_command_sets_carry_everything(self):
+        # Solace and Sex Machine share every command, so a switch between them is a pure relabel.
+        keeps1, keeps2 = carried_over_capabilities(
+            LOVENSE_TOY_NAMES["Solace"], LOVENSE_TOY_NAMES["Sex Machine"]
+        )
+        self.assertTrue(keeps1)
+        self.assertTrue(keeps2)
+
+    def test_dropped_secondary_capability_is_not_carried(self):
+        # Nora rotates, Lush has no second capability at all.
+        keeps1, keeps2 = carried_over_capabilities(
+            LOVENSE_TOY_NAMES["Nora"], LOVENSE_TOY_NAMES["Lush"]
+        )
+        self.assertTrue(keeps1)  # both vibrate
+        self.assertFalse(keeps2)
+
+    def test_added_secondary_capability_is_not_carried(self):
+        # The reverse direction: nothing was running on Rotate, so it must start from zero.
+        keeps1, keeps2 = carried_over_capabilities(
+            LOVENSE_TOY_NAMES["Lush"], LOVENSE_TOY_NAMES["Nora"]
+        )
+        self.assertTrue(keeps1)
+        self.assertFalse(keeps2)
+
+    def test_replaced_primary_capability_is_not_carried(self):
+        # Lush vibrates, Solace thrusts: different command, different physical capability.
+        keeps1, keeps2 = carried_over_capabilities(
+            LOVENSE_TOY_NAMES["Lush"], LOVENSE_TOY_NAMES["Solace"]
+        )
+        self.assertFalse(keeps1)
+        self.assertFalse(keeps2)
+
+    def test_two_capability_free_models_carry_the_absent_capability(self):
+        # Neither model has a second capability, so there is nothing to release.
+        keeps1, keeps2 = carried_over_capabilities(
+            LOVENSE_TOY_NAMES["Lush"], LOVENSE_TOY_NAMES["Ferri"]
+        )
+        self.assertTrue(keeps1)
+        self.assertTrue(keeps2)
+
+    def test_mock_estim_channels(self):
+        keeps1, keeps2 = carried_over_capabilities(
+            MOCK_ESTIM_TOY_NAMES["Lightning"], MOCK_ESTIM_TOY_NAMES["Thunder"]
+        )
+        self.assertTrue(keeps1)  # both drive Channel1
+        self.assertFalse(keeps2)  # Thunder has no Channel2
+
+    def test_a_model_is_fully_compatible_with_itself(self):
+        for name, commands in LOVENSE_TOY_NAMES.items():
+            with self.subTest(model=name):
+                self.assertEqual(
+                    (True, True), carried_over_capabilities(commands, commands)
+                )
 
 
 if __name__ == "__main__":

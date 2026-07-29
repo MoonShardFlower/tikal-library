@@ -1337,6 +1337,10 @@ class ToyServer:
                 await self._hub.set_intensity1_limit(toy_id, effective)
             else:
                 await self._hub.set_intensity2_limit(toy_id, effective)
+        except ToyConnectionError:
+            # The ceiling was recorded on the toy controller and governs every later command and playback tick. Only
+            # the immediate corrective send failed (which already kicked off the reconnect path).
+            raise
         except Exception:
             toy_limits[axis] = old_value
             if toy_limits == [None, None]:

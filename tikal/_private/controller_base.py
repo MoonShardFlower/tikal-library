@@ -107,17 +107,44 @@ class BaseToyController(ABC):
         return self._pattern_handler.get_pattern_data()
 
     # ------------------------------------------------------------------
+    # Intensity ceiling (overridden by controllers that support limits)
+    # ------------------------------------------------------------------
+
+    def _limit_intensity1(self, level: int) -> int:
+        """
+        Apply this controller's ceiling to a primary-capability level.
+
+        The base controller has no ceiling and returns *level* unchanged. Controllers that support intensity limits
+        override this so that **every** path to the toy goes through the same clamp.
+        """
+        return level
+
+    def _limit_intensity2(self, level: int) -> int:
+        """Apply this controller's ceiling to a secondary-capability level. See :meth:`_limit_intensity1`."""
+        return level
+
+    # ------------------------------------------------------------------
     # Shared pattern-playback algorithm (template method)
     # ------------------------------------------------------------------
+
+    def _invalidate_last_values(self) -> None:
+        """
+        Forget which intensities were last sent, so the next playback tick re-sends both.
+
+        Call this after anything that changes the toy's actual level behind the playback engine's back.
+        (e.g., a model switch stops the toy, a lowered limit sends a corrective intensity).
+        """
+        self._last_values["intensity1"] = None
+        self._last_values["intensity2"] = None
 
     async def _run_pattern_playback(self) -> None:
         """
         Advance pattern playback by one tick, driving the toy through the ``_send_*`` primitives.
 
         On the first tick after entering a paused or blocked state, sends a single stop and latches it (no repeated
-        stops). While active, sends an intensity only when its target value changed since the last successful send.
-        Tracking state is updated only after each send's ``await`` returns, so a strict send that raises leaves the
-        state unchanged and the command is retried next tick.
+        stops). While active, sends an intensity only when its *limited* target value changed since the last successful
+        send. Tracking state is updated only after each send's ``await`` returns, so a strict send that raises leaves
+        the state unchanged and the command is retried next tick.
         """
         if not self._pattern_handler.has_active_pattern:
             return
@@ -127,8 +154,7 @@ class BaseToyController(ABC):
             if not self._accepted_pause:
                 # First time entering paused/blocked state - send stop command
                 await self._send_stop()
-                self._last_values["intensity1"] = None
-                self._last_values["intensity2"] = None
+                self._invalidate_last_values()
                 self._accepted_pause = True
             # If already paused/blocked, do nothing (no repeated stop commands)
 
@@ -138,9 +164,12 @@ class BaseToyController(ABC):
 
             # Get current values and send commands if values have changed
             pattern_time = self._pattern_handler.get_pattern_time()
-            intensity1_value, intensity2_value = (
-                self._pattern_handler.get_pattern_values(pattern_time)
+            raw_intensity1, raw_intensity2 = self._pattern_handler.get_pattern_values(
+                pattern_time
             )
+            # A limit lowered/increased mid-playback has to take effect on an already running.
+            intensity1_value = self._limit_intensity1(raw_intensity1)
+            intensity2_value = self._limit_intensity2(raw_intensity2)
 
             if intensity1_value != self._last_values["intensity1"]:
                 await self._send_intensity1(intensity1_value)

@@ -25,6 +25,7 @@ from .toy_data import (
     ToyData,
     ToySpecification,
     ValidationError,
+    carried_over_capabilities,
 )
 from .transport import BleTransport, MockTransport, Transport, UsbTransport
 
@@ -54,6 +55,7 @@ __all__ = [
     "ToyData",
     "ToySpecification",
     "ValidationError",
+    "carried_over_capabilities",
     "Transport",
     "UsbTransport",
     "BleTransport",

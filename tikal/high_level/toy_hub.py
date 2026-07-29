@@ -580,7 +580,7 @@ class ToyHub:
         # Must NOT run while holding self._lock: the background communication loop also acquires
         # self._lock every tick, so blocking on run_async here would stall the loop thread.
         try:
-            self._runner.run_async(controller.toy.set_model_name(model_name))
+            self._runner.run_async(controller.internal_set_model_name(model_name))
         except Exception as e:
             return e
         self._log.info(f"Updated model name for toy {toy_id} to {model_name}")

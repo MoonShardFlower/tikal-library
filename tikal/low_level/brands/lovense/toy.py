@@ -11,7 +11,7 @@ import traceback
 from typing import Any, Callable, Optional
 
 from ...toy import Toy, UnexpectedToyResponse
-from ...toy_data import BadModelError, InvalidModelError
+from ...toy_data import BadModelError, InvalidModelError, carried_over_capabilities
 from ...transport import BleTransport
 from .data import LOVENSE_TOY_NAMES, MIN_SEGMENT_LENGTH, ROTATION_TOY_NAMES
 
@@ -127,11 +127,28 @@ class LovenseToy(Toy):
         Raises:
             InvalidModelError: If model_name is not valid for this toy brand.
             BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details.
+            ConnectionError: The new model was accepted, but a command releasing a replaced capability could not be
+                delivered. The model and the tracked levels are left unchanged, so the caller can retry. A command the
+                toy *refuses* does not raise: see the note below.
 
         Example::
 
                 # Update model name in case it was set incorrectly while building the connection via the ConnectionBuilder
                 toy.set_model_name("Nora")
+
+        Note:
+            A running toy is interrupted only as far as the change forces it to be:
+
+            - Capabilities both models drive with the same command keep their level. Switching a Solace to a Sex
+              Machine (identical commands throughout) interrupts nothing.
+            - A capability whose command the new model replaces or drops restarts at zero and is switched off through
+              the old command as part of the change. Otherwise, it would keep running with nothing able to stop it.
+            - A capability that was not running is left alone: If the previous model's commands were being refused, nothing ever ran on them.
+            - The new model is validated *before* any of that. A rejected model leaves the toy running as it was on its old, working commands.
+
+        Note:
+            If the toy refuses a release command the change still goes through (Wrong Toy Model being corrected).
+            Only a command that cannot be delivered rolls the change back.
         """
         normalized_name = model_name.title()
         if normalized_name not in LOVENSE_TOY_NAMES:
@@ -143,15 +160,20 @@ class LovenseToy(Toy):
                 f"Valid names are: '{list(LOVENSE_TOY_NAMES.keys())}'"
             )
 
-        # Validate against the new model's commands.
         previous_name = self._model_name
+        old_commands = LOVENSE_TOY_NAMES[previous_name]
+        new_commands = LOVENSE_TOY_NAMES[normalized_name]
+        keeps_intensity1, keeps_intensity2 = carried_over_capabilities(
+            old_commands, new_commands
+        )
+        previous_intensity1, previous_intensity2 = self.current_intensities
+
         self._model_name = normalized_name
         try:
-            i1, i2 = self.current_intensities
-            await self.strict_intensity1(i1)
-            await self.strict_intensity2(i2)
+            await self.strict_intensity1(previous_intensity1 if keeps_intensity1 else 0)
+            await self.strict_intensity2(previous_intensity2 if keeps_intensity2 else 0)
         except Exception as e:
-            self._model_name = previous_name
+            self._restore_model(previous_name, previous_intensity1, previous_intensity2)
             self._log.exception(
                 f"Failed to set model name for toy '{model_name}' at '{self._toy_id}': '{type(e)}' with details '{traceback.format_exc()}'."
             )
@@ -161,6 +183,58 @@ class LovenseToy(Toy):
                 f"\n2) the commands being incorrect -> the Library does not handle this model correctly. Please contact the library maintainer in this case."
                 f"Details: '{type(e)}' with details '{traceback.format_exc()}'"
             ) from e
+
+        try:
+            for command, carried_over, previous_level in (
+                (
+                    old_commands.intensity1_command,
+                    keeps_intensity1,
+                    previous_intensity1,
+                ),
+                (
+                    old_commands.intensity2_command,
+                    keeps_intensity2,
+                    previous_intensity2,
+                ),
+            ):
+                if carried_over or previous_level == 0:
+                    continue
+                assert command is not None
+                await self._strict_execute_level_command(command, 0)
+        except UnexpectedToyResponse:
+            self._log.warning(
+                f"'{previous_name}' at '{self._toy_id}' refused to release the capabilities replaced by "
+                f"'{normalized_name}'. Switching anyway: the old model could not have switched them off either."
+            )
+        except Exception as e:
+            # The command never reached the toy. While the old model is in force ``stop`` still addresses the
+            # capability, so keeping it is better than committing to a model that cannot reach it.
+            self._restore_model(previous_name, previous_intensity1, previous_intensity2)
+            self._log.exception(
+                f"Failed to release the capabilities replaced by '{normalized_name}' on '{self._toy_id}': "
+                f"'{type(e)}' with details '{traceback.format_exc()}'."
+            )
+            raise ConnectionError(
+                f"Cannot switch '{self._toy_id}' from '{previous_name}' to '{normalized_name}': the capabilities the "
+                f"new model replaces could not be reached, so the model was left unchanged."
+            ) from e
+
+        if not keeps_intensity1:
+            self._intensity1 = 0
+        if not keeps_intensity2:
+            self._intensity2 = 0
+
+    def _restore_model(self, model_name: str, intensity1: int, intensity2: int) -> None:
+        """
+        Roll back to the model name and tracked levels the toy had before a failed model change.
+
+        The levels have to be restored alongside the name: a partially applied change may already have recorded a
+        level that belongs to the *new* model's commands, which would misdescribe what the toy is doing once the old
+        model is back in force.
+        """
+        self._model_name = model_name
+        self._intensity1 = intensity1
+        self._intensity2 = intensity2
 
     # ========================================================================
     # Public non-strict Methods
@@ -238,11 +312,16 @@ class LovenseToy(Toy):
         Example::
 
                 await toy.intensity1(20)  # Set primary capability to maximum
+
+        Note:
+            :attr:`current_intensities` is updated once the toy acknowledges the command, so it reports the level the toy is actually at.
         """
         level = max(0, min(self._MAX_INTENSITY, level))
-        self._intensity1 = level
         intensity1_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity1_command
-        return await self._execute_level_command(intensity1_cmd, level)
+        acknowledged = await self._execute_level_command(intensity1_cmd, level)
+        if acknowledged:
+            self._intensity1 = level
+        return acknowledged
 
     async def intensity2(self, level: int) -> bool:
         """
@@ -264,6 +343,9 @@ class LovenseToy(Toy):
 
         Note:
             For Max's air pump, the level is automatically divided by 4 to convert from 0-20 scale to 0-5 scale.
+
+        Note:
+            :attr:`current_intensities` is updated once the toy acknowledges the command, so it reports the level the toy is actually at.
         """
         intensity2_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity2_command
         level = max(0, min(self._MAX_INTENSITY, level))
@@ -276,8 +358,10 @@ class LovenseToy(Toy):
         if intensity2_cmd == "Air:Level":
             adjusted_level = int(level / 4)
 
-        self._intensity2 = level
-        return await self._execute_level_command(intensity2_cmd, adjusted_level)
+        acknowledged = await self._execute_level_command(intensity2_cmd, adjusted_level)
+        if acknowledged:
+            self._intensity2 = level
+        return acknowledged
 
     async def stop(self) -> bool:
         """

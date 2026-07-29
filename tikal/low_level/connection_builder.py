@@ -338,13 +338,20 @@ class BLEConnectionBuilder:
         device = self._ble_devices[to_connect.toy_id]
         try:
             toy = await handler.create_toy(to_connect, device)
-            await toy.set_model_name(to_connect.model_name)
-            self._log.info(
-                f"Connected to {to_connect.toy_id} as {to_connect.model_name}"
-            )
-            return toy
         except Exception as e:
             return e
+
+        # From here the toy is connected, so any failure has to close the link again.
+        try:
+            await toy.set_model_name(to_connect.model_name)
+        except Exception as e:
+            self._log.warning(
+                f"Rejected model '{to_connect.model_name}' for {to_connect.toy_id}; disconnecting again."
+            )
+            await toy.disconnect()
+            return e
+        self._log.info(f"Connected to {to_connect.toy_id} as {to_connect.model_name}")
+        return toy
 
     # -----------------------------------------------------------------------
     # Private helpers

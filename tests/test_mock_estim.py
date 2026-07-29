@@ -1,19 +1,23 @@
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from tikal.high_level import ToyHub
 from tikal.high_level.toy_controller import CONTROLLER_BY_BRAND, MockEstimController
 from tikal.low_level import (
+    BadModelError,
     ConnectionBuilder,
     InvalidModelError,
     MockConnectionBuilder,
     MockEstimToy,
     MockTransport,
+    Toy,
     ToyData,
 )
 from tikal.websocket._toy_controller import _CONTROLLER_BY_BRAND, _MockEstimController
+from tikal.websocket._toy_hub import BadModelError as WsBadModelError
 from tikal.websocket._toy_hub import _ToyHub
 
 
@@ -126,6 +130,133 @@ async def test_intensity_is_clamped(callbacks):
     assert toy.current_intensities[0] == 100
     await toy.intensity1(-5)
     assert toy.current_intensities[0] == 0
+
+
+def _spy_on_commands(toy: MockEstimToy) -> list[str]:
+    """
+    Record every command the toy puts on the wire. Returns the (live) list of commands.
+
+    Commands are captured before ``_send_command`` appends the ``;`` terminator, so they appear as e.g. "Channel1:0".
+    """
+    sent: list[str] = []
+    original_send = toy._send_command
+
+    async def spy(command: str) -> None:
+        sent.append(command)
+        await original_send(command)
+
+    toy._send_command = spy
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_model_switch_releases_the_dropped_channel_and_keeps_the_other(callbacks):
+    # Regression: Lightning -> Thunder used to leave channel 2 energised. Thunder has no intensity2
+    # command, so nothing could ever switch it off again - not even stop().
+    builder = MockConnectionBuilder(*callbacks, logger_name="test")
+    toy = await builder.create_toy(_lightning())
+    await toy.intensity1(80)
+    await toy.intensity2(80)
+    assert toy.current_intensities == (80, 80)
+
+    sent = _spy_on_commands(toy)
+    await toy.set_model_name("Thunder")
+
+    assert toy.model_name == "Thunder"
+    # Channel2 was released through Lightning's command, while it was still addressable.
+    assert "Channel2:0" in sent
+    # Channel1 is shared by both models, so it keeps its level and is never zeroed.
+    assert "Channel1:0" not in sent
+    assert toy.current_intensities == (80, 0)
+
+
+@pytest.mark.asyncio
+async def test_model_switch_validates_the_new_models_commands(callbacks):
+    # Regression: the intensity replay used to run before the new model was assigned, so it exercised
+    # the *old* model's channels and could never surface a BadModelError for the new one.
+    builder = MockConnectionBuilder(*callbacks, logger_name="test")
+    toy = await builder.create_toy(_thunder())
+
+    sent = _spy_on_commands(toy)
+    await toy.set_model_name("Lightning")
+
+    assert toy.model_name == "Lightning"
+    # Lightning's second channel must actually have been exercised by the validation replay.
+    assert "Channel2:0" in sent
+
+
+@pytest.mark.asyncio
+async def test_model_switch_is_refused_when_a_dropped_channel_cannot_be_reached(
+    callbacks,
+):
+    # An *undeliverable* release rolls the change back: while Lightning is still in force, stop() can
+    # de-energise Channel2, so keeping the old model beats committing to one that cannot reach it.
+    builder = MockConnectionBuilder(*callbacks, logger_name="test")
+    toy = await builder.create_toy(_lightning())
+    await toy.intensity1(80)
+    await toy.intensity2(80)
+
+    original_send = toy._send_command
+
+    async def link_dies_on_channel2(command: str) -> None:
+        if command.startswith("Channel2"):
+            raise ConnectionError("link down")
+        await original_send(command)
+
+    toy._send_command = link_dies_on_channel2
+    with pytest.raises(ConnectionError):
+        await toy.set_model_name("Thunder")
+
+    # Model and tracked levels left alone, so stop() can still reach channel 2 and the caller can retry.
+    assert toy.model_name == "Lightning"
+    assert toy.current_intensities == (80, 80)
+
+
+@pytest.mark.asyncio
+async def test_model_switch_completes_when_a_dropped_channel_refuses_the_release(
+    callbacks,
+):
+    # A *refused* release must not block the change: a command the device refuses is one the old model
+    # could not have used either, so rolling back would preserve no way of reaching the channel.
+    builder = MockConnectionBuilder(*callbacks, logger_name="test")
+    toy = await builder.create_toy(_lightning())
+    await toy.intensity1(80)
+    await toy.intensity2(80)
+
+    # Make the simulated device answer Channel2 with something other than OK: delivered and answered,
+    # but refused, which is what the toy layer turns into UnexpectedToyResponse.
+    device = toy._transport
+    original_respond = device._respond
+
+    def refuse_channel2(command: str) -> str | None:
+        if command.startswith("Channel2"):
+            return "ERR"
+        return original_respond(command)
+
+    device._respond = refuse_channel2
+    sent = _spy_on_commands(toy)
+
+    await toy.set_model_name("Thunder")
+
+    # The release was attempted and refused, and the change went through anyway.
+    assert "Channel2:0" in sent
+    assert toy.model_name == "Thunder"
+    assert toy.current_intensities == (80, 0)
+
+
+@pytest.mark.asyncio
+async def test_setting_the_same_model_keeps_the_toy_running(callbacks):
+    builder = MockConnectionBuilder(*callbacks, logger_name="test")
+    toy = await builder.create_toy(_thunder())
+    await toy.intensity1(60)
+
+    sent = _spy_on_commands(toy)
+    await toy.set_model_name("thunder")  # case-insensitive
+
+    assert toy.model_name == "Thunder"
+    assert toy.current_intensities == (60, 0)
+    # Only the validating re-send of the level the device already holds.
+    assert sent == ["Channel1:60"]
 
 
 @pytest.mark.asyncio
@@ -354,3 +485,135 @@ async def test_websocket_hub_adds_mock_estim_toy():
         assert state["current_intensities"] == [50, 0]
     finally:
         await hub.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# The "no toy runs under an unsupported model" invariant
+# ---------------------------------------------------------------------------
+#
+# The release logic in Toy.set_model_name leans on this invariant: a non-zero tracked level is taken as proof that the
+# toy accepts the current model's command for that capability, which is what lets a model change send the old command
+# one last time without risking a refusal. That only holds if a toy can never end up live on a model whose commands the
+# toy refuses. These tests pin that down on every path that assigns a model name, using a device that answers Channel2
+# with something other than OK - i.e. a device that is really a Thunder while being labelled a Lightning.
+
+
+def _no_ble_scanner() -> MagicMock:
+    """A BLE scanner that finds nothing, so only the mock brand's fake devices come through."""
+    scanner = MagicMock()
+    scanner.discover = AsyncMock(return_value=[])
+    return scanner
+
+
+_REAL_RESPOND = MockTransport._respond
+
+
+def _refuses_channel2(self, command: str):
+    """Simulate a device with no second channel: the command is delivered and answered, but not with OK."""
+    if command.startswith("Channel2"):
+        return "ERR"
+    return _REAL_RESPOND(self, command)
+
+
+@pytest.fixture
+def channel2_refusing_device():
+    """Patch every MockTransport for the duration of a test so Channel2 commands are refused."""
+    with patch.object(MockTransport, "_respond", _refuses_channel2):
+        yield
+
+
+@pytest.mark.asyncio
+async def test_connect_under_unsupported_model_hands_out_no_toy(
+    callbacks, channel2_refusing_device
+):
+    builder = MockConnectionBuilder(*callbacks, logger_name="test")
+    result = await builder.create_toy(_lightning())
+    # An exception, never a usable Toy: the caller cannot drive the device on a model it does not support.
+    assert not isinstance(result, Toy)
+    assert isinstance(result, BadModelError)
+
+
+@pytest.mark.asyncio
+async def test_ws_hub_add_under_unsupported_model_registers_nothing(
+    channel2_refusing_device,
+):
+    hub = _ToyHub(mock_toys=True, log_name="test")
+    await hub.startup()
+    try:
+        await hub.start_scan(lambda update: None)
+        await asyncio.sleep(0.05)
+        with pytest.raises(WsBadModelError):
+            await hub.add("Lightning_ID", "Lightning")
+        assert await hub.get_toy_ids() == []
+    finally:
+        await hub.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ws_hub_set_model_to_unsupported_model_keeps_the_working_one(
+    channel2_refusing_device,
+):
+    hub = _ToyHub(mock_toys=True, log_name="test")
+    await hub.startup()
+    try:
+        await hub.start_scan(lambda update: None)
+        await asyncio.sleep(0.05)
+        # Thunder only drives Channel1, so it is supported by this device.
+        await hub.add("Lightning_ID", "Thunder")
+        await hub.intensity1("Lightning_ID", 40)
+
+        with pytest.raises(WsBadModelError):
+            await hub.set_model("Lightning_ID", "Lightning")
+
+        state = await hub.get_all("Lightning_ID", full=False)
+        assert state["model_name"] == "Thunder"
+        # The failed change did not disturb the running device either.
+        assert state["current_intensities"] == [40, 0]
+    finally:
+        await hub.shutdown()
+
+
+def test_high_level_update_model_name_to_unsupported_model_is_rejected(
+    channel2_refusing_device,
+):
+    hub = ToyHub(
+        logger_name="test", bluetooth_scanner=_no_ble_scanner(), mock_toys=True
+    )
+    try:
+        toys = hub.discover_toys_blocking(1.0)
+        td = next(t for t in toys if t.toy_id == "Lightning_ID")
+        td.model_name = "Thunder"
+        controller = hub.connect_toys_blocking([td])[0]
+        assert not isinstance(controller, BaseException)
+
+        result = hub.update_model_name("Lightning_ID", "Lightning")
+
+        assert isinstance(result, BadModelError)
+        assert controller.model_name == "Thunder"
+    finally:
+        hub.shutdown()
+
+
+def test_high_level_queued_set_model_name_to_unsupported_model_is_rejected(
+    channel2_refusing_device,
+):
+    hub = ToyHub(
+        logger_name="test", bluetooth_scanner=_no_ble_scanner(), mock_toys=True
+    )
+    try:
+        toys = hub.discover_toys_blocking(1.0)
+        td = next(t for t in toys if t.toy_id == "Lightning_ID")
+        td.model_name = "Thunder"
+        controller = hub.connect_toys_blocking([td])[0]
+
+        results: list = []
+        controller.set_model_name("Lightning", results.append)
+        deadline = time.monotonic() + 5.0
+        while not results and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        # The queued command reports failure via the callback, and the toy keeps its supported model.
+        assert results == [None]
+        assert controller.model_name == "Thunder"
+    finally:
+        hub.shutdown()

@@ -85,6 +85,194 @@ class TestLovenseInitialization(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(toy.model_name, "Gush")
 
 
+class TestLovenseModelChange(unittest.IsolatedAsyncioTestCase):
+    """
+    Tests for what a model change does to a *running* toy.
+
+    A change only has to touch capabilities whose command the new model replaces or drops: anything still running on
+    such a command would be unreachable afterwards. Everything else must be left alone.
+    """
+
+    def setUp(self):
+        self.transport = MockBleTransport()
+        self.on_power_off = Mock()
+
+    def _toy(self, model: str, accepted: set[str]):
+        """
+        Build a Lovense whose fake wire only acknowledges *accepted* command heads.
+
+        A command outside ``accepted`` gets a plain ``"ERR"`` reply, which is how a real toy refuses a command it does
+        not implement: it is delivered and answered, so the toy layer turns it into ``UnexpectedToyResponse``. That is
+        deliberately different from a command that never arrives at all (see the link-failure test).
+
+        ``accepted`` is mutated in place by some tests to make a toy start refusing a command mid-test.
+
+        Returns ``(toy, sent)`` where ``sent`` records every command string that reached the wire.
+        """
+        toy = Lovense(self.transport, model, self.on_power_off, "")
+        sent: list[str] = []
+
+        async def strict_execute(command: str, timeout: float = 3.0) -> str:
+            sent.append(command)
+            head = (
+                "Air:Level"
+                if command.startswith("Air:Level")
+                else command.split(":")[0]
+            )
+            return "OK" if head in accepted else "ERR"
+
+        toy._strict_execute_command = strict_execute
+        toy._execute_command = strict_execute
+        return toy, sent
+
+    async def test_compatible_models_do_not_interrupt_the_toy(self):
+        """Solace and Sex Machine share every command, so the switch is a pure relabel."""
+        toy, sent = self._toy("Solace", {"Thrusting", "Depth"})
+        await toy.intensity1(12)
+        await toy.intensity2(8)
+        sent.clear()
+
+        await toy.set_model_name("Sex Machine")
+
+        self.assertEqual(toy.model_name, "Sex Machine")
+        self.assertEqual(toy.current_intensities, (12, 8))
+        # Only the validating re-sends of the levels the toy already holds; nothing was switched off.
+        self.assertEqual(sent, ["Thrusting:12", "Depth:8"])
+
+    async def test_dropped_capability_is_released_and_the_other_is_kept(self):
+        """Nora -> Lush keeps vibration (same command) and switches rotation off (Lush cannot address it)."""
+        toy, sent = self._toy("Nora", {"Vibrate", "Rotate"})
+        await toy.intensity1(15)
+        await toy.intensity2(9)
+        sent.clear()
+
+        await toy.set_model_name("Lush")
+
+        self.assertEqual(toy.model_name, "Lush")
+        self.assertIn("Rotate:0", sent)
+        self.assertNotIn("Vibrate:0", sent)
+        # Rotation is off and tracked as off, vibration untouched.
+        self.assertEqual(toy.current_intensities, (15, 0))
+
+    async def test_replaced_primary_capability_is_released(self):
+        """Lush -> Solace replaces Vibrate with Thrusting, so the vibration has to be switched off."""
+        toy, sent = self._toy("Lush", {"Vibrate", "Thrusting", "Depth"})
+        await toy.intensity1(15)
+        sent.clear()
+
+        await toy.set_model_name("Solace")
+
+        self.assertIn("Vibrate:0", sent)
+        # The new capability starts from zero rather than inheriting the old capability's level.
+        self.assertEqual(toy.current_intensities, (0, 0))
+
+    async def test_a_capability_that_never_ran_needs_no_release(self):
+        """
+        A previously wrong model had its commands rejected, so nothing ran on them.
+
+        The toy really is a Lush but was labelled a Nora: "Rotate" was never acknowledged, so correcting the model
+        must not waste a command switching off a capability that was never on.
+        """
+        toy, sent = self._toy("Nora", {"Vibrate"})
+        self.assertTrue(await toy.intensity1(15))
+        self.assertFalse(await toy.intensity2(15))  # Rotate rejected
+        self.assertEqual(toy.current_intensities, (15, 0))
+        sent.clear()
+
+        await toy.set_model_name("Lush")
+
+        self.assertEqual(toy.model_name, "Lush")
+        self.assertNotIn("Rotate:0", sent)
+        self.assertEqual(toy.current_intensities, (15, 0))
+
+    async def test_a_rejected_new_model_leaves_the_toy_running(self):
+        """The new model is probed at levels that cannot start anything, so a bad model changes nothing."""
+        from tikal.low_level import BadModelError
+
+        toy, sent = self._toy("Lush", {"Vibrate"})
+        await toy.intensity1(15)
+        sent.clear()
+
+        with self.assertRaises(BadModelError):
+            await toy.set_model_name("Solace")  # Thrusting is rejected
+
+        self.assertEqual(toy.model_name, "Lush")
+        # The toy was never stopped, and only the harmless probe went out.
+        self.assertEqual(toy.current_intensities, (15, 0))
+        self.assertEqual(sent, ["Thrusting:0"])
+
+    async def test_correcting_a_wrong_model_is_not_blocked_by_the_old_command(self):
+        """
+        A release command the toy *refuses* must not block the model change.
+
+        The toy tolerated ``Thrusting`` while it was labelled a Solace, so the level was tracked, but it is really a
+        Lush. Correcting the model must not fail just because the (wrong) old model cannot switch its own capability
+        off: a command the toy refuses is one the old model could not have used either, so refusing the correction
+        would preserve no way of reaching the capability - it would only strand the user on a model they know is wrong.
+        """
+        accepted = {"Thrusting", "Depth", "Vibrate"}
+        toy, sent = self._toy("Solace", accepted)
+        await toy.intensity1(15)
+        self.assertEqual(toy.current_intensities, (15, 0))
+
+        # The toy starts refusing Solace's commands: the label was wrong all along.
+        accepted -= {"Thrusting", "Depth"}
+        sent.clear()
+
+        await toy.set_model_name("Lush")
+
+        self.assertEqual(toy.model_name, "Lush")
+        # The release was attempted, refused, and did not abort the change.
+        self.assertIn("Thrusting:0", sent)
+        self.assertEqual(toy.current_intensities, (0, 0))
+
+    async def test_undeliverable_release_rolls_back_model_and_levels(self):
+        """
+        If the release command never reaches the toy, the whole change is rolled back.
+
+        Unlike a refusal, a delivery failure says nothing about whether the old command works - so keeping the old
+        model is strictly better, because ``stop()`` still addresses the capability once the link is back. The tracked
+        levels have to roll back too, or that ``stop()`` would no longer send anything for it.
+        """
+        toy, sent = self._toy("Nora", {"Vibrate", "Rotate"})
+        await toy.intensity1(15)
+        await toy.intensity2(9)
+
+        working = toy._strict_execute_command
+
+        async def link_dies_on_release(command: str, timeout: float = 3.0) -> str:
+            if command == "Rotate:0":
+                raise ConnectionError("link died mid-switch")
+            return await working(command, timeout)
+
+        toy._strict_execute_command = link_dies_on_release
+        sent.clear()
+
+        with self.assertRaises(ConnectionError):
+            await toy.set_model_name("Lush")
+
+        self.assertEqual(toy.model_name, "Nora")
+        self.assertEqual(toy.current_intensities, (15, 9))
+
+        # Rolled back far enough that stop() still reaches the rotation once the link is healthy again.
+        toy._strict_execute_command = working
+        sent.clear()
+        await toy.strict_stop()
+        self.assertIn("Rotate:0", sent)
+
+    async def test_setting_the_same_model_keeps_the_toy_running(self):
+        """Re-asserting the current model still validates, but must not interrupt anything."""
+        toy, sent = self._toy("Gush", {"Vibrate"})
+        await toy.intensity1(11)
+        sent.clear()
+
+        await toy.set_model_name("gush")  # case-insensitive
+
+        self.assertEqual(toy.model_name, "Gush")
+        self.assertEqual(toy.current_intensities, (11, 0))
+        self.assertEqual(sent, ["Vibrate:11"])
+
+
 class TestLovenseNotifications(unittest.IsolatedAsyncioTestCase):
     """Tests for notification handling in Lovense."""
 

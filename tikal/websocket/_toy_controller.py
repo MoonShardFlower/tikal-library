@@ -56,8 +56,11 @@ class _ToyController(BaseToyController):
         Raises:
             - InvalidModelError: If model_name is not valid for this toy brand.
             - BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details
+            - ConnectionError: The toy could not be stopped on its old command set, so the model was left unchanged.
         """
         await self._toy.set_model_name(model_name)
+        # Switching models stops the toy on the old command set, so whatever playback last sent no longer holds.
+        self._invalidate_last_values()
 
     async def toggle_pause(self) -> bool:
         """
@@ -137,43 +140,87 @@ class _ToyController(BaseToyController):
 
         Note:
             Manual intensity commands automatically pause pattern playback to avoid conflicts. Call ``toggle_pause()`` to resume the pattern.
+
+        Note:
+            The pattern is stored exactly as given. Intensity limits are applied on every playback tick instead, so a
+            limit lowered while this pattern is running takes effect immediately, and one raised again restores the
+            pattern's own values.
         """
-        limited_pattern = []
-        for duration_ms, intensity1, intensity2 in pattern:
-            limited_pattern.append(
-                (
-                    duration_ms,
-                    min(intensity1, self._intensity_limits[0]),
-                    min(intensity2, self._intensity_limits[1]),
-                )
-            )
-        self._pattern_handler.set_pattern(limited_pattern, wraparound, reset_time)
+        self._pattern_handler.set_pattern(pattern, wraparound, reset_time)
         if not pattern:  # ensure that intensities are 0 if pattern is cleared
             await self.stop()
 
+    def _limit_intensity1(self, level: int) -> int:
+        """Clamp a primary-capability level to the currently configured intensity1 limit."""
+        return min(level, self._intensity_limits[0])
+
+    def _limit_intensity2(self, level: int) -> int:
+        """Clamp a secondary-capability level to the currently configured intensity2 limit."""
+        return min(level, self._intensity_limits[1])
+
     async def set_intensity1_limit(self, level: int | None) -> None:
         """
-        Set the upper limit for the primary intensity. All future intensity1 commands are clamped to this value.
+        Set the upper limit for the primary intensity. All intensity1 commands and pattern values are clamped to it.
+
+        If the toy is already running above the new limit, it is brought down to the limit right away rather than only
+        being clamped from the next command onwards.
 
         Args:
-            level: Maximum allowed intensity1 value (0 – max_intensity). Clamped to max_intensity.
+            level: Maximum allowed intensity1 value (0 – max_intensity). Clamped to that range. None removes the limit.
+
+        Raises:
+            ConnectionError: The corrective intensity command could not be delivered. The limit itself is still
+                recorded, so every later command and playback tick respects it.
+            UnexpectedToyResponse: (subclass of ConnectionError) The toy replied unexpectedly to the corrective command.
         """
-        if level is None:
-            self._intensity_limits[0] = self._toy.max_intensity
-        else:
-            self._intensity_limits[0] = min(level, self._toy.max_intensity)
+        self._intensity_limits[0] = self._normalize_limit(level)
+        await self._enforce_intensity1_limit()
 
     async def set_intensity2_limit(self, level: int | None) -> None:
         """
-        Set the upper limit for the secondary intensity. All future intensity2 commands are clamped to this value.
+        Set the upper limit for the secondary intensity. All intensity2 commands and pattern values are clamped to it.
+
+        Behaves like :meth:`set_intensity1_limit`, including bringing an already-running toy down to the new limit.
 
         Args:
-            level: Maximum allowed intensity2 value (0 – max_intensity). Clamped to max_intensity.
+            level: Maximum allowed intensity2 value (0 – max_intensity). Clamped to that range. None removes the limit.
+
+        Raises:
+            ConnectionError: The corrective intensity command could not be delivered. The limit itself is still
+                recorded, so every later command and playback tick respects it.
+            UnexpectedToyResponse: (subclass of ConnectionError) The toy replied unexpectedly to the corrective command.
         """
+        self._intensity_limits[1] = self._normalize_limit(level)
+        await self._enforce_intensity2_limit()
+
+    def _normalize_limit(self, level: int | None) -> int:
+        """Turn a requested limit into a usable ceiling: ``None`` means "no limit", anything else is clamped to range."""
         if level is None:
-            self._intensity_limits[1] = self._toy.max_intensity
-        else:
-            self._intensity_limits[1] = min(level, self._toy.max_intensity)
+            return self._toy.max_intensity
+        return max(0, min(level, self._toy.max_intensity))
+
+    async def _enforce_intensity1_limit(self) -> None:
+        """
+        Bring the toy down now if its primary capability is running above the current intensity1 limit.
+
+        A limit is a safety ceiling, so it has to apply to what the toy is doing *right now*, not just to the next
+        command. Pattern playback would pick the change up on its own next tick; this also covers the cases where
+        nothing else is about to send an intensity (no active pattern, or a segment that lasts minutes).
+        """
+        limit = self._intensity_limits[0]
+        if self._toy.current_intensities[0] <= limit:
+            return
+        await self._toy.strict_intensity1(limit)
+        # The toy now sits at the ceiling. Record it so the next playback tick does not repeat the command.
+        self._last_values["intensity1"] = limit
+
+    async def _enforce_intensity2_limit(self) -> None:
+        """Bring the toy down now if its secondary capability is above the intensity2 limit. See :meth:`_enforce_intensity1_limit`."""
+        limit = self._intensity_limits[1]
+        if self._toy.current_intensities[1] <= limit:
+            return
+        await self._toy.strict_intensity2(limit)
+        self._last_values["intensity2"] = limit
 
     async def intensity1(self, level: int) -> bool:
         """
@@ -195,7 +242,7 @@ class _ToyController(BaseToyController):
             return False
         # avoid the pattern overriding the command
         self._pattern_handler.set_paused(True)
-        level = min(level, self._intensity_limits[0])
+        level = self._limit_intensity1(level)
         return await self._toy.strict_intensity1(level)
 
     async def intensity2(self, level: int) -> bool:
@@ -219,7 +266,7 @@ class _ToyController(BaseToyController):
             return False
         # avoid the pattern overriding the command
         self._pattern_handler.set_paused(True)
-        level = min(level, self._intensity_limits[1])
+        level = self._limit_intensity2(level)
         return await self._toy.strict_intensity2(level)
 
     async def change_rotation_direction(self) -> bool:

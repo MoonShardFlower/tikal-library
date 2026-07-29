@@ -17,6 +17,7 @@ import pytest
 import pytest_asyncio
 import websockets
 
+from tikal._private import COMMUNICATION_INTERVAL
 from tikal.websocket._toy_hub import (
     AddConnectionError,
     BadModelError,
@@ -377,6 +378,62 @@ async def test_intensity_limit_clamps(ws_server):
 
     state = await client.request("get_state", {"toy_id": "Thunder_ID"})
     assert state["data"]["current_intensities"] == [10, 0]
+
+
+async def test_second_clients_limit_reins_in_a_running_toy(ws_server):
+    """A limit set by a second client must apply to what the toy is already doing, not just to later commands."""
+    _, connect = ws_server
+    driver = await connect()
+    supervisor = await connect()
+    await _scan_and_add(driver, "Thunder_ID", "Thunder")
+
+    await driver.request("intensity1", {"toy_id": "Thunder_ID", "intensity": 90})
+    state = await driver.request("get_state", {"toy_id": "Thunder_ID"})
+    assert state["data"]["current_intensities"] == [90, 0]
+
+    # The supervisor joins and imposes a ceiling. The toy must come down immediately.
+    await supervisor.request(
+        "set_intensity1_limit", {"toy_id": "Thunder_ID", "limit": 5}
+    )
+    state = await driver.request("get_state", {"toy_id": "Thunder_ID"})
+    assert state["data"]["intensity_limits"][0] == 5
+    assert state["data"]["current_intensities"] == [5, 0]
+
+
+async def test_limit_applies_to_an_already_running_pattern(ws_server):
+    """Regression: limits used to be baked into the pattern at set time, so a later limit did nothing."""
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+
+    await client.request(
+        "set_pattern",
+        {
+            "toy_id": "Thunder_ID",
+            "pattern": [[60_000, 90, 0]],
+            "wraparound": True,
+            "reset_time": True,
+        },
+    )
+    await client.request("set_paused", {"toy_id": "Thunder_ID", "pause": False})
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 3)
+    state = await client.request("get_state", {"toy_id": "Thunder_ID"})
+    assert state["data"]["current_intensities"] == [90, 0]
+
+    await client.request("set_intensity1_limit", {"toy_id": "Thunder_ID", "limit": 7})
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 3)
+
+    state = await client.request("get_state", {"toy_id": "Thunder_ID"})
+    assert state["data"]["current_intensities"] == [7, 0]
+    # The pattern itself is untouched, so withdrawing the limit restores its own values.
+    assert state["data"]["pattern"] == [[60_000, 90, 0]]
+
+    await client.request(
+        "set_intensity1_limit", {"toy_id": "Thunder_ID", "limit": None}
+    )
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 3)
+    state = await client.request("get_state", {"toy_id": "Thunder_ID"})
+    assert state["data"]["current_intensities"] == [90, 0]
 
 
 # ---------------------------------------------------------------------------

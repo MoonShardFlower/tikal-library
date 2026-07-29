@@ -160,6 +160,8 @@ class ToyController(BaseToyController):
 
         async def _execute() -> Any:
             await self._toy.set_model_name(model_name)
+            # The switch stopped the toy, so what playback last sent no longer holds.
+            self._invalidate_last_values()
             return self._toy.model_name
 
         self._schedule_command(_execute, callback)
@@ -523,6 +525,31 @@ class ToyController(BaseToyController):
             This is an internal method used by ToyHub and not meant to be used by you.
         """
         return self._toy
+
+    async def internal_set_model_name(self, model_name: str) -> str:
+        """
+        Set the model name directly, bypassing the command queue (internal use only).
+
+        Used by :meth:`ToyHub.update_model_name`, which surfaces validation errors to its caller instead of delivering
+        them to a callback. Resets the playback tracking just like the queued :meth:`set_model_name` does.
+
+        Args:
+            model_name: New model name. Must be a valid model for this toy's brand.
+
+        Raises:
+            InvalidModelError: If model_name is not valid for this toy brand.
+            BadModelError: If the model_name is valid, but commands still fail.
+            ConnectionError: The toy could not be stopped on its old commands, so the model was left unchanged.
+
+        Returns:
+            The toy's model name after the update.
+
+        Warning:
+            This is an internal method used by ToyHub and not meant to be used by you.
+        """
+        await self._toy.set_model_name(model_name)
+        self._invalidate_last_values()
+        return self._toy.model_name
 
     async def process_communication(self) -> None:
         """

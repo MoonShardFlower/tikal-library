@@ -16,7 +16,7 @@ import traceback
 from typing import Any, Callable, Optional
 
 from ...toy import Toy, UnexpectedToyResponse
-from ...toy_data import BadModelError, InvalidModelError
+from ...toy_data import BadModelError, InvalidModelError, carried_over_capabilities
 from ...transport import MockTransport
 from .data import MAX_INTENSITY, MIN_SEGMENT_LENGTH, MOCK_ESTIM_TOY_NAMES
 
@@ -84,8 +84,17 @@ class MockEstimToy(Toy):
         Raises:
             InvalidModelError: If model_name is not valid for this brand.
             BadModelError: If the model_name is valid, but commands still fail.
+            ConnectionError: The new model was accepted, but a command releasing a dropped channel could not be
+                delivered. The model and the tracked levels are left unchanged, so the caller can retry. A command the
+                device *refuses* does not raise: see the note below.
+
+        Note:
+            A running device is interrupted only as far as the change forces it to be. ``Thunder`` and ``Lightning``
+            share ``Channel1``, so that channel keeps its level across the switch. ``Lightning``'s ``Channel2`` has no
+            counterpart on ``Thunder``, so it is switched off as part of the change.
         """
-        if model_name.title() not in MOCK_ESTIM_TOY_NAMES:
+        normalized_name = model_name.title()
+        if normalized_name not in MOCK_ESTIM_TOY_NAMES:
             self._log.error(
                 f"Invalid model name '{model_name}' for MockEstimToys at '{self._toy_id}'."
             )
@@ -94,12 +103,20 @@ class MockEstimToy(Toy):
                 f"Valid names are: '{list(MOCK_ESTIM_TOY_NAMES.keys())}'"
             )
 
-        # Verify the model's commands work by replaying the current intensities.
+        previous_name = self._model_name
+        old_commands = MOCK_ESTIM_TOY_NAMES[previous_name]
+        new_commands = MOCK_ESTIM_TOY_NAMES[normalized_name]
+        keeps_intensity1, keeps_intensity2 = carried_over_capabilities(
+            old_commands, new_commands
+        )
+        previous_intensity1, previous_intensity2 = self.current_intensities
+
+        self._model_name = normalized_name
         try:
-            i1, i2 = self.current_intensities
-            await self.strict_intensity1(i1)
-            await self.strict_intensity2(i2)
+            await self.strict_intensity1(previous_intensity1 if keeps_intensity1 else 0)
+            await self.strict_intensity2(previous_intensity2 if keeps_intensity2 else 0)
         except Exception as e:
+            self._restore_model(previous_name, previous_intensity1, previous_intensity2)
             self._log.exception(
                 f"Failed to set model name '{model_name}' at '{self._toy_id}': {type(e)}"
             )
@@ -108,7 +125,47 @@ class MockEstimToy(Toy):
                 f"Details: '{type(e)}' with '{traceback.format_exc()}'"
             ) from e
 
-        self._model_name = model_name.title()
+        try:
+            for command, carried_over, previous_level in (
+                (
+                    old_commands.intensity1_command,
+                    keeps_intensity1,
+                    previous_intensity1,
+                ),
+                (
+                    old_commands.intensity2_command,
+                    keeps_intensity2,
+                    previous_intensity2,
+                ),
+            ):
+                if carried_over or previous_level == 0:
+                    continue
+                assert command is not None
+                await self._strict_execute_level_command(command, 0)
+        except UnexpectedToyResponse:
+            self._log.warning(
+                f"'{previous_name}' at '{self._toy_id}' refused to release the channels dropped by "
+                f"'{normalized_name}'. Switching anyway: the old model could not have released them either."
+            )
+        except Exception as e:
+            self._restore_model(previous_name, previous_intensity1, previous_intensity2)
+            self._log.exception(
+                f"Failed to release the channels dropped by '{normalized_name}' on '{self._toy_id}': {type(e)}"
+            )
+            raise ConnectionError(
+                f"Cannot switch '{self._toy_id}' from '{previous_name}' to '{normalized_name}': the channels the new "
+                f"model drops could not be reached, so the model was left unchanged."
+            ) from e
+        if not keeps_intensity1:
+            self._intensity1 = 0
+        if not keeps_intensity2:
+            self._intensity2 = 0
+
+    def _restore_model(self, model_name: str, intensity1: int, intensity2: int) -> None:
+        """Roll back to the model name and tracked levels the device had before a failed model change."""
+        self._model_name = model_name
+        self._intensity1 = intensity1
+        self._intensity2 = intensity2
 
     # ========================================================================
     # Public non-strict Methods
@@ -155,20 +212,32 @@ class MockEstimToy(Toy):
             log_disconnect_error(e)
 
     async def intensity1(self, level: int) -> bool:
-        """Set the primary channel. Returns True if the device acknowledged the command."""
+        """
+        Set the primary channel. Returns True if the device acknowledged the command.
+
+        ``current_intensities`` is only updated on acknowledgement, so it reports the level the device is actually at.
+        """
         level = max(0, min(self._MAX_INTENSITY, level))
-        self._intensity1 = level
         command = MOCK_ESTIM_TOY_NAMES[self._model_name].intensity1_command
-        return await self._execute_level_command(command, level)
+        acknowledged = await self._execute_level_command(command, level)
+        if acknowledged:
+            self._intensity1 = level
+        return acknowledged
 
     async def intensity2(self, level: int) -> bool:
-        """Set the secondary channel. Returns True (no-op) for single-channel models."""
+        """
+        Set the secondary channel. Returns True (no-op) for single-channel models.
+
+        ``current_intensities`` is only updated on acknowledgement, so it reports the level the device is actually at.
+        """
         command = MOCK_ESTIM_TOY_NAMES[self._model_name].intensity2_command
         if not command:
             return True
         level = max(0, min(self._MAX_INTENSITY, level))
-        self._intensity2 = level
-        return await self._execute_level_command(command, level)
+        acknowledged = await self._execute_level_command(command, level)
+        if acknowledged:
+            self._intensity2 = level
+        return acknowledged
 
     async def stop(self) -> bool:
         """Set all channels to zero."""

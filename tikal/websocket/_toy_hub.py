@@ -837,6 +837,8 @@ class _ToyHub:
             UnknownToyError: The toy was not added before
             InvalidModelError: the model name is not valid for the toy brand.
             BadModelError: the model name is valid, but the toy still does not respond correctly to commands.
+            ToyConnectionError: The toy could not be stopped on its old command set, so the model was left unchanged.
+                Reconnecting is attempted automatically.
         """
         self._log.info(f"Setting model of {toy_id} to {model_name})")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
@@ -847,6 +849,11 @@ class _ToyHub:
                 raise InvalidModelError(toy_id, model_name, toy.brand) from e
             except LowLevelBadModelError as e:
                 raise BadModelError(toy_id, model_name) from e
+            except ConnectionError as e:
+                # A model switch stops the toy on its old commands first. That stop could not be delivered, so the
+                # model was left as-is and the toy may still be running.
+                await self._handle_command_failure(toy)
+                raise ToyConnectionError(toy_id, model_name, "set_model") from e
             self._toy_cache.update({toy.name: model_name})
         change = await toy.get_info(full=False)
         await self._fire_callback(self._on_model_change, change)
@@ -1014,7 +1021,10 @@ class _ToyHub:
 
     async def set_intensity1_limit(self, toy_id: str, level: int | None) -> None:
         """
-        Set the upper limit for the primary intensity of a toy. All future intensity1 commands are clamped to this value.
+        Set the upper limit for the primary intensity of a toy. All intensity1 commands and pattern values are clamped to it.
+
+        A toy already running above the new limit is brought down to it immediately, so the command is sent under the
+        per-toy command lock like any other toy-facing command.
 
         Args:
             toy_id: Identifier of the toy to set the intensity1 limit for.
@@ -1022,15 +1032,25 @@ class _ToyHub:
 
         Raises:
             UnknownToyError: The toy was not added before.
+            ToyConnectionError: The limit was recorded, but the toy could not be brought down to it. Reconnecting is
+                attempted automatically; the limit stays in force for every later command and playback tick.
         """
         self._log.info(f"Setting intensity1 limit of {toy_id} to {level}")
-        toy = await self._get_toy(toy_id)
-        await toy.set_intensity1_limit(level)
-        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+        toy, cmd_lock = await self._get_toy_cmd(toy_id)
+        try:
+            async with cmd_lock:
+                await self._run_toy_command(
+                    toy, "set_intensity1_limit", toy.set_intensity1_limit, level
+                )
+        finally:
+            # Report the new ceiling even when enforcing it failed: it *is* in force from here on.
+            await self._fire_callback(self._on_toy_state_change, toy.get_state())
 
     async def set_intensity2_limit(self, toy_id: str, level: int | None) -> None:
         """
-        Set the upper limit for the secondary intensity of a toy. All future intensity2 commands are clamped to this value.
+        Set the upper limit for the secondary intensity of a toy. All intensity2 commands and pattern values are clamped to it.
+
+        Behaves like :meth:`set_intensity1_limit`, including bringing an already-running toy down to the new limit.
 
         Args:
             toy_id: Identifier of the toy to set the intensity2 limit for.
@@ -1038,11 +1058,19 @@ class _ToyHub:
 
         Raises:
             UnknownToyError: The toy was not added before.
+            ToyConnectionError: The limit was recorded, but the toy could not be brought down to it. Reconnecting is
+                attempted automatically; the limit stays in force for every later command and playback tick.
         """
         self._log.info(f"Setting intensity2 limit of {toy_id} to {level}")
-        toy = await self._get_toy(toy_id)
-        await toy.set_intensity2_limit(level)
-        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+        toy, cmd_lock = await self._get_toy_cmd(toy_id)
+        try:
+            async with cmd_lock:
+                await self._run_toy_command(
+                    toy, "set_intensity2_limit", toy.set_intensity2_limit, level
+                )
+        finally:
+            # Report the new ceiling even when enforcing it failed: it *is* in force from here on.
+            await self._fire_callback(self._on_toy_state_change, toy.get_state())
 
     async def set_pattern(
         self,
