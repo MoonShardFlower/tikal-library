@@ -9,14 +9,33 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 
 ### Added
     - Web API: New documentation file in ./docs/websocket/security.md
+    - Web API: Ready-to-run reverse-proxy examples under ./examples/Websocket/reverse-proxy/ 
+        (Caddyfile with public-domain and LAN variants, an nginx equivalent, and a decision guide covering Caddy vs. Tailscale plus a Windows quick-start).
 
 ### Changed
     - Web API: Status webpage performs an origin check. Other webpages are forbidden to access the status page.
     - Web API: binding the websocket server to a non-localhost address is now only allowed if the server is started with the --insecure flag. Else an error message is logged and the server terminated.
+    - Web API: set_pattern now stores the pattern exactly as sent instead of baking the current intensity limits into it.
+        get_state therefore reports the pattern you sent, and withdrawing a limit restores the pattern's own values.
+    - Web API: set_intensity1_limit / set_intensity2_limit now also bring a toy that is already running above the new limit down to it, instead of only clamping later commands.
+    - Low-Level API: A model change now only interrupts the capabilities it has to. Capabilities both models drive with the same command
+        keep their level (Solace -> Sex Machine interrupts nothing). A command that the new model replaces or drops is switched off as part of the change.
+        The new model is validated first, so a rejected model (BadModelError) doesn't stop a running toy.
+    - Low-Level API: The non-strict intensity1 / intensity2 only record the new level once the toy acknowledges the command.
+        current_intensities therefore reports what the toy is actually at instead of what was last requested.
+    - Low-Level API: New helper `carried_over_capabilities(old, new)` in toy_data, exported from tikal.low_level. Brand Toy implementations
+        use it to decide which capabilities survive a model change.
 
 ### Fixed
+    - Low-Level API: A model rejected while connecting no longer leaks the BLE connection.
+    - Web API: Intensity limits now apply to a pattern that is already playing. Previously a limit lowered mid-playback was ignored until
+        the pattern was re-sent. Limits are now applied on every playback tick and to every manual command.
+    - High-Level API + Web API: Pattern playback no longer skips a re-send after a model change. The switch stops the toy, so the values
+        playback last sent no longer hold and must be re-issued.
     - Low-Level API: In-memory ToyCache now properly updates. Previously if the cache path was empty, the in-memory cache was not updated.
     - High-Level API + WebSocket API: Control loop now runs at interval = 50ms instead of interval + work_time ms
+    - Packaging: Installation size of the built webserver executable significantly reduced (Prevented a few unneeded transitive dependencies from being included in the build)
+
 
 ## [1.2.0] - 2026-07-10
 

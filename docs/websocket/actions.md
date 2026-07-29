@@ -573,6 +573,9 @@ Explicitly set the paused state. See `toggle_pause` for details.
 Sets a new pattern to a toy. Playback starts immediately. Patterns are lists of segments `[duration_ms, intensity1, intensity2]`.
 You can clear the pattern by setting `pattern` to an empty list.
 
+The pattern is stored exactly as you sent it, and `get_state` reports it back unchanged. Intensity limits
+(see `set_intensity1_limit` / `set_intensity2_limit`) are applied to each value as it is sent to the toy, not baked into the stored pattern.
+
 **Request data**:
 ```json
 {
@@ -672,6 +675,8 @@ Solace and Sex Machine use the same commands, so setting our mocked Solace to Se
 - Invalid Model: The model name is invalid for the toys' brand.
 - Bad Model: The model name is valid, but the toy does not accept commands.
 This means either the toy is of a different model or the commands are wrong (developer issue)
+- Connection Error: A command releasing a capability the new model replaces could not be delivered, so the model was left unchanged. 
+  Reconnecting is attempted automatically. (A command the toy refuses does not produce this error.)
 - Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
 - Invalid Data: Your request data is wrong, e.g., missing the `toy_id` field.
 - Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
@@ -707,8 +712,8 @@ Disconnect a toy and remove it from the server.
 
 ### 22. `set_intensity1_limit` / `set_intensity2_limit`
 Set the upper limit for a toy's primary (`set_intensity1_limit`) or secondary (`set_intensity2_limit`) intensity.
-All future `intensity1` / `intensity2` commands and pattern values are clamped to this limit.
-By default, both limits equal `max_intensity` (no restriction). Values above `max_intensity` are clamped to `max_intensity`.
+All `intensity1` / `intensity2` commands and all pattern values are clamped to this limit.
+By default, both limits equal `max_intensity` (no restriction). Values are clamped to the range `0` – `max_intensity`.
 The current effective limits are included in the `get_state` and `get_all` responses under the `intensity_limits` field.
 
 When multiple clients are connected, the **minimum** limit across all clients wins.
@@ -724,10 +729,10 @@ When a client disconnects, its limits are removed and the effective limit is rec
 }
 ```
 
-| Field    | Type         | Description                                                                                                                           |
-|----------|--------------|---------------------------------------------------------------------------------------------------------------------------------------|
-| `toy_id` | string       | Unique toy identifier.                                                                                                                |
-| `limit`  | integer/null | Maximum allowed intensity (0 – `max_intensity`). Values above `max_intensity` are clamped. Send `null` to remove this client's limit. |
+| Field    | Type         | Description                                                                                                     |
+|----------|--------------|-----------------------------------------------------------------------------------------------------------------|
+| `toy_id` | string       | Unique toy identifier.                                                                                          |
+| `limit`  | integer/null | Maximum allowed intensity. Clamped to the range 0 - `max_intensity`. Send `null` to remove this client's limit. |
 
 Send `null` to withdraw your limit, letting the remaining clients' limits (or `max_intensity` if none) take effect:
 ```json
@@ -747,6 +752,8 @@ Send `null` to withdraw your limit, letting the remaining clients' limits (or `m
 
 **Possible errors**
 - Unknown Toy: The provided toy ID is not known to the server.
+- Connection Error: The limit was accepted and is in force, but the toy could not be brought down to it right now.
+  Reconnecting is attempted automatically. The limit still applies to every command and pattern tick from here on.
 - Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
 - Invalid Data: Your request data is wrong, e.g., missing the `toy_id` field.
 - Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
