@@ -108,6 +108,64 @@ class TestToyCache(unittest.TestCase):
         cache = ToyCache(self.cache_path, self.default_model, "")
         self.assertEqual(cache.get_model_name("any_name"), self.default_model)
 
+    def test_read_drops_non_string_values(self):
+        """
+        A cached model name that is not a str must never reach the caller.
+
+        It would be assigned to ToyData.model_name during discovery (inside a Bluetooth callback), where the
+        resulting TypeError is far away from the bad cache entry that caused it.
+        """
+        self.cache_path.write_text(
+            json.dumps(
+                {
+                    "LVS-GOOD": "Gush",
+                    "LVS-INT": 123,
+                    "LVS-NULL": None,
+                    "LVS-LIST": ["Gush"],
+                    "LVS-DICT": {"model": "Gush"},
+                    "LVS-BOOL": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        cache = ToyCache(self.cache_path, self.default_model, "")
+
+        self.assertEqual(cache.get_model_name("LVS-GOOD"), "Gush")  # good entry kept
+        for rejected in ("LVS-INT", "LVS-NULL", "LVS-LIST", "LVS-DICT", "LVS-BOOL"):
+            self.assertEqual(cache.get_model_name(rejected), self.default_model)
+            self.assertIsInstance(cache.get_model_name(rejected), str)
+
+    def test_read_drops_non_string_keys(self):
+        """JSON object keys are always strings, but the file may have been written by something else."""
+        self.cache_path.write_text('{"1": "Gush"}', encoding="utf-8")
+        cache = ToyCache(self.cache_path, self.default_model, "")
+        self.assertEqual(
+            cache.get_model_name("1"), "Gush"
+        )  # a numeric-looking str is fine
+
+        # A dict that survived a non-JSON round trip (e.g. written by a different tool) must not poison the cache.
+        cache.update({2: "Edge"})  # type: ignore[dict-item]
+        self.assertEqual(cache.get_model_name(2), self.default_model)  # type: ignore[arg-type]
+
+    def test_update_drops_non_string_values(self):
+        """update() is typed str -> str, but a caller ignoring that must not poison the cache either."""
+        cache = ToyCache(self.cache_path, self.default_model, "")
+        cache.update({"LVS-A123": "Gush", "LVS-BAD": None})  # type: ignore[dict-item]
+
+        self.assertEqual(cache.get_model_name("LVS-A123"), "Gush")
+        self.assertEqual(cache.get_model_name("LVS-BAD"), self.default_model)
+
+        # The bad entry must not have been persisted either.
+        reloaded = ToyCache(self.cache_path, self.default_model, "")
+        self.assertEqual(reloaded.get_model_name("LVS-A123"), "Gush")
+        self.assertEqual(reloaded.get_model_name("LVS-BAD"), self.default_model)
+
+    def test_non_string_default_model_falls_back_to_empty(self):
+        """The default is handed out for every unknown toy, so it has to be a str as well."""
+        cache = ToyCache(self.cache_path, None, "")  # type: ignore[arg-type]
+        self.assertEqual(cache.get_model_name("LVS-UNKNOWN"), "")
+
     def test_cache_persistence(self):
         """Test that a cache persists between instances."""
         cache1 = ToyCache(self.cache_path, self.default_model, "")

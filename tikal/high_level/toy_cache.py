@@ -15,6 +15,7 @@ import json
 import traceback
 from logging import getLogger
 from pathlib import Path
+from typing import Any
 
 
 class ToyCache:
@@ -25,6 +26,8 @@ class ToyCache:
     model names (e.g., "Nora"). This eliminates the need for users to manually identify toys every time they connect.
 
     The cache is loaded on initialization. Encountered errors are logged, and ToyCache fails silently.
+    Only ``str -> str`` entries are kept, from the file as well as from :meth:`update`.
+    :meth:`get_model_name` always returns a ``str``.
 
     Args:
         cache_path: Path to the JSON cache file. If the path is empty (=``Path()``), the cache operates with no persistence.
@@ -53,10 +56,15 @@ class ToyCache:
     """
 
     def __init__(self, cache_path: Path, default_model: str, logger_name: str):
+        self._log = getLogger(logger_name)
         self._cache_path = cache_path
+        if not isinstance(default_model, str):
+            self._log.warning(
+                f"default_model must be a str, got '{type(default_model)}'. Falling back to an empty model name."
+            )
+            default_model = ""
         self._default_model = default_model
         self._cache: dict[str, str] = {}
-        self._log = getLogger(logger_name)
         if cache_path.name:
             self._read()
         self._log.info(
@@ -90,9 +98,13 @@ class ToyCache:
             Fails silently if disk I/O errors occur. Errors are logged and do not raise exceptions.
             The in-memory cache is always updated even if writing to disk fails.
             If the cache was initialized with an empty path (``Path()``), no disk write is attempted.
+
+        Note:
+            Entries whose name or model name is not a ``str`` are logged and dropped, so a caller ignoring the type
+            hints cannot put a value into the cache that :meth:`get_model_name` would later hand back.
         """
         self._log.info(f"Updating ToyCache with updates={updates}")
-        self._cache.update(updates)
+        self._cache.update(self._only_string_entries(updates, "update"))
         if not self._cache_path.name:
             return
         try:
@@ -143,11 +155,42 @@ class ToyCache:
         if not self._cache_path.exists():
             self._cache_path.write_text("{}", encoding="utf-8")
 
+    def _only_string_entries(
+        self, entries: dict[Any, Any], context: str
+    ) -> dict[str, str]:
+        """
+        Keep only the ``str -> str`` pairs of *entries*, logging whatever is dropped.
+
+        Every cached value is eventually assigned to ``ToyData.model_name``, which rejects anything that is not a
+        ``str``. Filtering keeps the promise that :meth:`get_model_name` returns a ``str``, whatever the file (or a caller) contains.
+
+        Args:
+            entries: Candidate name -> model-name pairs, from the cache file or from :meth:`update`.
+            context: Short description of where the entries came from, used in the log message.
+
+        Returns:
+            The subset of *entries* whose name and model name are both ``str``.
+        """
+        clean: dict[str, str] = {}
+        rejected: list[str] = []
+        for name, model_name in entries.items():
+            if isinstance(name, str) and isinstance(model_name, str):
+                clean[name] = model_name
+            else:
+                rejected.append(f"{name!r}: {model_name!r}")
+        if rejected:
+            self._log.warning(
+                f"Ignoring {len(rejected)} ToyCache entr(y/ies) from {context} that are not str -> str: "
+                f"{rejected}. Affected toys fall back to the default model name."
+            )
+        return clean
+
     def _read(self) -> None:
         """
         Load the cache from the disk.
 
         Reads the JSON cache file and populates the in-memory cache dictionary. Creates the cache file if it doesn't exist.
+        Anything that is not a ``str -> str`` mapping is logged and skipped.
         """
         if not self._cache_path.name:
             self._log.warning(
@@ -160,7 +203,14 @@ class ToyCache:
                 data = json.load(file)
                 if isinstance(data, dict):
                     self._log.debug(f"Found {len(data)} entries in ToyCache")
-                    self._cache = data
+                    self._cache = self._only_string_entries(
+                        data, f"'{self._cache_path}'"
+                    )
+                else:
+                    self._log.warning(
+                        f"ToyCache file '{self._cache_path}' does not contain a JSON object but a "
+                        f"'{type(data)}'. Starting with an empty cache."
+                    )
         except Exception as e:
             self._log.warning(
                 f"Error reading ToyCache: {e} with details: {traceback.format_exc()}"

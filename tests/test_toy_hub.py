@@ -459,3 +459,48 @@ def test_shutdown_is_idempotent(hub_factory, mock_builder):
     hub.shutdown()  # no-op; must return promptly
     assert time.time() - t0 < 2.0
     assert hub.is_running is False
+# ---------------------------------------------------------------------------
+# Untrusted toy cache
+# ---------------------------------------------------------------------------
+
+
+def test_corrupted_cache_does_not_break_blocking_discovery(
+    hub_factory, mock_builder, tmp_path
+):
+    """A cache entry that is not a model-name string must not break discovery for the other toys."""
+    cache_path = tmp_path / "toys.json"
+    cache_path.write_text(
+        json.dumps({"LVS-A1": 123, "LVS-B2": "Edge"}), encoding="utf-8"
+    )
+    mock_builder.discover_toys.return_value = [
+        lovense_data(toy_id="a1", model="", name="LVS-A1"),
+        lovense_data(toy_id="b2", model="", name="LVS-B2"),
+    ]
+    hub = hub_factory(toy_cache_path=cache_path, default_model="unknown")
+
+    found = hub.discover_toys_blocking(0.1)
+
+    assert [toy.model_name for toy in found] == ["unknown", "Edge"]
+
+
+def test_corrupted_cache_does_not_break_continuous_discovery(
+    hub_factory, mock_builder, tmp_path
+):
+    """
+    Regression: the model name is filled in inside the scanner's callback.
+
+    A non-str cache value used to raise TypeError there, far from the bad entry and on a Bluetooth worker thread.
+    """
+    cache_path = tmp_path / "toys.json"
+    cache_path.write_text(json.dumps({"LVS-A1": ["Gush"]}), encoding="utf-8")
+    hub = hub_factory(toy_cache_path=cache_path, default_model="unknown")
+
+    updates = []
+    hub.start_discovery(updates.append)
+    on_update = mock_builder.start_continuous.call_args.args[0]
+
+    on_update(
+        [lovense_data(toy_id="a1", model="", name="LVS-A1")]
+    )  # what the scanner does
+
+    assert [toy.model_name for toy in updates[-1]] == ["unknown"]
