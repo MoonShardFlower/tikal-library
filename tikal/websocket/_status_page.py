@@ -230,6 +230,7 @@ class ToyServerStatusPage:
           <tr><td>Limit 2</td><td class="mono">{limit2}</td></tr>
           <tr><td>Paused</td><td>{"Yes" if state.get("is_paused") else "No"}</td></tr>
           <tr><td>Blocked</td><td>{"Yes" if state.get("is_blocked") else "No"}</td></tr>
+          <tr><td>Held</td><td>{"Yes" if state.get("is_held") else "No"}</td></tr>
           <tr><td>Wraparound</td><td>{"Yes" if state.get("wraparound") else "No"}</td></tr>
           <tr><td>Elapsed</td><td>{state.get("elapsed", 0):.1f} ms</td></tr>
           <tr><td>Pattern Ver</td><td class="mono">{state.get("pattern_version", 0)}</td></tr>

@@ -81,7 +81,8 @@ class ToyController(BaseToyController):
         """
         Check if the toy is currently connected.
 
-        When disconnected, commands are queued but not sent. Upon reconnection, queued commands are processed.
+        While disconnected, commands are not sent: their callbacks receive None right away, as for a failed command.
+        Upon reconnection, the toy is stopped and its pattern paused (it does not resume on its own).
 
         Returns:
             bool: True if connected, False otherwise.
@@ -342,7 +343,7 @@ class ToyController(BaseToyController):
 
         Note:
             If the toy is blocked, the callback receives False immediately and no command is sent.
-            If disconnected, the command is queued and sent upon reconnection.
+            If disconnected, the command is not sent and the callback receives None right away.
         """
 
         async def _execute() -> Any:
@@ -551,6 +552,28 @@ class ToyController(BaseToyController):
         self._invalidate_last_values()
         return self._toy.model_name
 
+    async def internal_stop_after_reconnect(self) -> None:
+        """
+        Stop the toy and pause its pattern once its connection is back, bypassing the command queue (internal use only).
+
+        Whatever the toy was last told no longer holds after a connection loss, and after up to a minute away nothing
+        should start it again on its own: the pattern is paused, and a command still queued from just before the
+        connection was lost is dropped (its callback receives None, as for a failed command) instead of being sent up to
+        a minute late. Commands issued during the outage were already rejected (see :meth:`_schedule_command`). Unlike
+        :meth:`set_paused`, this leaves the block state alone.
+
+        Raises:
+            ConnectionError: The stop could not be delivered. ToyHub then retries the reconnect.
+
+        Warning:
+            This is an internal method used by ToyHub and not meant to be used by you.
+        """
+        self._pattern_handler.set_paused(True)
+        self.internal_drop_queued_commands()
+        await self._toy.strict_stop()
+        # The toy is at zero now, so a pattern resumed later has to re-send its values.
+        self._invalidate_last_values()
+
     async def process_communication(self) -> None:
         """
         Process queued commands and pattern playback (internal use only)
@@ -600,18 +623,54 @@ class ToyController(BaseToyController):
                 if callback:
                     callback(None)
 
+    def internal_drop_queued_commands(self) -> None:
+        """
+        Discard every queued command without sending it, reporting each one to its callback as failed (None) (internal use only).
+
+        Used when a reconnect ends, either way: commands from before it are never sent. A callback that raises is
+        logged and skipped, so it cannot keep the others from being told, nor fail the reconnect this is part of.
+
+        Warning:
+            This is an internal method used by ToyHub and not meant to be used by you.
+        """
+        dropped = 0
+        while self._command_queue:
+            _, callback = self._command_queue.popleft()
+            dropped += 1
+            if callback:
+                try:
+                    callback(None)
+                except Exception:
+                    self._log.exception(
+                        f"Callback of a dropped command for {self.toy_id} raised."
+                    )
+        if dropped:
+            self._log.info(
+                f"Dropped {dropped} command(s) still queued for {self.toy_id} when its connection was lost."
+            )
+
     def _schedule_command(
         self,
         command: Callable[[], Any],
         callback: Optional[Callable[[Any], None]] = None,
     ) -> None:
         """
-        Add a command to the execution queue.
+        Add a command to the execution queue, or reject it right away while the toy is not connected.
+
+        A command issued while disconnected would never be sent: a reconnect drops whatever was queued in the meantime,
+        and a toy that was given up, powered off or disconnected does not come back. So its callback is told at once
+        (None, as for a failed command) instead of after up to a minute, or never. Like the rejection of a blocked
+        intensity command, the callback runs synchronously in the caller's thread.
 
         Args:
             command: Async callable that executes the command.
             callback: Optional callback to invoke with the result.
         """
+        if not self._connected:
+            self._log.info(f"Rejected a command for {self.toy_id}: not connected.")
+            if callback:
+                callback(None)
+            return
         self._command_queue.append((command, callback))
 
 

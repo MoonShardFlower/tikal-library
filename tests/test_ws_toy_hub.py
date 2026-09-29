@@ -12,11 +12,13 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
+from tikal._private import COMMUNICATION_INTERVAL
 from tikal.websocket._toy_controller import _MockEstimController
 from tikal.websocket._toy_hub import (
     DiscoveryError,
     DiscoveryStartError,
     InvalidModelError,
+    SafetyHoldError,
     ToyAlreadyAddedError,
     ToyConnectionError,
     ToyStatus,
@@ -137,6 +139,73 @@ async def test_set_paused_and_blocked_idempotent(hub):
     await hub.set_blocked("Thunder_ID", True)
     await hub.set_blocked("Thunder_ID", True)  # no-op second call
     assert (await hub.get_state("Thunder_ID"))["is_blocked"] is True
+
+
+@pytest.mark.parametrize(
+    "command, args, flag",
+    [
+        ("set_blocked", (True,), "is_blocked"),
+        ("toggle_block", (), "is_blocked"),
+        ("set_paused", (True,), "is_paused"),
+        ("toggle_pause", (), "is_paused"),
+    ],
+)
+async def test_block_and_pause_survive_a_retried_stop(hub, command, args, flag):
+    """
+    A stop that fails once is retried, and the retry must finish the change instead of flipping it back.
+
+    Regression: the hub used to retry the *toggle*, so a transient Bluetooth error while blocking left the toy
+    unblocked, while the command still reported success.
+    """
+    controller = await _add_thunder(hub)
+    await hub.set_pattern("Thunder_ID", [(10_000, 10, 0)], True, True)
+    controller._toy.strict_stop = AsyncMock(
+        side_effect=[ConnectionError("transient"), True]
+    )
+
+    await getattr(hub, command)("Thunder_ID", *args)
+
+    assert (await hub.get_state("Thunder_ID"))[flag] is True
+    assert controller._toy.strict_stop.await_count == 2  # the retry re-sent the stop
+
+
+async def test_safety_hold_mutes_toys_and_leaves_their_state(hub):
+    controller = await _add_thunder(hub)
+    await hub.set_pattern("Thunder_ID", [(10_000, 10, 0)], True, True)
+    assert await _wait_until(lambda: controller.current_intensities == (10, 0))
+
+    assert await hub.set_safety_hold(True) == []
+    state = await hub.get_state("Thunder_ID")
+    assert state["is_held"] is True and state["current_intensities"] == [0, 0]
+    assert state["is_paused"] is False and state["is_blocked"] is False
+    assert await hub.intensity1("Thunder_ID", 5) is False
+    with pytest.raises(SafetyHoldError):
+        await hub.direct_command("Thunder_ID", "DeviceType")
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 4)  # playback cannot drive a held toy
+    assert controller.current_intensities == (0, 0)
+
+    # Releasing restores nothing: the pattern was never paused, so playback simply drives the toy again.
+    assert await hub.set_safety_hold(False) == []
+    assert await _wait_until(lambda: controller.current_intensities == (10, 0))
+
+
+async def test_toy_added_during_safety_hold_is_held(hub):
+    await hub.set_safety_hold(True)
+    await hub.add("Lightning_ID", "Lightning")
+    assert (await hub.get_state("Lightning_ID"))["is_held"] is True
+
+    await hub.set_safety_hold(False)
+    assert (await hub.get_state("Lightning_ID"))["is_held"] is False
+
+
+async def test_safety_hold_reports_a_toy_it_could_not_stop(hub):
+    controller = await _add_thunder(hub)
+    controller._toy.strict_stop = AsyncMock(side_effect=ConnectionError("radio gone"))
+
+    assert await hub.set_safety_hold(True) == ["Thunder_ID"]
+    assert (
+        controller.is_held
+    )  # held regardless, so nothing drives it once it is reachable again
 
 
 async def test_intensity_limits_clamp(hub):
@@ -295,13 +364,51 @@ async def test_command_failure_triggers_reconnect(hub):
     assert "Thunder_ID" in hub._toys
 
 
-async def test_reconnect_failure_marks_lost_and_removes(hub):
+async def test_reconnect_failure_marks_lost_and_removes(hub, short_reconnect_window):
     controller = await _add_thunder(hub)
     controller.reconnect = AsyncMock(side_effect=ConnectionError("still gone"))
 
     await hub._on_disconnect("Thunder_ID")
 
     assert await _wait_until(lambda: "Thunder_ID" not in hub._toys)
+    assert hub._toy_status.get("Thunder_ID") == ToyStatus.LOST
+    assert controller.reconnect.await_count > 1  # retried before giving up
+
+
+async def test_reconnect_retries_until_the_toy_is_back(hub, short_reconnect_pause):
+    """A failed attempt, or a stop that fails right after reconnecting, is retried instead of giving the toy up."""
+    controller = await _add_thunder(hub)
+    controller.reconnect = AsyncMock(side_effect=[ConnectionError("gone"), None, None])
+    controller._toy.strict_stop = AsyncMock(
+        side_effect=[ConnectionError("flaky"), True]
+    )
+
+    await hub._on_disconnect("Thunder_ID")
+
+    assert await _wait_until(
+        lambda: hub._toy_status.get("Thunder_ID") == ToyStatus.CONNECTED
+        and not hub._reconnect_tasks
+    )
+    assert "Thunder_ID" in hub._toys
+    assert controller.reconnect.await_count == 3
+    assert (
+        controller._toy.strict_stop.await_count == 2
+    )  # the toy was stopped in the end
+
+
+async def test_reconnect_window_bounds_a_hanging_attempt(hub, short_reconnect_window):
+    """A connect attempt that never returns is cut off when the window closes: the toy cannot stay RECONNECTING."""
+    controller = await _add_thunder(hub)
+
+    async def hang() -> None:
+        await asyncio.Event().wait()
+
+    controller.reconnect = hang
+
+    await hub._on_disconnect("Thunder_ID")
+
+    assert await _wait_until(lambda: "Thunder_ID" not in hub._toys, timeout=2.0)
+    assert hub._toy_status.get("Thunder_ID") == ToyStatus.LOST
 
 
 async def test_power_off_removes_toy(hub):

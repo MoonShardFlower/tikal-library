@@ -41,8 +41,10 @@ Example:
 """
 
 import asyncio
+import atexit
 import copy
 import traceback
+import weakref
 from logging import getLogger
 from pathlib import Path
 from threading import Lock
@@ -54,7 +56,9 @@ from bleak import BleakClient, BleakScanner
 from .._private import (
     BATTERY_UPDATE_INTERVAL,
     COMMUNICATION_INTERVAL,
+    RECONNECT_WINDOW,
     AsyncRunner,
+    retry_within_window,
 )
 from ..low_level import ConnectionBuilder, Toy, ToyData
 from .toy_cache import ToyCache
@@ -70,9 +74,13 @@ class ToyHub:
     Args:
         on_battery_update: Callback invoked when battery levels are updated (regularly). Receives dict mapping toy_id to battery level (int) or None if unavailable.
         on_error: Callback invoked when critical errors occur. Receives (exception, context_message, traceback_string).
-        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives toy_id. ToyHub automatically attempts reconnection.
-        on_reconnection_failure: Callback invoked when automatic reconnection fails. Receives toy_id.
-        on_reconnection_success: Callback invoked when automatic reconnection succeeds. Receives toy_id.
+        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives toy_id. ToyHub automatically attempts reconnection,
+            with repeated attempts for up to one minute.
+        on_reconnection_failure: Callback invoked when no reconnect attempt succeeded within that minute. Receives toy_id.
+            Commands sent to the toy from then on are rejected right away (their callbacks receive None).
+        on_reconnection_success: Callback invoked when automatic reconnection succeeds. Receives toy_id. The toy is stopped
+            and its pattern paused at that point; resume it (e.g., ``set_paused(False)``) if it should continue. Commands
+            issued while it was disconnected were rejected right away (their callbacks received None).
         on_power_off: Callback invoked when a toy is powered off via its physical button. Receives toy_id.
         logger_name: Name of the logger to use for logging messages.
         toy_cache_path: Path to a file for caching toy model names. Allows automatic model name assignment on later discoveries.
@@ -121,6 +129,39 @@ class ToyHub:
             bluetooth_client,
             mock_toys,
         )
+        self._atexit_hook: Optional[Callable[[], None]] = self._register_atexit()
+
+    def _register_atexit(self) -> Callable[[], None]:
+        """
+        Register a last-resort :meth:`shutdown` for interpreter exit and return the hook so it can be unregistered.
+
+        :meth:`shutdown` is documented as mandatory, but nothing forces a caller to reach it: an uncaught exception,
+        a ``KeyboardInterrupt``, or simply forgetting would otherwise leave every connected toy running at whatever
+        intensity it was last given. The interpreter still runs ``atexit`` hooks in all of those cases, and the
+        runner's event-loop thread is still alive at that point, so the toys can still be stopped and disconnected.
+
+        The hook holds only a weak reference, so registering it does not keep the hub alive; a hub that is garbage
+        collected simply makes the hook a no-op.
+
+        Returns:
+            The registered hook, to be passed to ``atexit.unregister`` by :meth:`shutdown`.
+        """
+        hub_ref = weakref.ref(self)
+
+        def shutdown_at_exit() -> None:
+            hub = hub_ref()
+            if hub is None:
+                return
+            try:
+                hub._log.warning(
+                    "ToyHub.shutdown() was never called. Stopping and disconnecting all toys at exit."
+                )
+                hub.shutdown()
+            except Exception:  # pragma: no cover
+                pass  # Best effort: nothing useful can be raised during interpreter shutdown.
+
+        atexit.register(shutdown_at_exit)
+        return shutdown_at_exit
 
     @property
     def is_running(self) -> bool:
@@ -746,11 +787,15 @@ class ToyHub:
         """
         Handle unexpected toy disconnection and attempt reconnection
 
+        Reconnecting is retried for up to RECONNECT_WINDOW (see :func:`tikal._private.retry_within_window`), so one
+        Bluetooth hiccup does not cost the toy. If no attempt succeeds in time, the toy is disconnected for good. Each
+        attempt stops the toy and pauses its pattern once the connection is back, so nothing resumes on its own.
+
         Args:
             toy_id: Unique identifier of the disconnected toy.
         """
         self._log.warning(
-            f"Disconnected from {toy_id}. Will attempt to reconnect once."
+            f"Disconnected from {toy_id}. Will try to reconnect for up to {RECONNECT_WINDOW:.0f} s."
         )
         toy_controller = self._toy_controllers.get(toy_id)
         if toy_controller is None:
@@ -761,35 +806,38 @@ class ToyHub:
             self._disconnect_callback(toy_id)
 
         async def reconnect_task() -> bool:
-            return await toy_controller.toy.reconnect()
+            async def attempt() -> None:
+                if not await toy_controller.toy.reconnect():
+                    raise ConnectionError(f"Reconnecting to {toy_id} failed.")
+                # Always stop the toy after connection loss. A failed stop fails the attempt, so it is retried.
+                await toy_controller.internal_stop_after_reconnect()
+
+            return await retry_within_window(attempt, toy_id, self._log)
 
         def on_reconnect_complete(result: bool | BaseException) -> None:
-            if isinstance(result, Exception):
-                self._log.error(
-                    f"Unable to recover connection to toy at address {toy_id} due to {result!r}"
-                )
-                if self._reconnection_failure_callback:
-                    self._reconnection_failure_callback(toy_id)
-                # We are on the runner's loop thread here, so block-waiting with run_async() would deadlock the loop.
-                # Schedule the cleanup disconnect on the loop instead, without waiting for it.
-                self._runner.run_callback(
-                    toy_controller.toy.disconnect(), lambda _: None, 4.0
-                )
-            elif result:
+            if result is True:
                 self._log.info(f"Reconnection successful for {toy_id}")
                 self._register_controller(toy_controller)
                 if self._reconnection_success_callback:
                     self._reconnection_success_callback(toy_id)
-            else:
-                if self._reconnection_failure_callback:
-                    self._reconnection_failure_callback(toy_id)
-                # We are on the runner's loop thread here, so block-waiting with run_async() would deadlock the loop.
-                # Schedule the cleanup disconnect on the loop instead, without waiting for it.
-                self._runner.run_callback(
-                    toy_controller.toy.disconnect(), lambda _: None, 4.0
+                return
+            if isinstance(result, BaseException):
+                self._log.error(
+                    f"Unable to recover connection to toy at address {toy_id} due to {result!r}"
                 )
+            # The toy is gone for good, so its queued commands will never be sent: report them as failed, as a
+            # successful reconnect does, before telling the caller that the toy is lost.
+            toy_controller.internal_drop_queued_commands()
+            if self._reconnection_failure_callback:
+                self._reconnection_failure_callback(toy_id)
+            # We are on the runner's loop thread here, so block-waiting with run_async() would deadlock the loop.
+            # Schedule the cleanup disconnect on the loop instead, without waiting for it.
+            self._runner.run_callback(
+                toy_controller.toy.disconnect(), lambda _: None, 4.0
+            )
 
-        self._runner.run_callback(reconnect_task(), on_reconnect_complete, 5.0)
+        # No extra timeout: retry_within_window already bounds the whole task by RECONNECT_WINDOW.
+        self._runner.run_callback(reconnect_task(), on_reconnect_complete, None)
 
     def _handle_power_off(self, toy_id: str) -> None:
         """
@@ -842,11 +890,20 @@ class ToyHub:
             After calling shutdown(), the ToyHub instance should not be reused.
             Create a new instance if you need to start working with toys again.
             The method is idempotent: calling it again after the first shutdown is a no-op.
+
+        Note:
+            As a safety net this also runs automatically at interpreter exit if you never call it (including after an
+            uncaught exception or a ``KeyboardInterrupt``), so toys are not left running. Rely on it only as a
+            backstop: it cannot run if the process is killed outright (``SIGKILL``, ``os._exit``, a power loss).
         """
         if self._shut_down:
             self._log.debug("shutdown() called again; already shut down.")
             return
         self._shut_down = True
+
+        if self._atexit_hook is not None:
+            atexit.unregister(self._atexit_hook)
+            self._atexit_hook = None
 
         self._log.info("Shutting down CommunicationHandler...")
         # Stop communication loop

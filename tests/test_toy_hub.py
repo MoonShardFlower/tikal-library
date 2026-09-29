@@ -1,8 +1,11 @@
 """Tests for the High-Level :class:`ToyHub` orchestration."""
 
+import asyncio
+import gc
 import json
 import threading
 import time
+import weakref
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -174,11 +177,118 @@ def test_handle_disconnect_reconnect_success_reregisters(hub_factory, mock_build
     assert "a1" in hub._toy_controllers  # re-registered after successful reconnect
 
 
+def test_handle_disconnect_retries_until_the_toy_is_back(
+    hub_factory, mock_builder, short_reconnect_pause
+):
+    # One failed attempt (or one that raises) must not cost the toy: reconnecting is retried.
+    reconnected = threading.Event()
+    toy = make_toy()
+    toy.reconnect = AsyncMock(side_effect=[False, ConnectionError("hiccup"), True])
+    mock_builder.create_toys.return_value = [toy]
+    hub = hub_factory(on_reconnection_success=lambda tid: reconnected.set())
+    hub.connect_toys_blocking([lovense_data()])
+
+    hub._handle_disconnect("a1")
+
+    assert reconnected.wait(timeout=3.0), "reconnection-success callback never fired"
+    assert toy.reconnect.await_count == 3
+    assert "a1" in hub._toy_controllers
+
+
+def test_reconnect_stops_the_toy_and_pauses_its_pattern(hub_factory, mock_builder):
+    # After up to a minute away the pattern must not resume on its own.
+    reconnected = threading.Event()
+    toy = make_toy()
+    toy.reconnect = AsyncMock(return_value=True)
+    mock_builder.create_toys.return_value = [toy]
+    hub = hub_factory(on_reconnection_success=lambda tid: reconnected.set())
+    hub.connect_toys_blocking([lovense_data()])
+    controller = hub._toy_controllers["a1"]
+    controller.set_pattern([(10_000, 10, 0)])
+    assert controller.is_paused is False
+
+    hub._handle_disconnect("a1")
+
+    assert reconnected.wait(timeout=3.0), "reconnection-success callback never fired"
+    assert toy.strict_stop.await_count == 1
+    assert controller.is_paused is True
+
+
+def test_commands_during_the_outage_are_rejected_right_away(hub_factory, mock_builder):
+    # A command issued while the toy is reconnecting must not reach it up to a minute late: its callback hears None at
+    # once, the way it hears about a failed command. Commands issued after the reconnect run normally.
+    reconnected = threading.Event()
+    release = threading.Event()
+    results: list = []
+
+    async def gated_reconnect() -> bool:
+        # Hold the reconnect, so the command below is issued while the toy is certainly still disconnected.
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        return True
+
+    toy = make_toy()
+    toy.reconnect = AsyncMock(side_effect=gated_reconnect)
+    mock_builder.create_toys.return_value = [toy]
+    hub = hub_factory(on_reconnection_success=lambda tid: reconnected.set())
+    hub.connect_toys_blocking([lovense_data()])
+    controller = hub._toy_controllers["a1"]
+
+    hub._handle_disconnect("a1")
+    controller.intensity1(5, callback=results.append)  # issued while disconnected
+    assert results == [None]  # right away, not only once the reconnect ends
+    release.set()
+
+    assert reconnected.wait(timeout=3.0), "reconnection-success callback never fired"
+    toy.intensity1.assert_not_awaited()
+
+    controller.intensity1(7)
+    deadline = time.time() + 2.0
+    while toy.intensity1.await_count == 0 and time.time() < deadline:
+        time.sleep(0.01)
+    toy.intensity1.assert_awaited_once_with(7)
+
+
+def test_reconnect_leaves_a_block_alone(hub_factory, mock_builder):
+    reconnected = threading.Event()
+    toy = make_toy()
+    toy.reconnect = AsyncMock(return_value=True)
+    mock_builder.create_toys.return_value = [toy]
+    hub = hub_factory(on_reconnection_success=lambda tid: reconnected.set())
+    hub.connect_toys_blocking([lovense_data()])
+    controller = hub._toy_controllers["a1"]
+    controller.toggle_block()
+
+    hub._handle_disconnect("a1")
+
+    assert reconnected.wait(timeout=3.0), "reconnection-success callback never fired"
+    assert controller.is_blocked is True
+
+
+def test_a_failed_stop_after_reconnecting_is_retried(
+    hub_factory, mock_builder, short_reconnect_pause
+):
+    reconnected = threading.Event()
+    toy = make_toy()
+    toy.reconnect = AsyncMock(return_value=True)
+    toy.strict_stop = AsyncMock(side_effect=[ConnectionError("flaky"), True])
+    mock_builder.create_toys.return_value = [toy]
+    hub = hub_factory(on_reconnection_success=lambda tid: reconnected.set())
+    hub.connect_toys_blocking([lovense_data()])
+
+    hub._handle_disconnect("a1")
+
+    assert reconnected.wait(timeout=3.0), "reconnection-success callback never fired"
+    assert toy.strict_stop.await_count == 2
+    assert toy.reconnect.await_count == 2
+
+
 def test_handle_disconnect_reconnect_failure_disconnects_promptly(
-    hub_factory, mock_builder
+    hub_factory, mock_builder, short_reconnect_window
 ):
     # Regression: the failure path must clean up the toy without blocking the runner loop.
     # The old code called the blocking run_async() from the loop thread and deadlocked ~4s.
+    # (The shortened reconnect window keeps the retries themselves well below the 1 s bound checked here.)
     failed = threading.Event()
     toy = make_toy()
     toy.reconnect = AsyncMock(return_value=False)  # force the failure path
@@ -198,11 +308,49 @@ def test_handle_disconnect_reconnect_failure_disconnects_promptly(
     assert toy.disconnect.await_count == 1
     assert elapsed < 1.0, f"disconnect took {elapsed:.2f}s (loop was blocked)"
     assert "a1" not in hub._toy_controllers  # not re-registered
+    assert toy.reconnect.await_count > 1  # retried before giving up
 
 
-def test_handle_disconnect_reconnect_raising_reports_failure(hub_factory, mock_builder):
-    # If reconnect() itself raises, the exception branch of on_reconnect_complete must fire the
-    # failure callback and still clean up the toy.
+def test_given_up_toy_reports_leftover_commands_and_rejects_new_ones(
+    hub_factory, mock_builder, short_reconnect_window
+):
+    # The toy is gone for good. A command still queued from just before the connection was lost is reported as failed
+    # (None) before the reconnection-failure callback, and a command issued after that is rejected right away.
+    events: list = []
+    failed = threading.Event()
+
+    def on_failure(toy_id: str) -> None:
+        events.append("lost")
+        failed.set()
+
+    toy = make_toy()
+    toy.reconnect = AsyncMock(return_value=False)
+    mock_builder.create_toys.return_value = [toy]
+    hub = hub_factory(on_reconnection_failure=on_failure)
+    hub.connect_toys_blocking([lovense_data()])
+    controller = hub._toy_controllers["a1"]
+
+    hub._handle_disconnect("a1")
+    # A command that made it into the queue just before the disconnect was noticed: the race the drop exists for.
+    leftover = AsyncMock()
+    controller._command_queue.append(
+        (leftover, lambda result: events.append(("leftover", result)))
+    )
+
+    assert failed.wait(timeout=3.0), "reconnection-failure callback never fired"
+    assert events == [("leftover", None), "lost"]
+    leftover.assert_not_awaited()
+
+    controller.intensity1(5, callback=lambda result: events.append(("after", result)))
+    assert events[-1] == ("after", None)
+    toy.intensity1.assert_not_awaited()
+
+
+def test_handle_disconnect_reconnect_raising_reports_failure(
+    hub_factory, mock_builder, short_reconnect_window
+):
+    # If reconnect() itself keeps raising, every attempt counts as failed: once the window runs out the
+    # failure callback must fire and the toy must still be cleaned up.
     failed = threading.Event()
     toy = make_toy()
     toy.reconnect = AsyncMock(side_effect=ConnectionError("boom"))
@@ -459,6 +607,67 @@ def test_shutdown_is_idempotent(hub_factory, mock_builder):
     hub.shutdown()  # no-op; must return promptly
     assert time.time() - t0 < 2.0
     assert hub.is_running is False
+
+
+# ---------------------------------------------------------------------------
+# Exit safety net
+# ---------------------------------------------------------------------------
+
+
+def test_shutdown_is_registered_at_exit(mock_builder):
+    """
+    shutdown() is documented as mandatory, but a forgotten (or skipped) call must not leave toys running.
+
+    The interpreter still runs atexit hooks after an uncaught exception or a KeyboardInterrupt, which is the last
+    chance to stop and disconnect everything.
+    """
+    with (
+        patch("tikal.high_level.toy_hub.ConnectionBuilder", return_value=mock_builder),
+        patch("tikal.high_level.toy_hub.atexit") as fake_atexit,
+    ):
+        hub = ToyHub(logger_name="test")
+    try:
+        fake_atexit.register.assert_called_once()
+        hook = fake_atexit.register.call_args.args[0]
+
+        with patch.object(hub, "shutdown") as shutdown:
+            hook()
+        shutdown.assert_called_once()
+    finally:
+        hub.shutdown()
+
+
+def test_explicit_shutdown_unregisters_the_atexit_hook(mock_builder):
+    """A hub shut down properly must not run its safety net again at exit."""
+    with (
+        patch("tikal.high_level.toy_hub.ConnectionBuilder", return_value=mock_builder),
+        patch("tikal.high_level.toy_hub.atexit") as fake_atexit,
+    ):
+        hub = ToyHub(logger_name="test")
+        hub.shutdown()
+
+    hook = fake_atexit.register.call_args.args[0]
+    fake_atexit.unregister.assert_called_once_with(hook)
+
+
+def test_atexit_hook_does_not_keep_the_hub_alive(mock_builder):
+    """The hook holds only a weak reference, so it neither leaks the hub nor fires for a collected one."""
+    with (
+        patch("tikal.high_level.toy_hub.ConnectionBuilder", return_value=mock_builder),
+        patch("tikal.high_level.toy_hub.atexit") as fake_atexit,
+    ):
+        hub = ToyHub(logger_name="test")
+
+    hook = fake_atexit.register.call_args.args[0]
+    hub.shutdown()
+    hub_ref = weakref.ref(hub)
+    del hub
+    gc.collect()
+
+    assert hub_ref() is None, "the atexit hook kept the ToyHub alive"
+    hook()  # firing it after collection must be a harmless no-op
+
+
 # ---------------------------------------------------------------------------
 # Untrusted toy cache
 # ---------------------------------------------------------------------------

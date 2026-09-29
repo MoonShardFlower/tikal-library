@@ -143,19 +143,20 @@ def main():
         """
         This function is invoked when a toy disconnects unexpectedly
         (Meaning that the disconnection was not initiated by you, and the toy did not send a POWEROFF message)
-        ToyHub automatically tries to reconnect to the toy. If this fails, then reconnect_failure_callback is invoked,
+        ToyHub automatically tries to reconnect to the toy, repeatedly for up to a minute. If this fails, then reconnect_failure_callback is invoked,
         otherwise reconnect_success_callback is invoked. All methods of the associated toy_controller are still safe to
-        call. However, methods that send commands to the toy will have the command scheduled for when the toy reconnects.
+        call. However, methods that send commands to the toy don't send anything while it is disconnected: their
+        callbacks receive None right away, so nothing reaches the toy up to a minute late.
         """
         print(f"Callback triggered: Disconnected {toy_id}")
 
     def on_reconnect_failure(toy_id: str):
         """
-        This function is invoked when ToyHub fails to reconnect to a toy after the connection was lost unexpectedly.
+        This function is invoked when ToyHub fails to reconnect to a toy (for a whole minute) after the connection was lost unexpectedly.
         (Meaning that the disconnection was not initiated by you, and the toy did not send a POWEROFF message)
         ToyHub automatically cleanly removes the toy from its internal state. You don't need to do anything. All methods
-        of the associated toy_controller are still safe to call. However, methods that send commands to the toy will
-        have the command scheduled (for when the toy reconnects, which will now never happen)
+        of the associated toy_controller are still safe to call. However, methods that send commands to the toy are
+        rejected right away: their callbacks receive None.
         """
         print(
             f"Callback triggered: Connection to the toy {toy_id} permanently lost."
@@ -166,7 +167,9 @@ def main():
     def on_reconnect_success(toy_id: str):
         """
         This function is invoked when ToyHub successfully reconnects to a toy after the connection was lost unexpectedly.
-        You don't need to do anything in response to this callback.
+        The toy comes back stopped, with its pattern paused, so nothing resumes on its own after the outage. Commands you
+        issued while it was disconnected were rejected (their callbacks received None). Resume the pattern
+        (e.g., set_paused(False)) if it should continue.
         """
         print(f"Callback triggered: Re-established connection to the toy {toy_id}")
 

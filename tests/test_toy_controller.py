@@ -34,6 +34,50 @@ def controller(mock_toy):
 
 
 @pytest.mark.asyncio
+async def test_stop_after_reconnect_drops_queued_commands(controller, mock_toy):
+    # Commands still queued when the connection was lost are reported as failed (None), even when an earlier callback
+    # raises, and none is sent.
+    results = []
+
+    def raising_callback(_):
+        raise RuntimeError("user callback bug")
+
+    controller.intensity1(5, raising_callback)  # queued while connected ...
+    controller.intensity2(6, results.append)
+    controller.is_connected = (
+        False  # ... then the connection drops before they are sent
+    )
+    mock_toy.reset_mock()
+
+    await controller.internal_stop_after_reconnect()
+
+    assert results == [None]
+    mock_toy.strict_stop.assert_awaited_once()
+    controller.is_connected = True
+    await controller.process_communication()
+    mock_toy.intensity1.assert_not_called()
+    mock_toy.intensity2.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_commands_while_disconnected_are_rejected_right_away(
+    controller, mock_toy
+):
+    # Nothing is queued for a toy that is not connected: the callback hears None at once, and nothing is ever sent.
+    results = []
+    controller.is_connected = False
+
+    controller.intensity1(5, results.append)
+    controller.get_battery_level(results.append)
+    assert results == [None, None]
+
+    controller.is_connected = True
+    await controller.process_communication()
+    mock_toy.intensity1.assert_not_called()
+    mock_toy.get_battery_level.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_blocked_rejects_intensity(controller, mock_toy):
     controller.toggle_block()  # block on (queues a stop)
     await controller.process_communication()  # drain that stop

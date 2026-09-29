@@ -123,6 +123,15 @@ class BaseToyController(ABC):
         """Apply this controller's ceiling to a secondary-capability level. See :meth:`_limit_intensity1`."""
         return level
 
+    def _output_suppressed(self) -> bool:
+        """
+        Whether pattern playback must keep the toy at zero (the pattern still advances).
+
+        The base controller only knows the block. Controllers with further reasons (e.g., the WebSocket safety hold)
+        extend this, so playback honors every reason through one check.
+        """
+        return self._is_blocked
+
     # ------------------------------------------------------------------
     # Shared pattern-playback algorithm (template method)
     # ------------------------------------------------------------------
@@ -150,7 +159,7 @@ class BaseToyController(ABC):
             return
 
         # Handle a paused or blocked state
-        if self._pattern_handler.is_paused or self._is_blocked:
+        if self._pattern_handler.is_paused or self._output_suppressed():
             if not self._accepted_pause:
                 # First time entering paused/blocked state - send stop command
                 await self._send_stop()

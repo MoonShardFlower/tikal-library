@@ -6,10 +6,12 @@ assert that command-line arguments are parsed into the right ``ToyServer`` kwarg
 that an unhandled error from ``serve()`` is logged rather than propagated.
 """
 
+import asyncio
 import logging
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from typing import Callable
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -30,18 +32,28 @@ def _isolate_ws_logger():
 
 
 def _run_main(argv):
-    """Run ``cli.main()`` with ToyServer + asyncio.run patched. Returns (ToyServer_mock, run_mock)."""
+    """
+    Run ``cli.main()`` with ToyServer, asyncio.run and the signal-aware serve wrapper patched.
+
+    Returns:
+        (ToyServer_mock, asyncio_run_mock, serve_until_signal_mock)
+    """
     with (
         patch.object(cli, "ToyServer") as toy_server,
         patch.object(cli.asyncio, "run") as run,
+        # MagicMock, not the default AsyncMock: main() only hands the result to the patched asyncio.run,
+        # and a real coroutine here would never be awaited.
+        patch.object(
+            cli, "_serve_until_signal", new_callable=MagicMock
+        ) as serve_wrapper,
         patch.object(sys, "argv", argv),
     ):
         cli.main()
-    return toy_server, run
+    return toy_server, run, serve_wrapper
 
 
 def test_defaults_build_expected_server():
-    toy_server, run = _run_main(["tikal-server", "--log-path", "None"])
+    toy_server, run, _ = _run_main(["tikal-server", "--log-path", "None"])
 
     run.assert_called_once()
     kwargs = toy_server.call_args.kwargs
@@ -53,7 +65,7 @@ def test_defaults_build_expected_server():
 
 
 def test_custom_arguments_are_forwarded():
-    toy_server, run = _run_main(
+    toy_server, run, _ = _run_main(
         [
             "tikal-server",
             "--host",
@@ -79,10 +91,12 @@ def test_custom_arguments_are_forwarded():
 
 
 def test_serve_is_run():
-    toy_server, run = _run_main(["tikal-server", "--log-path", "None"])
-    # serve() of the constructed server is what gets handed to asyncio.run
+    toy_server, run, serve_wrapper = _run_main(["tikal-server", "--log-path", "None"])
+    # The constructed server is run through the signal-aware wrapper, not bare serve():
+    # a terminating signal has to stop the toys instead of killing the process.
     server_instance = toy_server.return_value
-    run.assert_called_once_with(server_instance.serve.return_value)
+    assert serve_wrapper.call_args.args[0] is server_instance
+    run.assert_called_once_with(serve_wrapper.return_value)
 
 
 def test_file_logging_is_configured(tmp_path):
@@ -102,14 +116,14 @@ def test_file_logging_is_configured(tmp_path):
 
 
 def test_insecure_flag_is_forwarded():
-    toy_server, _ = _run_main(
+    toy_server, _, _ = _run_main(
         ["tikal-server", "--host", "0.0.0.0", "--insecure", "--log-path", "None"]
     )
     assert toy_server.call_args.kwargs["insecure"] is True
 
 
 def test_insecure_defaults_false():
-    toy_server, _ = _run_main(["tikal-server", "--log-path", "None"])
+    toy_server, _, _ = _run_main(["tikal-server", "--log-path", "None"])
     assert toy_server.call_args.kwargs["insecure"] is False
 
 
@@ -132,6 +146,7 @@ def test_insecure_bind_error_exits_cleanly():
 def test_serve_exception_is_logged_not_raised():
     with (
         patch.object(cli, "ToyServer"),
+        patch.object(cli, "_serve_until_signal", new_callable=MagicMock),
         patch.object(cli.asyncio, "run", side_effect=RuntimeError("boom")),
         patch.object(cli.logging, "critical") as critical,
         patch.object(sys, "argv", ["tikal-server", "--log-path", "None"]),
@@ -139,3 +154,76 @@ def test_serve_exception_is_logged_not_raised():
         cli.main()  # must not raise
 
     critical.assert_called_once()
+
+
+def test_keyboard_interrupt_exits_quietly():
+    """Ctrl+C is an expected way to stop the server, not a crash: serve()'s finally has already stopped the toys."""
+    with (
+        patch.object(cli, "ToyServer"),
+        patch.object(cli, "_serve_until_signal", new_callable=MagicMock),
+        patch.object(cli.asyncio, "run", side_effect=KeyboardInterrupt),
+        patch.object(cli.logging, "critical") as critical,
+        patch.object(sys, "argv", ["tikal-server", "--log-path", "None"]),
+    ):
+        cli.main()  # must not propagate the KeyboardInterrupt
+
+    critical.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _serve_until_signal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_serve_until_signal_awaits_serve():
+    """The wrapper is transparent: it runs serve() to completion and cleans its signal handlers up again."""
+    server = AsyncMock()
+    await cli._serve_until_signal(server, logging.getLogger("tikal_ws"))
+    server.serve.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_serve_until_signal_shuts_down_on_signal():
+    """A terminating signal must reach ToyServer.shutdown() so the toys are stopped before the process ends."""
+    server = AsyncMock()
+    loop = asyncio.get_running_loop()
+    handlers: dict[int, Callable] = {}
+
+    def fake_add_signal_handler(sig, callback, *args):
+        handlers[sig] = lambda: callback(*args)
+
+    async def serve_until_signalled():
+        # Stand in for the real serve(): return once a signal handler has fired.
+        for handler in list(handlers.values()):
+            handler()
+        await asyncio.sleep(0)
+
+    server.serve.side_effect = serve_until_signalled
+
+    with (
+        patch.object(loop, "add_signal_handler", fake_add_signal_handler),
+        patch.object(loop, "remove_signal_handler", lambda sig: True),
+    ):
+        await cli._serve_until_signal(server, logging.getLogger("tikal_ws"))
+
+    assert handlers, "no signal handler was installed"
+    server.shutdown.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_serve_until_signal_survives_missing_signal_support():
+    """Windows has no event-loop signal handlers; the wrapper must fall back instead of failing to start."""
+    server = AsyncMock()
+    loop = asyncio.get_running_loop()
+
+    def unsupported(*_args, **_kwargs):
+        raise NotImplementedError
+
+    with (
+        patch.object(loop, "add_signal_handler", unsupported),
+        patch.object(loop, "remove_signal_handler", unsupported),
+    ):
+        await cli._serve_until_signal(server, logging.getLogger("tikal_ws"))
+
+    server.serve.assert_awaited_once()

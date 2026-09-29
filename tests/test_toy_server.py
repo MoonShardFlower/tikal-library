@@ -437,14 +437,47 @@ async def test_limit_applies_to_an_already_running_pattern(ws_server):
 
 
 # ---------------------------------------------------------------------------
-# Heartbeat watchdog
+# Heartbeat watchdog / safety hold
 # ---------------------------------------------------------------------------
+
+
+def _speed_up_watchdog(server: ToyServer) -> None:
+    """Shrink the heartbeat deadline so a timeout fires within a few hundred milliseconds."""
+    server._heartbeat_timeout = 0.3
+    server._heartbeat_check_interval = 0.05
+
+
+async def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.02)
+    return predicate()
+
+
+async def _state(client: _Client, toy_id: str = "Thunder_ID") -> dict:
+    return (await client.request("get_state", {"toy_id": toy_id}))["data"]
+
+
+async def _play(client: _Client, toy_id: str = "Thunder_ID", level: int = 100) -> None:
+    """Start a long, constant pattern on the toy."""
+    await client.request(
+        "set_pattern",
+        {
+            "toy_id": toy_id,
+            "pattern": [[10_000, level, 0]],
+            "wraparound": True,
+            "reset_time": True,
+        },
+    )
+    await client.request("set_paused", {"toy_id": toy_id, "pause": False})
 
 
 async def test_heartbeat_timeout_stops_toys(ws_server):
     server, connect = ws_server
-    server._heartbeat_timeout = 0.3
-    server._heartbeat_check_interval = 0.05
+    _speed_up_watchdog(server)
 
     client = await connect()
     await _scan_and_add(client, "Thunder_ID", "Thunder")
@@ -455,12 +488,221 @@ async def test_heartbeat_timeout_stops_toys(ws_server):
     event = await client.wait_event("heartbeat_timeout")
     assert event["success"] is True
 
-    state = await client.request("get_state", {"toy_id": "Thunder_ID"})
-    assert state["data"]["current_intensities"] == [0, 0]
+    state = await _state(client)
+    assert state["current_intensities"] == [0, 0]
 
 
-async def test_heartbeat_client_disconnect_stops_toys(ws_server):
-    """Dead-man's switch: an armed heartbeat client vanishing stops all toys and notifies the others."""
+async def test_heartbeat_timeout_holds_toys_until_the_client_returns(ws_server):
+    """
+    A timeout must not silently disarm the watchdog: the overdue client stays watched and the toys stay held.
+
+    The hold only mutes the output. The pattern keeps running underneath, block and pause are untouched, and once a
+    heartbeat ends the hold, the pattern drives the toy again.
+    """
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    await _play(client)
+    toy = server._hub._toys["Thunder_ID"]
+    assert await _wait_until(lambda: toy.current_intensities == (100, 0))
+    await client.request("enable_heartbeat", {"enable": True})
+
+    event = await client.wait_event("heartbeat_timeout")
+    assert event["data"]["reason"] == "timeout"
+    assert event["data"]["failed_toy_ids"] == []
+    state = await _state(client)
+    assert state["is_held"] is True
+    assert state["is_blocked"] is False and state["is_paused"] is False
+    assert state["current_intensities"] == [0, 0]
+
+    # Nothing gets the toy moving while the client is overdue.
+    reply = await client.request(
+        "intensity1", {"toy_id": "Thunder_ID", "intensity": 50}
+    )
+    assert reply["data"]["ack"] is False
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 4)
+    assert toy.current_intensities == (0, 0)
+    assert server._heartbeat_timed_out, "watchdog disarmed itself after firing"
+
+    await client.request("heartbeat")
+    await client.wait_event("hold_released")
+    assert await _wait_until(lambda: toy.current_intensities == (100, 0))
+    assert (await _state(client))["is_held"] is False
+
+
+async def test_hold_leaves_block_and_pause_untouched(ws_server):
+    """
+    A toy driven by hand (a manual intensity pauses its pattern) and a toy the user blocked are exactly as they were
+    once the hold ends: nothing starts playing on its own, and the manual level is not replayed.
+    """
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    await client.wait_scan_update("Lightning_ID")
+    reply = await client.request(
+        "add", {"toy_id": "Lightning_ID", "model_name": "Lightning"}
+    )
+    assert reply["success"] is True
+    for toy_id in ("Thunder_ID", "Lightning_ID"):
+        await _play(client, toy_id)
+    await client.request("intensity1", {"toy_id": "Thunder_ID", "intensity": 50})
+    await client.request("set_blocked", {"toy_id": "Lightning_ID", "block": True})
+    await client.request("enable_heartbeat", {"enable": True})
+
+    await client.wait_event("heartbeat_timeout")
+    thunder = await _state(client, "Thunder_ID")
+    lightning = await _state(client, "Lightning_ID")
+    assert thunder["is_held"] and thunder["is_paused"] and not thunder["is_blocked"]
+    assert lightning["is_held"] and lightning["is_blocked"]
+    assert not lightning["is_paused"]
+    assert thunder["current_intensities"] == [0, 0]
+
+    await client.request("heartbeat")
+    await client.wait_event("hold_released")
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 4)
+    thunder = await _state(client, "Thunder_ID")
+    lightning = await _state(client, "Lightning_ID")
+    assert thunder["is_paused"] and thunder["current_intensities"] == [0, 0]
+    assert lightning["is_blocked"] and lightning["current_intensities"] == [0, 0]
+
+
+async def test_decisions_made_during_a_hold_stand_after_it(ws_server):
+    """Block, pause, and patterns stay editable while held, and whatever a client set then applies afterwards."""
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    await _play(client)
+    toy = server._hub._toys["Thunder_ID"]
+    await client.request("enable_heartbeat", {"enable": True})
+    await client.wait_event("heartbeat_timeout")
+
+    await _play(client, level=60)
+    await client.request("set_blocked", {"toy_id": "Thunder_ID", "block": True})
+    state = await _state(client)
+    assert state["is_held"] and state["is_blocked"]
+
+    await client.request("heartbeat")
+    await client.wait_event("hold_released")
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 4)
+    assert toy.current_intensities == (0, 0)  # still blocked, as the client decided
+
+    await client.request("set_blocked", {"toy_id": "Thunder_ID", "block": False})
+    assert await _wait_until(lambda: toy.current_intensities == (60, 0))
+
+
+async def test_direct_command_is_refused_during_a_hold(ws_server):
+    """A raw command could drive the toy, so none pass the hold."""
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    await client.request("enable_heartbeat", {"enable": True})
+    await client.wait_event("heartbeat_timeout")
+
+    command = {"toy_id": "Thunder_ID", "command": "DeviceType"}
+    reply = await client.request("direct_command", command)
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Safety Hold"
+    assert reply["data"]["toy_id"] == "Thunder_ID"
+
+    await client.request("heartbeat")
+    await client.wait_event("hold_released")
+    assert (await client.request("direct_command", command))["success"] is True
+
+
+async def test_heartbeat_timeout_reports_a_toy_it_could_not_stop(ws_server):
+    """A toy the watchdog cannot reach may still be running, so the event names it. It is held regardless."""
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    controller = server._hub._toys["Thunder_ID"]
+    controller._toy.strict_stop = AsyncMock(side_effect=ConnectionError("radio gone"))
+
+    await client.request("enable_heartbeat", {"enable": True})
+    event = await client.wait_event("heartbeat_timeout")
+    assert event["data"]["failed_toy_ids"] == ["Thunder_ID"]
+    assert controller.is_held
+
+
+async def test_disconnect_while_the_hold_goes_on_still_holds_every_toy(ws_server):
+    """
+    The check loop is cancelled when the last armed client leaves, which can happen while it is still putting on the
+    hold after that client's timeout. The hold must still be applied completely.
+    """
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+    observer = await connect()
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    await client.request("intensity1", {"toy_id": "Thunder_ID", "intensity": 50})
+    toy = server._hub._toys["Thunder_ID"]
+
+    real_set_safety_hold = server._hub.set_safety_hold
+    entered, proceed = asyncio.Event(), asyncio.Event()
+
+    async def slow_set_safety_hold(held: bool) -> list[str]:
+        if held:
+            entered.set()
+            await proceed.wait()
+        return await real_set_safety_hold(held)
+
+    server._hub.set_safety_hold = slow_set_safety_hold
+
+    await client.request("enable_heartbeat", {"enable": True})
+    await asyncio.wait_for(entered.wait(), 5)  # the timeout trip is under way
+    await client.raw.close()  # the armed client leaves: the check loop is cancelled
+    assert await _wait_until(lambda: server._heartbeat_task is None)
+    proceed.set()
+
+    await observer.wait_event("heartbeat_timeout")
+    assert await _wait_until(lambda: toy.current_intensities == (0, 0))
+    assert toy.is_held
+
+
+async def test_heartbeat_watchdog_stays_armed_after_recovery(ws_server):
+    """After recovering, the client is still watched: going quiet again trips the watchdog a second time."""
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    await client.request("enable_heartbeat", {"enable": True})
+
+    await client.wait_event("heartbeat_timeout")
+    await client.request("heartbeat")
+    await client.wait_event("hold_released")
+
+    client.events.clear()
+    await client.wait_event("heartbeat_timeout")  # fires again without re-enabling
+    assert client.raw.state is websockets.protocol.State.OPEN
+
+
+async def test_heartbeat_opt_out_while_overdue_releases_the_hold(ws_server):
+    """A deliberate opt-out is also proof of life, so it must not leave the toys held forever."""
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    await client.request("enable_heartbeat", {"enable": True})
+    await client.wait_event("heartbeat_timeout")
+
+    await client.request("enable_heartbeat", {"enable": False})
+    await client.wait_event("hold_released")
+    assert (await _state(client))["is_held"] is False
+
+
+async def test_heartbeat_client_disconnect_holds_toys_until_release_hold(ws_server):
+    """Dead-man's switch: an armed client vanishing holds every toy until a client explicitly releases the hold."""
     server, connect = ws_server
     controller = await connect()  # arms the heartbeat and drives the toy
     observer = await connect()  # stays connected to observe the safety stop
@@ -474,9 +716,139 @@ async def test_heartbeat_client_disconnect_stops_toys(ws_server):
 
     event = await observer.wait_event("heartbeat_timeout")
     assert event["success"] is True
+    assert event["data"]["reason"] == "disconnect"
+    state = await _state(observer)
+    assert state["current_intensities"] == [0, 0]
+    assert state["is_held"] is True
 
-    state = await observer.request("get_state", {"toy_id": "Thunder_ID"})
-    assert state["data"]["current_intensities"] == [0, 0]
+    assert (await observer.request("release_hold"))["success"] is True
+    await observer.wait_event("hold_released")
+    assert (await _state(observer))["is_held"] is False
+
+
+async def test_heartbeat_does_not_end_a_disconnect_hold(ws_server):
+    """A disconnected client can never prove it is back, so another client's recovery must not end its hold."""
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+
+    survivor = await connect()
+    crasher = await connect()
+    await _scan_and_add(survivor, "Thunder_ID", "Thunder")
+    await survivor.request("enable_heartbeat", {"enable": True})
+    await crasher.request("enable_heartbeat", {"enable": True})
+    await crasher.raw.close()  # crashes while armed
+    assert await _wait_until(
+        lambda: len(server._heartbeat_clients) == 1
+        and bool(server._heartbeat_timed_out)
+    )
+
+    survivor.events.clear()
+    await survivor.request("heartbeat")
+    await asyncio.sleep(0.2)
+    assert not any(e.get("event") == "hold_released" for e in survivor.events)
+    assert (await _state(survivor))["is_held"] is True
+
+    await survivor.request("release_hold")
+    await survivor.wait_event("hold_released")
+    assert (await _state(survivor))["is_held"] is False
+
+
+async def test_release_hold_does_not_override_an_overdue_client(ws_server):
+    """release_hold only ends a disconnect hold. While an armed client is overdue, the hold stays on."""
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+
+    overdue = await connect()
+    other = await connect()
+    await _scan_and_add(overdue, "Thunder_ID", "Thunder")
+    await overdue.request("enable_heartbeat", {"enable": True})
+    await other.wait_event("heartbeat_timeout")
+
+    other.events.clear()
+    assert (await other.request("release_hold"))["success"] is True
+    await asyncio.sleep(0.2)
+    assert not any(e.get("event") == "hold_released" for e in other.events)
+    assert (await _state(other))["is_held"] is True
+
+    await overdue.request("heartbeat")
+    await other.wait_event("hold_released")
+
+
+async def test_toy_added_during_a_hold_is_held(ws_server):
+    """The hold covers every toy, including one connected while it is on."""
+    server, connect = ws_server
+    survivor = await connect()
+    crasher = await connect()
+    await crasher.request("enable_heartbeat", {"enable": True})
+    await crasher.raw.close()
+    await survivor.wait_event("heartbeat_timeout")
+
+    await _scan_and_add(survivor, "Thunder_ID", "Thunder")
+    assert (await _state(survivor))["is_held"] is True
+    reply = await survivor.request(
+        "intensity1", {"toy_id": "Thunder_ID", "intensity": 50}
+    )
+    assert reply["data"]["ack"] is False
+
+
+async def test_overdue_client_is_disconnected_after_the_grace_period(ws_server):
+    """
+    A stuck client must not hold the toys forever: past the grace period the server treats it as disconnected and
+    closes its connection, which turns the hold into one that release_hold can end.
+    """
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+    server._heartbeat_grace_period = 0.3
+
+    observer = await connect()
+    stuck = await connect()
+    await _scan_and_add(observer, "Thunder_ID", "Thunder")
+    await stuck.request("enable_heartbeat", {"enable": True})
+    first = await observer.wait_event("heartbeat_timeout")
+    assert first["data"]["reason"] == "timeout"
+
+    observer.events.clear()
+    event = await observer.wait_event("heartbeat_timeout")
+    assert event["data"]["reason"] == "disconnect"
+    await asyncio.wait_for(stuck.raw.wait_closed(), 5)
+    assert stuck.raw.close_code == 4000
+    assert stuck.raw.close_reason == "Heartbeat overdue"
+    assert (await _state(observer))["is_held"] is True
+
+    await observer.request("release_hold")
+    await observer.wait_event("hold_released")
+    assert (await _state(observer))["is_held"] is False
+
+
+async def test_a_disconnected_overdue_client_is_ignored_while_it_closes(ws_server):
+    """
+    Closing a stuck client can take a while (it may never answer the closing handshake). Whatever it sends in the
+    meantime must not count: it may not end the hold it caused, nor come back as a watched client.
+    """
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+    server._heartbeat_grace_period = 0.3
+
+    observer = await connect()
+    stuck = await connect()
+    await _scan_and_add(observer, "Thunder_ID", "Thunder")
+    await stuck.request("enable_heartbeat", {"enable": True})
+    server_side = next(iter(server._heartbeat_clients))
+    original_close = server_side.close
+    server_side.close = AsyncMock()  # the closing handshake never completes
+    try:
+        assert await _wait_until(lambda: server_side in server._heartbeat_kicked)
+
+        for command in ("release_hold", "heartbeat"):
+            with pytest.raises(
+                asyncio.TimeoutError
+            ):  # no reply: the message was dropped
+                await stuck.request(command, timeout=0.3)
+        server_side.close.assert_awaited_once()
+        assert not server._heartbeat_clients
+        assert (await _state(observer))["is_held"] is True
+    finally:
+        server_side.close = original_close
 
 
 async def test_heartbeat_disabled_client_disconnect_does_not_stop_toys(ws_server):
@@ -493,8 +865,9 @@ async def test_heartbeat_disabled_client_disconnect_does_not_stop_toys(ws_server
     await asyncio.sleep(0.1)  # let the server-side disconnect handler run
 
     # No safety stop fired: the toy keeps its intensity.
-    state = await observer.request("get_state", {"toy_id": "Thunder_ID"})
-    assert state["data"]["current_intensities"] == [50, 0]
+    state = await _state(observer)
+    assert state["current_intensities"] == [50, 0]
+    assert state["is_held"] is False
     assert not any(e.get("event") == "heartbeat_timeout" for e in observer.events)
 
 
@@ -562,6 +935,129 @@ async def test_idle_shutdown_disabled_when_delay_zero():
     )
     await server._idle_shutdown()  # must return immediately without shutting down
     assert server._shutdown_initiated is False
+
+
+async def test_cancelling_serve_still_shuts_the_hub_down():
+    """
+    Ctrl+C must not leave toys running.
+
+    ``asyncio.run`` cancels the task running ``serve()``; the hub teardown (which stops and disconnects every toy)
+    lives in a ``finally``, so it has to run even then.
+    """
+    server = ToyServer(
+        host="localhost",
+        port=_free_port(),
+        mock_toys=True,
+        idle_shutdown_delay=3600.0,
+        log_name="test_ws",
+    )
+    serve_task = asyncio.create_task(server.serve())
+    for _ in range(250):
+        if server._server is not None:
+            break
+        await asyncio.sleep(0.02)
+    else:
+        serve_task.cancel()
+        raise RuntimeError("ToyServer did not start listening")
+
+    with patch.object(server._hub, "shutdown", AsyncMock()) as hub_shutdown:
+        serve_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await serve_task
+        hub_shutdown.assert_awaited_once()
+
+
+async def test_cancelling_serve_stops_connected_toys():
+    """End-to-end companion to the test above: a running toy is actually stopped and disconnected on Ctrl+C."""
+    port = _free_port()
+    server = ToyServer(
+        host="localhost",
+        port=port,
+        mock_toys=True,
+        idle_shutdown_delay=3600.0,
+        log_name="test_ws",
+    )
+    serve_task = asyncio.create_task(server.serve())
+    for _ in range(250):
+        if server._server is not None:
+            break
+        await asyncio.sleep(0.02)
+
+    ws = await websockets.connect(f"ws://localhost:{port}")
+    try:
+        client = _Client(ws)
+        await _scan_and_add(client, "Thunder_ID", "Thunder")
+        await client.request("intensity1", {"toy_id": "Thunder_ID", "intensity": 100})
+        toy = server._hub._toys["Thunder_ID"]
+        assert toy.current_intensities == (100, 0)
+
+        serve_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await serve_task
+
+        assert toy.current_intensities == (0, 0)
+        assert toy._toy.is_connected is False
+    finally:
+        with contextlib.suppress(Exception):
+            await ws.close()
+
+
+async def test_last_client_leaving_stops_toys_even_without_idle_shutdown():
+    """
+    Nobody connected means nobody is watching: every toy must be stopped and its pattern frozen.
+
+    Auto-shutdown is disabled here (``idle_shutdown_delay=0``), which used to leave a running pattern driving the
+    toy indefinitely.
+    """
+    port = _free_port()
+    server = ToyServer(
+        host="localhost",
+        port=port,
+        mock_toys=True,
+        idle_shutdown_delay=0.0,
+        log_name="test_ws",
+    )
+    serve_task = asyncio.create_task(server.serve())
+    for _ in range(250):
+        if server._server is not None:
+            break
+        await asyncio.sleep(0.02)
+
+    try:
+        ws = await websockets.connect(f"ws://localhost:{port}")
+        client = _Client(ws)
+        await _scan_and_add(client, "Thunder_ID", "Thunder")
+        await client.request(
+            "set_pattern",
+            {
+                "toy_id": "Thunder_ID",
+                "pattern": [[10_000, 100, 0]],
+                "wraparound": True,
+                "reset_time": True,
+            },
+        )
+        await client.request("set_paused", {"toy_id": "Thunder_ID", "pause": False})
+        toy = server._hub._toys["Thunder_ID"]
+        for _ in range(50):  # let playback drive the toy up
+            if toy.current_intensities == (100, 0):
+                break
+            await asyncio.sleep(COMMUNICATION_INTERVAL)
+        assert toy.current_intensities == (100, 0)
+
+        await ws.close()
+
+        for _ in range(100):
+            if toy.current_intensities == (0, 0):
+                break
+            await asyncio.sleep(0.05)
+        assert toy.current_intensities == (0, 0)
+        assert toy.get_state()["is_paused"] is True
+        assert server._shutdown_initiated is False  # auto-shutdown really is off
+    finally:
+        with contextlib.suppress(Exception):
+            await server._shutdown()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await serve_task
 
 
 async def test_shutdown_sends_single_response(ws_server):

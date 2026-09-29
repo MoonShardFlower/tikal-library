@@ -33,6 +33,48 @@ class _ToyController(BaseToyController):
             self._toy.max_intensity,
         ]
         self._battery = initial_battery
+        # Safety hold of the heartbeat watchdog, owned by _ToyHub. Independent of block and pause.
+        self._held = False
+
+    @property
+    def is_held(self) -> bool:
+        """Whether the toy is under the safety hold (intensities forced to zero, manual intensity commands rejected)."""
+        return self._held
+
+    def set_held(self, held: bool) -> None:
+        """
+        Put the toy under the safety hold, or take it off.
+
+        The hold is independent of block and pause and leaves both untouched. While held, manual intensity commands
+        are rejected and a pattern keeps advancing without driving the toy. Once the hold is off, the toy follows its
+        own state again: the next playback tick re-drives a running pattern, manual intensity levels are not replayed.
+
+        Only records the state, so ``_ToyHub`` can hold every toy at once under its lock. Bringing a running toy
+        down to zero is a separate step: see :meth:`stop_output`.
+
+        Args:
+            held: True to hold the toy, False to release it.
+        """
+        self._held = held
+
+    async def stop_output(self) -> bool:
+        """
+        Set both intensities to zero without touching pause or block (unlike :meth:`stop`, which pauses the pattern).
+
+        Used by the safety hold, which must not change the state the toy returns to once the hold is lifted.
+
+        Raises:
+            ConnectionError: The command could not be sent to the toy.
+            UnexpectedToyResponse: (subclass of ConnectionError) The toy replied unexpectedly.
+
+        Returns:
+            Always True
+        """
+        return await self._toy.strict_stop()
+
+    def _output_suppressed(self) -> bool:
+        """Playback keeps the toy at zero while it is blocked *or* held."""
+        return self._is_blocked or self._held
 
     @property
     def battery(self) -> int | None:
@@ -62,14 +104,64 @@ class _ToyController(BaseToyController):
         # Switching models stops the toy on the old command set, so whatever playback last sent no longer holds.
         self._invalidate_last_values()
 
-    async def toggle_pause(self) -> bool:
+    async def set_paused(self, pause: bool) -> None:
         """
-        Toggle pattern playback pause state.
+        Pause or resume pattern playback.
 
         When paused:
         - If a pattern is active, it stops advancing.
         - Toy intensities are set to zero, but manual commands can override this.
         - Block state is cleared if active (toy cannot be paused and blocked at the same time)
+
+        Sets the requested state instead of flipping it, so calling it again after a failed attempt finishes the change
+        rather than undoing it. ``_ToyHub`` relies on this: it retries a command once after a ``ConnectionError``.
+
+        Args:
+            pause: True to pause, False to resume.
+
+        Raises:
+            ConnectionError: The command could not be sent to the toy.
+            UnexpectedToyResponse: The command was sent to the toy, but the reply was not as excepted.
+        """
+        if pause:
+            self._pattern_handler.set_paused(True)
+            await self._toy.strict_stop()
+            self._is_blocked = False  # I don't want to pause and block at the same time
+        else:
+            self._pattern_handler.set_paused(False)
+
+    async def set_blocked(self, block: bool) -> None:
+        """
+        Block or unblock the toy.
+
+        When blocked:
+        - All intensity commands are rejected (return False via callback)
+        - Toy intensities are forced to zero
+        - Pattern continues advancing but doesn't control the toy
+        - Pause state is cleared if active (toy cannot be paused and blocked at the same time)
+
+        Sets the requested state instead of flipping it (see :meth:`set_paused`). The block is recorded before the stop
+        is sent, so a stop that fails still leaves the toy blocked: pattern playback cannot drive it, and keeps sending
+        the stop on every tick until it gets through.
+
+        Args:
+            block: True to block, False to unblock.
+
+        Raises:
+            ConnectionError: The command could not be sent to the toy.
+            ToyRefusedError (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+        """
+        if block:
+            self._is_blocked = True
+            await self._toy.strict_stop()
+            # I don't want to pause and block at the same time
+            self._pattern_handler.set_paused(False)
+        else:
+            self._is_blocked = False
+
+    async def toggle_pause(self) -> bool:
+        """
+        Toggle pattern playback pause state. See :meth:`set_paused`.
 
         Raises:
             ConnectionError: The command could not be sent to the toy.
@@ -78,24 +170,13 @@ class _ToyController(BaseToyController):
         Returns:
             bool: True if now paused, False if now unpaused.
         """
-        if not self._pattern_handler.is_paused:
-            self._pattern_handler.set_paused(True)
-            await self.stop()
-            self._is_blocked = False  # I don't want to pause and block at the same time
-            return True
-        else:
-            self._pattern_handler.set_paused(False)
-            return False
+        pause = not self._pattern_handler.is_paused
+        await self.set_paused(pause)
+        return pause
 
     async def toggle_block(self) -> bool:
         """
-        Toggle block state.
-
-        When blocked:
-        - All intensity commands are rejected (return False via callback)
-        - Toy intensities are forced to zero
-        - Pattern continues advancing but doesn't control the toy
-        - Pause state is cleared if active (toy cannot be paused and blocked at the same time)
+        Toggle block state. See :meth:`set_blocked`.
 
         Raises:
             ConnectionError: The command could not be sent to the toy.
@@ -104,15 +185,9 @@ class _ToyController(BaseToyController):
         Returns:
             bool: True if now blocked, False if now unblocked.
         """
-        if not self._is_blocked:
-            self._is_blocked = True
-            await self.stop()
-            # I don't want to pause and block at the same time'
-            self._pattern_handler.set_paused(False)
-            return True
-        else:
-            self._is_blocked = False
-            return False
+        block = not self._is_blocked
+        await self.set_blocked(block)
+        return block
 
     async def set_pattern(
         self,
@@ -236,9 +311,9 @@ class _ToyController(BaseToyController):
             UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
 
         Returns:
-            True if the command was accepted, False if the toy is blocked. See :meth:`toggle_block`
+            True if the command was accepted, False if the toy is blocked or held. See :meth:`toggle_block` and :meth:`set_held`
         """
-        if self._is_blocked:
+        if self._is_blocked or self._held:
             return False
         # avoid the pattern overriding the command
         self._pattern_handler.set_paused(True)
@@ -260,9 +335,9 @@ class _ToyController(BaseToyController):
             UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
 
         Returns:
-            True if the command was accepted, False if the toy has no second capability or is blocked. See :meth:`toggle_block`
+            True if the command was accepted, False if the toy has no second capability or is blocked or held. See :meth:`toggle_block` and :meth:`set_held`
         """
-        if self._is_blocked:
+        if self._is_blocked or self._held:
             return False
         # avoid the pattern overriding the command
         self._pattern_handler.set_paused(True)
@@ -368,6 +443,7 @@ class _ToyController(BaseToyController):
         -  `current_intensity` (list[int, int]) Current intensity values. The second value is always zero if the toy only has one intensity.
         -  `intensity_limits` (list[int, int]) Current set intensity limits.
         -  `is_blocked` (bool) Whether the toy is currently blocked (toy's intensities are forced to zero)
+        -  `is_held` (bool) Whether the toy is under the safety hold (toy's intensities are forced to zero)
         -  `pattern_version` (int) Each time the pattern state changes, the version number is incremented
         -  `pattern` (list[tuple[int, int, int]]) List of tuples (duration, intensity1, intensity2) defining the pattern segment
         -  `wraparound` (bool)  Whether the pattern repeats from the beginning after completing the last segment. If False, both Intensities are 0 after the last segment
@@ -385,6 +461,7 @@ class _ToyController(BaseToyController):
             current_intensities=list(self._toy.current_intensities),
             intensity_limits=self._intensity_limits.copy(),
             is_blocked=self._is_blocked,
+            is_held=self._held,
             pattern_version=self._pattern_handler.pattern_version,
             pattern=pattern,
             wraparound=wraparound,

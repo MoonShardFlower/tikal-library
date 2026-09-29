@@ -36,10 +36,63 @@ This module is the entry point to the ToyServer command-line-interface.
 import argparse
 import asyncio
 import logging
+import signal
 import traceback
 from pathlib import Path
 
 from .toy_server import InsecureBindError, ToyServer
+
+
+async def _serve_until_signal(server: ToyServer, logger: logging.Logger) -> None:
+    """
+    Run the server until it stops or a terminating signal arrives.
+
+    A signal has to be turned into a *graceful* shutdown, because a toy keeps running whatever it was last told once
+    this process is gone. SIGTERM (``systemctl stop``, ``docker stop``, a session ending) terminates the process
+    outright by default: no ``finally``, no ``atexit``, and a toy still going at full intensity.
+
+    Where the event loop supports signal handlers (POSIX) both SIGINT and SIGTERM are routed to
+    :meth:`ToyServer.shutdown`. On Windows ``add_signal_handler`` is unavailable, but Ctrl+C arrives as a
+    ``KeyboardInterrupt`` that cancels this coroutine, and :meth:`ToyServer.serve` stops the toys in its own
+    ``finally``.
+
+    Args:
+        server: The server to run.
+        logger: Logger used to record which signal triggered the shutdown.
+    """
+    loop = asyncio.get_running_loop()
+    pending: set[asyncio.Task[None]] = set()
+
+    def request_shutdown(signal_name: str) -> None:
+        logger.info("Received %s. Stopping all toys and shutting down.", signal_name)
+        task = loop.create_task(server.shutdown(), name="signal-shutdown")
+        # Keep a reference: a bare create_task may be garbage-collected mid-shutdown.
+        pending.add(task)
+        task.add_done_callback(pending.discard)
+
+    installed: list[signal.Signals] = []
+    for signal_name in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, signal_name, None)
+        if sig is None:
+            continue
+        try:
+            loop.add_signal_handler(sig, request_shutdown, signal_name)
+            installed.append(sig)
+        except (NotImplementedError, RuntimeError, ValueError):
+            # Windows, or not running in the main thread. Covered by serve()'s own finally.
+            logger.debug("No event-loop signal handler available for %s.", signal_name)
+
+    try:
+        await server.serve()
+    finally:
+        for sig in installed:
+            try:
+                loop.remove_signal_handler(sig)
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass
+        if pending:
+            # Let an in-flight signal shutdown finish before the loop closes.
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 def main() -> None:
@@ -47,7 +100,8 @@ def main() -> None:
     Entry point for the ToyServer command-line interface.
 
     Parses command-line arguments, configures logging, constructs a ToyServer instance.
-    ToyServer shuts down automatically if no client is connected for 3 seconds.
+    ToyServer shuts down automatically if no client is connected for 3 seconds. Ctrl+C and (where supported) SIGTERM
+    stop and disconnect every toy before the process exits, rather than leaving them running.
 
     Command-line arguments:
         --host: Host to bind to (default: localhost).
@@ -69,7 +123,7 @@ def main() -> None:
         "--timeout",
         type=int,
         default=3,
-        help="If no client is connected for this many seconds, the server will shut down automatically (default: 3 seconds). Set to 0 to disable auto-shutdown.",
+        help="If no client is connected for this many seconds, the server will shut down automatically (default: 3 seconds). Set to 0 to disable auto-shutdown. All toys are stopped as soon as the last client disconnects either way.",
     )
 
     parser.add_argument(
@@ -134,7 +188,10 @@ def main() -> None:
         raise SystemExit(2)
 
     try:
-        asyncio.run(server.serve())
+        asyncio.run(_serve_until_signal(server, logger))
+    except KeyboardInterrupt:
+        # asyncio.run canceled serve(), whose finally already stopped and disconnected every toy.
+        logger.info("Interrupted. All toys were stopped during shutdown.")
     except Exception:
         details = traceback.format_exc()
         logging.critical("Server shutting down due to unhandled exception: %s", details)

@@ -310,6 +310,37 @@ async def test_blocked_pattern_latches_single_stop(controller, mock_toy):
 
 
 @pytest.mark.asyncio
+async def test_held_pattern_latches_single_stop_and_resumes(controller, mock_toy):
+    # The hold mutes playback like a block does, but leaves pause and block alone, so releasing re-drives the pattern.
+    await controller.set_pattern([(10_000, 5, 3)])
+    await controller.process_communication()  # drive
+    controller.set_held(True)
+
+    mock_toy.reset_mock()
+    await controller.process_communication()  # playback stop, latch
+    await controller.process_communication()  # latched -> no further stop
+    mock_toy.strict_stop.assert_awaited_once()
+    assert await controller.intensity1(7) is False
+    assert await controller.intensity2(7) is False
+    mock_toy.strict_intensity1.assert_not_called()
+    assert controller.is_paused is False and controller.is_blocked is False
+
+    controller.set_held(False)
+    mock_toy.reset_mock()
+    await controller.process_communication()
+    mock_toy.strict_intensity1.assert_awaited_once_with(5)
+    mock_toy.strict_intensity2.assert_awaited_once_with(3)
+
+
+@pytest.mark.asyncio
+async def test_stop_output_leaves_pause_and_block_alone(controller, mock_toy):
+    await controller.set_pattern([(10_000, 5, 3)])
+    assert await controller.stop_output() is True
+    mock_toy.strict_stop.assert_awaited_once()
+    assert controller.is_paused is False and controller.is_blocked is False
+
+
+@pytest.mark.asyncio
 async def test_playback_propagates_connection_error(controller, mock_toy):
     # The strict playback path must let ConnectionError escape process_communication;
     # _ToyHub relies on this to trigger its retry / reconnect handling.

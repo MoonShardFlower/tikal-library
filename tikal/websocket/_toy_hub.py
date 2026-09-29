@@ -16,7 +16,11 @@ from typing import Any, Awaitable, Callable, Coroutine, TypeVar
 
 from bleak import BleakClient, BleakScanner
 
-from .._private import BATTERY_UPDATE_INTERVAL, COMMUNICATION_INTERVAL
+from .._private import (
+    BATTERY_UPDATE_INTERVAL,
+    COMMUNICATION_INTERVAL,
+    retry_within_window,
+)
 from ..high_level import ToyCache
 from ..low_level import BRANDS
 from ..low_level import BadModelError as LowLevelBadModelError
@@ -38,9 +42,9 @@ class ToyStatus(StrEnum):
 
     # reconnection succeeded. Always preceded by a toy_state_change event (so clients stay synchronized with the _ToyHub state)
     CONNECTED = "connected"
-    # on_disconnect fired, command failed. Reconnection is automatically attempted
+    # on_disconnect fired, command failed. Reconnection is attempted automatically, for up to RECONNECT_WINDOW
     RECONNECTING = "reconnecting"
-    # reconnect failed, toy will be removed automatically
+    # no reconnect attempt succeeded within RECONNECT_WINDOW, toy will be removed automatically
     LOST = "lost"
     # toy powered off, toy will be removed automatically
     POWERED_OFF = "powered_off"
@@ -56,6 +60,13 @@ class UndiscoveredToyError(ValueError):
 
 class UnknownToyError(ValueError):
     """Raised when trying to interact with a toy that is not known to _ToyHub."""
+
+    def __init__(self, toy_id: str):
+        self.toy_id = toy_id
+
+
+class SafetyHoldError(ValueError):
+    """Raised when a command that could drive a toy is refused because the toy is under the safety hold."""
 
     def __init__(self, toy_id: str):
         self.toy_id = toy_id
@@ -180,6 +191,9 @@ class _ToyHub:
         self._toy_data: dict[str, ToyData] = {}
         self._all_seen_toy_ids: set[str] = set()
         self._pending_toy_ids: set[str] = set()
+        # Safety hold (see set_safety_hold). Changed under _toy_lock together with every toy's flag, so a toy added
+        # at the same time can never miss it.
+        self._held = False
 
         # Status tracking
         self._on_status_change = on_status_change or (lambda a, b: None)
@@ -537,30 +551,32 @@ class _ToyHub:
 
     async def _reconnect_toy(self, toy: _ToyController) -> None:
         """
-        Attempt to reconnect a lost toy. If successful, sets its ToyStatus to CONNECTED; else sets it to LOST and removes the toy.
+        Win back a toy whose connection failed, or give it up. Sets its ToyStatus to CONNECTED on success; else sets it
+        to LOST and removes the toy.
+
+        Each attempt reconnects (a no-op if the link is still up) and then stops the toy, which also pauses its pattern:
+        whatever the toy was last told no longer holds, and this stop is how a command that failed (e.g. the safety
+        hold's stop) finally gets through. Attempts are repeated for up to RECONNECT_WINDOW (see
+        :func:`tikal._private.retry_within_window`).
 
         Args:
             toy: The toy controller to reconnect.
         """
-        try:
+
+        async def attempt() -> None:
             await toy.reconnect()
             await toy.stop()  # Always stop the toy after connection loss
-            # Unstable connection if stop fails. Treat as lost.
+
+        if await retry_within_window(attempt, toy.toy_id, self._log):
             await self._fire_callback(self._on_toy_state_change, toy.get_state())
             await self._set_toy_status(toy.toy_id, ToyStatus.CONNECTED)
             return
-        except Exception as exc:
-            self._log.warning(
-                "Reconnect failed for toy %s: %s with details: %s",
-                toy.toy_id,
-                exc,
-                traceback.format_exc(),
-            )
-            await self._set_toy_status(toy.toy_id, ToyStatus.LOST)
-            try:
-                await self.remove(toy.toy_id, False)
-            except Exception:
-                pass
+
+        await self._set_toy_status(toy.toy_id, ToyStatus.LOST)
+        try:
+            await self.remove(toy.toy_id, False)
+        except Exception:
+            pass
 
     async def _get_toy(self, toy_id: str) -> _ToyController:
         """
@@ -782,6 +798,8 @@ class _ToyHub:
 
         async with self._toy_lock:
             self._pending_toy_ids.discard(toy_id)
+            # A toy connected during a safety hold is held too. It is at rest after connecting, so no stop is needed.
+            toy.set_held(self._held)
             self._toys[toy_id] = toy
             self._toy_cmd_locks[toy_id] = asyncio.Lock()
             self._toy_status[toy_id] = ToyStatus.CONNECTED
@@ -880,7 +898,7 @@ class _ToyHub:
         Set the intensity of the primary capability.
 
         If a pattern is active and not paused, calling this method pauses the pattern to avoid conflicts.
-        Will do nothing if the toy is blocked.
+        Will do nothing if the toy is blocked or under the safety hold.
 
         Args:
             toy_id: Identifier of the toy on which to set the intensity.
@@ -944,7 +962,10 @@ class _ToyHub:
         self._log.info(f"Toggling pause of {toy_id}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
-            await self._run_toy_command(toy, "toggle_pause", toy.toggle_pause)
+            # Resolve the toggle to a target state once: a retry has to repeat the same change, not flip it back.
+            await self._run_toy_command(
+                toy, "toggle_pause", toy.set_paused, not toy.is_paused
+            )
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
 
     async def toggle_block(self, toy_id: str) -> None:
@@ -965,7 +986,10 @@ class _ToyHub:
         self._log.info(f"Toggling block of {toy_id}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
-            await self._run_toy_command(toy, "toggle_block", toy.toggle_block)
+            # Same as toggle_pause: resolve the toggle once so the retry cannot undo it.
+            await self._run_toy_command(
+                toy, "toggle_block", toy.set_blocked, not toy.is_blocked
+            )
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
 
     async def set_paused(self, toy_id: str, pause: bool) -> None:
@@ -991,7 +1015,7 @@ class _ToyHub:
             # Check and act inside the same lock section, making this atomic wrt. other commands on this toy (e.g., a concurrent set_paused from a second client).
             if toy.is_paused == pause:
                 return
-            await self._run_toy_command(toy, "set_paused", toy.toggle_pause)
+            await self._run_toy_command(toy, "set_paused", toy.set_paused, pause)
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
 
     async def set_blocked(self, toy_id: str, block: bool) -> None:
@@ -1016,8 +1040,54 @@ class _ToyHub:
             # Same check-then-act guard as set_paused above.
             if toy.is_blocked == block:
                 return
-            await self._run_toy_command(toy, "set_blocked", toy.toggle_block)
+            await self._run_toy_command(toy, "set_blocked", toy.set_blocked, block)
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
+
+    async def set_safety_hold(self, held: bool) -> list[str]:
+        """
+        Put every toy under the safety hold, or take it off.
+
+        The hold is independent of block and pause, and leaves both (and patterns and limits) untouched. While it is
+        on, every toy, including one added later, is kept at zero: manual intensity commands are rejected, direct
+        commands raise :class:`SafetyHoldError`, and patterns keep advancing without driving the toy. Taking it off
+        lets every toy follow its own state again, so nothing has to be restored.
+
+        All flags change at once under the toy lock, so no command or playback tick sees a half-applied hold. Putting
+        the hold on then stops every toy, concurrently.
+
+        Args:
+            held: True to hold every toy, False to release them.
+
+        Returns:
+            Ids of the toys that could not be stopped when the hold was put on. They are held regardless (nothing
+            drives them once they are reachable again), but may still be running. Always empty when releasing.
+        """
+        self._log.info(f"Setting safety hold to {held}")
+        async with self._toy_lock:
+            self._held = held
+            for toy in self._toys.values():
+                toy.set_held(held)
+            toy_ids = list(self._toys.keys())
+
+        async def apply(toy_id: str) -> bool:
+            """Stop one toy if the hold went on, and report its new state. False if the stop failed."""
+            try:
+                toy, cmd_lock = await self._get_toy_cmd(toy_id)
+            except UnknownToyError:
+                return True  # removed in the meantime
+            stopped = True
+            if held:
+                try:
+                    async with cmd_lock:
+                        await self._run_toy_command(toy, "stop", toy.stop_output)
+                except ToyConnectionError:
+                    self._log.warning(f"Could not stop {toy_id} for the safety hold.")
+                    stopped = False
+            await self._fire_callback(self._on_toy_state_change, toy.get_state())
+            return stopped
+
+        results = await asyncio.gather(*(apply(toy_id) for toy_id in toy_ids))
+        return [toy_id for toy_id, ok in zip(toy_ids, results) if not ok]
 
     async def set_intensity1_limit(self, toy_id: str, level: int | None) -> None:
         """
@@ -1143,6 +1213,7 @@ class _ToyHub:
         -  `current_intensity` (list[int, int]) Current intensity values. The second value is always zero if the toy only has one intensity.
         -  `intensity_limits` (list[int, int]) Current intensity limits. All intensity commands are clamped to these values.
         -  `is_blocked` (bool) Whether the toy is currently blocked (toy's intensities are forced to zero)
+        -  `is_held` (bool) Whether the toy is under the safety hold (toy's intensities are forced to zero)
         -  `pattern_version` (int) Each time the pattern state changes, the version number is incremented
         -  `pattern` (list[tuple[int, int, int]]) List of tuples (duration, intensity1, intensity2) defining the pattern segment
         -  `wraparound` (bool)  Whether the pattern repeats from the beginning after completing the last segment. If False, both Intensities are 0 after the last segment
@@ -1262,6 +1333,7 @@ class _ToyHub:
         Raises:
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
+            SafetyHoldError: The toy is under the safety hold (see :meth:`set_safety_hold`).
 
         Returns:
             toy response string. Empty string if the command could not be delivered.
@@ -1272,6 +1344,9 @@ class _ToyHub:
         self._log.info(f"Sending direct command to {toy_id}: {command}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
+            # A raw command can drive the toy, and the hub cannot tell which ones would, so none pass the hold.
+            if toy.is_held:
+                raise SafetyHoldError(toy_id)
             return await self._run_toy_command(
                 toy, "direct_command", toy.direct_command, command
             )
