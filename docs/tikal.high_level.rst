@@ -4,14 +4,6 @@ tikal.high\_level package
 Submodules
 ----------
 
-tikal.high\_level.toy\_cache module
------------------------------------
-
-.. automodule:: tikal.high_level.toy_cache
-   :members:
-   :show-inheritance:
-   :undoc-members:
-
 tikal.high\_level.toy\_controller module
 ----------------------------------------
 

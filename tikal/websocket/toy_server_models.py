@@ -85,6 +85,7 @@ class _ErrMsg:
     TOY_ALREADY_ADDED_ERROR = "Unable to add toy '{toy_id}'. This toy was already added or is currently being added."
     ADD_CONNECTION_ERROR = "Unable to add toy '{toy_id}'. Please verify that the toy is still turned on and not connected anywhere else. Contact the developer if the problem persists."
     TOY_CONNECTION_ERROR = "Unable to execute '{cmd}' on toy '{toy_id}'. Please verify that the toy is still turned on and not connected anywhere else. Will attempt to reconnect."
+    TOY_NOT_CONNECTED_ERROR = "Unable to execute '{cmd}' on toy '{toy_id}': the toy is not connected ({status}), so nothing was sent. A state change the command asked for (block, pause, pattern, limit) is still recorded."
     INVALID_MODEL_ERROR = "The model name '{model_name}' is not a valid model name for '{toy_id}'. Use get_brands to get a list of valid model names for each brand."
     BAD_MODEL_ERROR = "The model name '{model_name}' is valid but they toy '{toy_id}' does not correctly respond to commands. Please check if the model name is correct. It it is please contact the developer."
     UNKNOWN_TOY_ERROR = (

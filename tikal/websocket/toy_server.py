@@ -105,8 +105,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.datastructures import Headers
 from websockets.http11 import Response
 
-from ._status_page import ToyServerStatusPage
-from ._toy_hub import (
+from .._core import (
     AddConnectionError,
     BadModelError,
     DiscoveryError,
@@ -115,12 +114,15 @@ from ._toy_hub import (
     SafetyHoldError,
     ToyAlreadyAddedError,
     ToyConnectionError,
+    ToyNotConnectedError,
     ToyStatus,
     UnavailableToyError,
     UndiscoveredToyError,
     UnknownToyError,
     _ToyHub,
 )
+from ..low_level import ToyData
+from ._status_page import ToyServerStatusPage
 from .toy_server_models import (
     AckData,
     AddRequestData,
@@ -1270,6 +1272,25 @@ class ToyServer:
                 ).model_dump(),
                 success=False,
             )
+        except ToyNotConnectedError as e:
+            # Same error kind as a failed command, so clients handle both alike; only the message tells them apart.
+            tb = traceback.format_exc()
+            self._log.info("Refused '%s' for toy %s: not connected.", e.cmd, e.toy_id)
+            await self._send_response(
+                ws,
+                req_id,
+                cmd,
+                ErrorData(
+                    error="Connection Error",
+                    message=_ErrMsg.TOY_NOT_CONNECTED_ERROR.format(
+                        toy_id=e.toy_id, cmd=e.cmd, status=e.status
+                    ),
+                    traceback=tb,
+                    toy_id=e.toy_id,
+                    model_name=e.model_name,
+                ).model_dump(),
+                success=False,
+            )
         except ToyConnectionError as e:
             tb = traceback.format_exc()
             self._log.warning("Failed to send command to toy: '%s'", tb)
@@ -1773,7 +1794,7 @@ class ToyServer:
         """Broadcast a ``battery_changed`` event to all connected clients when one or more toys report a new battery level."""
         await self._broadcast("battery_changed", updates)
 
-    async def _on_scan_update(self, update: Exception | list[dict[str, Any]]) -> None:
+    async def _on_scan_update(self, update: Exception | list[ToyData]) -> None:
         """Forward a ``scan_update`` event to scan-subscribed clients only."""
         if isinstance(update, DiscoveryError):
             await self._broadcast_to_subscribers(
@@ -1796,6 +1817,15 @@ class ToyServer:
                 ),
             )
         else:
+            discovered = [
+                dict(
+                    toy_id=data.toy_id,
+                    name=data.name,
+                    brand=data.brand,
+                    model_name=data.model_name,
+                )
+                for data in update
+            ]
             await self._broadcast_to_subscribers(
-                "scan_update", dict(discovered=update), success=True
+                "scan_update", dict(discovered=discovered), success=True
             )

@@ -2,7 +2,7 @@
 Private Module: the execution-model-agnostic core shared by the two high-level toy controllers.
 
 Both the synchronous :class:`tikal.high_level.toy_controller.ToyController` (queued, callback-based) and the async
-:class:`tikal.websocket._toy_controller._ToyController` wrap a low-level :class:`~tikal.low_level.Toy` and add the same
+:class:`tikal._core.toy_controller._ToyController` wrap a low-level :class:`~tikal.low_level.Toy` and add the same
 things: read-only passthroughs to the toy, the pattern/pause/block bookkeeping, and the same pattern-playback algorithm.
 This module contains the shared code.
 """

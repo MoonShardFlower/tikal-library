@@ -17,8 +17,7 @@ import pytest
 import pytest_asyncio
 import websockets
 
-from tikal._private import COMMUNICATION_INTERVAL
-from tikal.websocket._toy_hub import (
+from tikal._core import (
     AddConnectionError,
     BadModelError,
     DiscoveryError,
@@ -27,6 +26,8 @@ from tikal.websocket._toy_hub import (
     ToyStatus,
     UnavailableToyError,
 )
+from tikal._private import COMMUNICATION_INTERVAL
+from tikal.low_level import ToyData
 from tikal.websocket.toy_server import InsecureBindError, ToyServer
 
 pytestmark = pytest.mark.asyncio
@@ -1216,6 +1217,36 @@ async def test_command_connection_error_maps_to_connection_error(ws_server):
     assert reply["data"]["error"] == "Connection Error"
 
 
+async def test_command_for_a_reconnecting_toy_is_refused_as_a_connection_error(
+    ws_server,
+):
+    """
+    Nothing is sent to a toy that is not connected. The error kind is the one of a failed command, so clients need no
+    new handling; the message says what happened, including that a requested state change still took effect.
+    """
+    server, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    server._hub._toy_status["Thunder_ID"] = ToyStatus.RECONNECTING
+
+    reply = await client.request(
+        "intensity1", {"toy_id": "Thunder_ID", "intensity": 50}
+    )
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Connection Error"
+    assert reply["data"]["toy_id"] == "Thunder_ID"
+    assert "not connected (reconnecting)" in reply["data"]["message"]
+
+    reply = await client.request("set_blocked", {"toy_id": "Thunder_ID", "block": True})
+    assert reply["success"] is False and reply["data"]["error"] == "Connection Error"
+    state = await client.request("get_state", {"toy_id": "Thunder_ID"})
+    assert state["data"]["is_blocked"] is True
+    assert state["data"]["current_intensities"] == [
+        0,
+        0,
+    ]  # the intensity was never sent
+
+
 async def test_unexpected_error_maps_to_developer_error(ws_server):
     server, connect = ws_server
     client = await connect()
@@ -1361,12 +1392,17 @@ async def test_scan_update_maps_errors_and_success(ws_server):
     with patch.object(server, "_broadcast_to_subscribers", new=capture):
         await server._on_scan_update(DiscoveryError("trace"))
         await server._on_scan_update(RuntimeError("boom"))
-        await server._on_scan_update([{"toy_id": "T_ID"}])
+        await server._on_scan_update([ToyData("T1", "T_ID", "Thunder", "Brand")])
 
     assert calls[0][0] == "scan_update"
     assert calls[0][1]["error"] == "Discovery Error" and calls[0][2] is False
     assert calls[1][1]["error"] == "Developer Error"
-    assert calls[2][1] == {"discovered": [{"toy_id": "T_ID"}]} and calls[2][2] is True
+    assert calls[2][1] == {
+        "discovered": [
+            {"toy_id": "T_ID", "name": "T1", "brand": "Brand", "model_name": "Thunder"}
+        ]
+    }
+    assert calls[2][2] is True
 
 
 async def test_send_raw_swallows_send_error(ws_server):

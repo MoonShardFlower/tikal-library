@@ -53,6 +53,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from bleak import BleakClient, BleakScanner
 
+from .._core import ToyCache
 from .._private import (
     BATTERY_UPDATE_INTERVAL,
     COMMUNICATION_INTERVAL,
@@ -61,7 +62,6 @@ from .._private import (
     retry_within_window,
 )
 from ..low_level import ConnectionBuilder, Toy, ToyData
-from .toy_cache import ToyCache
 from .toy_controller import CONTROLLER_BY_BRAND, ToyController
 
 

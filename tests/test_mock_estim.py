@@ -4,6 +4,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tikal._core import _CONTROLLER_BY_BRAND
+from tikal._core import BadModelError as WsBadModelError
+from tikal._core import _MockEstimController, _ToyHub
 from tikal.high_level import ToyHub
 from tikal.high_level.toy_controller import CONTROLLER_BY_BRAND, MockEstimController
 from tikal.low_level import (
@@ -16,9 +19,6 @@ from tikal.low_level import (
     Toy,
     ToyData,
 )
-from tikal.websocket._toy_controller import _CONTROLLER_BY_BRAND, _MockEstimController
-from tikal.websocket._toy_hub import BadModelError as WsBadModelError
-from tikal.websocket._toy_hub import _ToyHub
 
 
 @pytest.fixture
@@ -466,7 +466,7 @@ async def test_websocket_hub_adds_mock_estim_toy():
 
         def on_update(update):
             if not isinstance(update, Exception) and any(
-                d["toy_id"] == "Thunder_ID" for d in update
+                d.toy_id == "Thunder_ID" for d in update
             ):
                 seen.set()
 

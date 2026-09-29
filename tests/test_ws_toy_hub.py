@@ -12,20 +12,22 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
-from tikal._private import COMMUNICATION_INTERVAL
-from tikal.websocket._toy_controller import _MockEstimController
-from tikal.websocket._toy_hub import (
+from tikal._core import (
     DiscoveryError,
     DiscoveryStartError,
     InvalidModelError,
     SafetyHoldError,
     ToyAlreadyAddedError,
     ToyConnectionError,
+    ToyNotConnectedError,
     ToyStatus,
     UndiscoveredToyError,
     UnknownToyError,
+    _MockEstimController,
     _ToyHub,
 )
+from tikal._private import COMMUNICATION_INTERVAL
+from tikal.low_level import ToyData
 
 pytestmark = pytest.mark.asyncio
 
@@ -66,7 +68,7 @@ async def hub(bare_hub):
 
     def on_update(update):
         if not isinstance(update, Exception):
-            ids = {d["toy_id"] for d in update}
+            ids = {d.toy_id for d in update}
             if {"Thunder_ID", "Lightning_ID"} <= ids:
                 discovered.set()
 
@@ -425,3 +427,279 @@ async def test_poll_batteries_reports_changes(hub):
 
     await hub._poll_all_batteries()
     assert updates == [{"Thunder_ID": 55}]
+
+
+# ---------------------------------------------------------------------------
+# Discovery without a scan, and adding a toy from its ToyData
+# ---------------------------------------------------------------------------
+
+
+async def test_discover_fills_in_cached_model_names(bare_hub):
+    bare_hub._toy_cache.update({"Thunder1": "Lightning"})
+
+    found = {data.toy_id: data for data in await bare_hub.discover(0.1)}
+
+    assert found["Thunder_ID"].model_name == "Lightning"  # from the cache
+    assert found["Lightning_ID"].model_name == ""  # the default model
+
+
+async def test_discover_leaves_the_builders_toy_data_alone(bare_hub):
+    # A connection builder may hand out the same ToyData again (the continuous scan does), so the model name is
+    # filled in on a copy.
+    shared = ToyData("Thunder1", "Thunder_ID", "", "MockEstimToys")
+    bare_hub._toy_cache.update({"Thunder1": "Lightning"})
+    bare_hub._connection_builder.discover_toys = AsyncMock(return_value=[shared])
+
+    found = await bare_hub.discover(0.1)
+
+    assert found[0].model_name == "Lightning"
+    assert shared.model_name == ""
+
+
+async def test_start_scan_delivers_toy_data_with_cached_model_names(bare_hub):
+    bare_hub._toy_cache.update({"Thunder1": "Lightning"})
+    updates = []
+    await bare_hub.start_scan(updates.append)
+
+    def thunder_found():
+        return [d for u in updates for d in u if d.toy_id == "Thunder_ID"]
+
+    assert await _wait_until(thunder_found)  # toys show up one scan report at a time
+    thunder = thunder_found()[0]
+    assert thunder.name == "Thunder1" and thunder.model_name == "Lightning"
+
+
+async def test_add_toy_data_connects_a_toy_found_without_a_scan(bare_hub):
+    ids_changes = []
+    bare_hub._on_toy_ids_change = ids_changes.append
+    thunder = next(d for d in await bare_hub.discover(0.1) if d.toy_id == "Thunder_ID")
+    thunder.model_name = "Thunder"
+
+    await bare_hub.add_toy_data(thunder)
+
+    assert await bare_hub.get_toy_ids() == ["Thunder_ID"]
+    assert await bare_hub.get_status("Thunder_ID") == ToyStatus.CONNECTED
+    assert ids_changes == [["Thunder_ID"]]
+    assert bare_hub._toy_cache.get_model_name("Thunder1") == "Thunder"
+    with pytest.raises(ToyAlreadyAddedError):
+        await bare_hub.add_toy_data(thunder)
+
+
+async def test_add_toy_data_rejects_an_invalid_model(bare_hub):
+    lightning = next(
+        d for d in await bare_hub.discover(0.1) if d.toy_id == "Lightning_ID"
+    )
+    lightning.model_name = "Bogus"
+    with pytest.raises(InvalidModelError):
+        await bare_hub.add_toy_data(lightning)
+    assert await bare_hub.get_toy_ids() == []  # and it can be tried again
+    lightning.model_name = "Lightning"
+    await bare_hub.add_toy_data(lightning)
+    assert await bare_hub.get_toy_ids() == ["Lightning_ID"]
+
+
+async def test_injected_bluetooth_classes_are_used():
+    from tikal.mock import MockBleakClient, MockBleakScanner
+
+    # Without mock_toys, only the injected classes make the mock Lovense toys appear (and no MockEstimToys).
+    hub = _ToyHub(
+        log_name="test",
+        bluetooth_scanner=MockBleakScanner,
+        bluetooth_client=MockBleakClient,
+    )
+    await hub.startup()
+    try:
+        names = {data.name for data in await hub.discover(0.1)}
+    finally:
+        await hub.shutdown()
+    assert "LVS-Solace" in names
+    assert "Thunder1" not in names
+
+
+# ---------------------------------------------------------------------------
+# Battery on demand
+# ---------------------------------------------------------------------------
+
+
+async def test_fetch_battery_asks_the_toy_and_reports_a_change(hub):
+    updates = []
+    hub._on_battery_change = updates.append
+    controller = await _add_thunder(hub)
+    controller._toy.strict_get_battery_level = AsyncMock(side_effect=[55, 55])
+
+    assert await hub.fetch_battery("Thunder_ID") == 55
+    assert await hub.get_battery("Thunder_ID") == 55
+    assert await hub.fetch_battery("Thunder_ID") == 55  # unchanged: no second event
+    assert updates == [{"Thunder_ID": 55}]
+
+
+# ---------------------------------------------------------------------------
+# Commands while a toy is not connected
+# ---------------------------------------------------------------------------
+
+_TOY_IO = (
+    "strict_intensity1",
+    "strict_intensity2",
+    "strict_stop",
+    "strict_direct_command",
+    "strict_get_battery_level",
+    "strict_change_rotation_direction",
+    "strict_get_status",
+    "set_model_name",
+)
+
+
+async def _reconnecting_thunder(hub) -> _MockEstimController:
+    """An added Thunder, running a pattern, whose status says it is reconnecting (no reconnect task runs, so nothing changes that back)."""
+    controller = await _add_thunder(hub)
+    await hub.set_pattern("Thunder_ID", [(10_000, 10, 0)], True, True)
+    assert await _wait_until(lambda: controller.current_intensities == (10, 0))
+    hub._toy_status["Thunder_ID"] = ToyStatus.RECONNECTING
+    for name in _TOY_IO:
+        setattr(controller._toy, name, AsyncMock())
+    return controller
+
+
+def _nothing_sent(controller) -> bool:
+    return not any(getattr(controller._toy, name).called for name in _TOY_IO)
+
+
+@pytest.mark.parametrize(
+    "command, args",
+    [
+        ("intensity1", (5,)),
+        ("intensity2", (5,)),
+        ("direct_command", ("DeviceType",)),
+        ("change_rotation_direction", ()),
+        ("get_info", (True,)),
+        ("get_all", (True,)),
+        ("fetch_battery", ()),
+        ("set_model", ("Lightning",)),
+    ],
+)
+async def test_commands_that_need_the_toy_are_refused_while_it_reconnects(
+    hub, command, args
+):
+    controller = await _reconnecting_thunder(hub)
+
+    with pytest.raises(ToyNotConnectedError) as refused:
+        await getattr(hub, command)("Thunder_ID", *args)
+
+    assert refused.value.status == ToyStatus.RECONNECTING
+    assert _nothing_sent(controller)
+    assert controller.model_name == "Thunder"
+    assert (
+        controller.is_paused is False
+    )  # a refused intensity does not pause the pattern
+    assert not hub._reconnect_tasks  # and no second reconnect is started
+
+
+@pytest.mark.parametrize(
+    "command, args, check",
+    [
+        ("set_blocked", (True,), lambda s: s["is_blocked"]),
+        ("toggle_block", (), lambda s: s["is_blocked"]),
+        ("set_paused", (True,), lambda s: s["is_paused"]),
+        ("toggle_pause", (), lambda s: s["is_paused"]),
+        ("stop", (), lambda s: s["is_paused"]),
+        ("set_pattern", ([], True, True), lambda s: s["pattern"] == []),
+        ("set_intensity1_limit", (5,), lambda s: s["intensity_limits"][0] == 5),
+    ],
+)
+async def test_state_changes_are_recorded_while_the_toy_reconnects(
+    hub, command, args, check
+):
+    """The state holds even though the command cannot be sent: the reconnect stops the toy before it is used again."""
+    controller = await _reconnecting_thunder(hub)
+
+    with pytest.raises(ToyNotConnectedError):
+        await getattr(hub, command)("Thunder_ID", *args)
+
+    assert check(await hub.get_state("Thunder_ID"))
+    assert _nothing_sent(controller)
+
+
+async def test_state_changes_that_need_no_command_succeed_while_the_toy_reconnects(
+    hub,
+):
+    controller = await _reconnecting_thunder(hub)
+
+    await hub.set_pattern("Thunder_ID", [(500, 3, 0)], True, True)
+    await hub.set_intensity1_limit("Thunder_ID", 50)  # the toy runs below it
+    await hub.set_blocked("Thunder_ID", False)  # already unblocked
+
+    state = await hub.get_state("Thunder_ID")
+    assert state["pattern"] == [(500, 3, 0)] and state["intensity_limits"][0] == 50
+    assert _nothing_sent(controller)
+
+
+async def test_safety_hold_reports_a_reconnecting_toy_without_trying_to_stop_it(hub):
+    controller = await _reconnecting_thunder(hub)
+
+    assert await hub.set_safety_hold(True) == ["Thunder_ID"]
+    assert controller.is_held is True
+    assert _nothing_sent(controller)
+
+
+async def test_pausing_a_blocked_toy_unblocks_it_even_if_the_stop_fails(hub):
+    """Regression: the block used to be cleared only after the stop got through, leaving the toy paused and blocked."""
+    controller = await _add_thunder(hub)
+    await hub.set_blocked("Thunder_ID", True)
+    controller._toy.strict_stop = AsyncMock(side_effect=ConnectionError("gone"))
+
+    with pytest.raises(ToyConnectionError):
+        await hub.set_paused("Thunder_ID", True)
+
+    state = await hub.get_state("Thunder_ID")
+    assert state["is_paused"] is True and state["is_blocked"] is False
+
+
+# ---------------------------------------------------------------------------
+# apply_state / send: a state change first, the command that follows it later
+# ---------------------------------------------------------------------------
+
+
+async def test_apply_state_does_not_wait_for_a_command_in_flight(hub):
+    # No pattern, so playback sends no stop of its own and every stop counted below is the one from send().
+    controller = await _add_thunder(hub)
+    cmd_lock = hub._toy_cmd_locks["Thunder_ID"]
+    controller._toy.strict_stop = AsyncMock(return_value=True)
+
+    async with cmd_lock:  # a command is in flight on the toy
+        needs_stop = await asyncio.wait_for(
+            hub.apply_state("Thunder_ID", lambda toy: toy.apply_paused(True)), 1
+        )
+        assert needs_stop is True and controller.is_paused is True  # visible at once
+
+        sending = asyncio.create_task(
+            hub.send("Thunder_ID", "stop", lambda toy: toy.stop_output())
+        )
+        await asyncio.sleep(COMMUNICATION_INTERVAL * 2)
+        assert not sending.done()  # the command waits its turn
+        controller._toy.strict_stop.assert_not_called()
+
+    assert await asyncio.wait_for(sending, 1) is True
+    controller._toy.strict_stop.assert_awaited_once()
+
+
+async def test_apply_state_works_while_the_toy_reconnects_and_send_is_refused(hub):
+    controller = await _reconnecting_thunder(hub)
+
+    assert await hub.apply_state("Thunder_ID", lambda toy: toy.apply_blocked(True))
+    assert controller.is_blocked is True
+    with pytest.raises(ToyNotConnectedError):
+        await hub.send("Thunder_ID", "stop", lambda toy: toy.stop_output())
+    assert _nothing_sent(controller)
+
+
+async def test_send_retries_and_reconnects_like_every_command(
+    hub, short_reconnect_window
+):
+    controller = await _add_thunder(hub)
+    controller._toy.strict_stop = AsyncMock(side_effect=ConnectionError("gone"))
+
+    with pytest.raises(ToyConnectionError):
+        await hub.send("Thunder_ID", "stop", lambda toy: toy.stop_output())
+
+    assert controller._toy.strict_stop.await_count >= 2  # retried once
+    assert hub._toy_status["Thunder_ID"] == ToyStatus.RECONNECTING

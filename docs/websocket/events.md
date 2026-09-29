@@ -25,7 +25,8 @@ A toy’s connection status has changed. The server monitors the connection and 
 
 - `reconnecting`: a command failed or the connection dropped. The server tries to reconnect, with several attempts over
   up to about a minute. After reconnecting it first stops the toy, which also pauses its pattern: whatever the toy was
-  last told no longer applies.
+  last told no longer applies. Until then, nothing is sent to the toy: a command that needs it is refused with a
+  Connection Error, while a state change such as a block, pause, pattern, or limit is still recorded (see **error.md**).
 - `connected`: reconnecting succeeded. A `toy_state_changed` with the stopped state is sent just before.
 - `lost`: no attempt succeeded within that minute. The toy is removed (a `toy_ids_changed` follows) and has to be added
   again once it is discovered again. The server can no longer tell whether the toy is still running.

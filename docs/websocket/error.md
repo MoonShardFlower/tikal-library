@@ -140,6 +140,25 @@ OR
 The command was tried twice. The server now reconnects to the toy for up to about a minute and stops it once the
 connection is back; `connection_status_changed` tells you how that ends (see **events.md**).
 
+OR
+
+```json
+{
+  "error": "Connection Error",
+  "message": "Unable to execute '{cmd}' on toy '{toy_id}': the toy is not connected (reconnecting), so nothing was sent. A state change the command asked for (block, pause, pattern, limit) is recorded all the same.",
+  "traceback": "Traceback (most recent call last): ...",
+  "toy_id": "AA:BB:CC:DD:EE:FF",
+  "model_name": "Solace",
+  "brand": null
+}
+```
+The toy is not connected (its connection status is `reconnecting`), so currently unavailable. A command that needs the 
+physical toy (e.g., `intensity1`, `direct_command`, `get_info` with `full=true`) had no effect. A command that changes 
+the toy's software state  (`set_blocked`, `toggle_block`, `set_paused`, `toggle_pause`, `stop`, `set_pattern`, the 
+intensity limits) is still applied (though the stop or corrective intensity it would have sent is missing). The 
+reconnect stops the toy after restoring the connection, and from then on the toy follows the recorded state. A state 
+change that needs no command at all (e.g., resuming a pattern, or a limit the toy is already below) simply succeeds.
+
 ---
 
 ### 3. Bad Model

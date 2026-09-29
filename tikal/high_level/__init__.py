@@ -1,4 +1,4 @@
-from .toy_cache import ToyCache
+from .._core import ToyCache
 from .toy_controller import LovenseController, ToyController
 from .toy_hub import ToyHub
 

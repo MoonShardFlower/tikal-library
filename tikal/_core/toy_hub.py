@@ -1,9 +1,10 @@
 """
-Private Module of the WebSocket API
+Private Module of the async core
 
-Contains all the ToyManagement logic needed by ToyServer so ToyServer can focus on defining the public API alone.
-Comparable to _ToyHub of the tikal library but is mostly async instead of sync. Makes use of private ToyControllers, which
-unlike the tikal _ToyHub are not exposed to users -> all logic routed through _ToyHub instead.
+Contains all the toy management logic (discovery, connection, state tracking, pattern playback, reconnection), so
+ToyServer can focus on defining the public API alone. Comparable to the High-Level ToyHub, but async instead of sync.
+Makes use of private ToyControllers, which unlike the High-Level ToyControllers are not exposed to users -> all logic
+routed through _ToyHub instead.
 """
 
 import asyncio
@@ -21,14 +22,14 @@ from .._private import (
     COMMUNICATION_INTERVAL,
     retry_within_window,
 )
-from ..high_level import ToyCache
 from ..low_level import BRANDS
 from ..low_level import BadModelError as LowLevelBadModelError
 from ..low_level import ConnectionBuilder
 from ..low_level import InvalidModelError as LowLevelInvalidModelError
 from ..low_level import Toy, ToyData
 from ..mock import MockBleakClient, MockBleakScanner
-from ._toy_controller import _CONTROLLER_BY_BRAND, _ToyController
+from .toy_cache import ToyCache
+from .toy_controller import _CONTROLLER_BY_BRAND, _ToyController
 
 # Retry backoff after a ConnectionError. Intentionally separate from the loop cadence
 # (COMMUNICATION_INTERVAL): it just happens to share the same value today.
@@ -114,6 +115,21 @@ class ToyConnectionError(ConnectionError):
         self.cmd = cmd
 
 
+class ToyNotConnectedError(ToyConnectionError):
+    """
+    Raised instead of sending a command to a toy that is not connected (e.g., while it is reconnecting). Nothing was sent.
+
+    A state change the command asked for (e.g., block, pause, pattern, limit) is recorded all the same: the reconnect
+    stops the toy before it is used again, and from then on the toy follows the new state.
+    """
+
+    def __init__(
+        self, toy_id: str, model_name: str, cmd: str, status: ToyStatus | None
+    ):
+        super().__init__(toy_id, model_name, cmd)
+        self.status = status
+
+
 class UnavailableToyError(ConnectionError):
     """Raised when trying to add a toy that was at some point discovered, but is no longer available."""
 
@@ -158,6 +174,8 @@ class _ToyHub:
         default_model: str = "",
         log_name: str = "tikal.ws",
         mock_toys: bool = False,
+        bluetooth_scanner: Any = None,
+        bluetooth_client: Any = None,
     ) -> None:
         """
         Manager for all toys.
@@ -174,7 +192,10 @@ class _ToyHub:
             toy_cache_path: If not empty, writes / reads toy_id -> model_name mappings to this file. This allows the library to fill out the model_name of discovered toys.
             default_model: This model_name will be used for toys that do not have a model_name in the toy_cache.
             log_name: Name of the logger used for logging.
-            mock_toys: If true, uses MockBleakScanner and MockBleakClient instead of BleakScanner and BleakClient (For testing).
+            mock_toys: If true, uses MockBleakScanner and MockBleakClient instead of BleakScanner and BleakClient, and
+                offers the fictional MockEstimToys brand (For testing).
+            bluetooth_scanner: BLE scanner class to use instead of the one ``mock_toys`` picks (e.g., for tests).
+            bluetooth_client: BLE client class to use instead of the one ``mock_toys`` picks (e.g., for tests).
         """
         self._log = logging.getLogger(log_name)
         self._log.info(
@@ -209,14 +230,12 @@ class _ToyHub:
         self._shutting_down: bool = False
         self._discovery_retry_task: asyncio.Task[None] | None = None
 
-        scanner: Any
-        client: Any
-        if mock_toys:
-            scanner = MockBleakScanner
-            client = MockBleakClient
-        else:
-            scanner = BleakScanner
-            client = BleakClient
+        scanner: Any = bluetooth_scanner
+        if scanner is None:
+            scanner = MockBleakScanner if mock_toys else BleakScanner
+        client: Any = bluetooth_client
+        if client is None:
+            client = MockBleakClient if mock_toys else BleakClient
 
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -296,14 +315,36 @@ class _ToyHub:
             return_exceptions=True,
         )
 
+    async def discover(self, timeout: float = 10.0) -> list[ToyData]:
+        """
+        Scan for toys once and return what was found. A one-shot alternative to :meth:`start_scan`.
+
+        Each toy's model name is filled in from the ToyCache (or the default model). Found toys can be connected with
+        :meth:`add_toy_data`.
+
+        Args:
+            timeout: How long to scan, in seconds.
+
+        Raises:
+            RuntimeError: A continuous scan (see :meth:`start_scan`) is in progress.
+            Exception: Any exception from the underlying scanner (e.g., Bluetooth not available).
+
+        Returns:
+            The discovered toys. Copies, so changing them does not affect the hub.
+        """
+        self._log.info(f"Discovering toys for {timeout} s")
+        found = await self._connection_builder.discover_toys(timeout)
+        return [self._with_cached_model(data) for data in found]
+
     async def start_scan(
-        self, callback: Callable[[Exception | list[dict[str, Any]]], Any]
+        self, callback: Callable[[Exception | list[ToyData]], Any]
     ) -> None:
         """
         Start continuous background discovery of Toys.
 
         Args:
-            callback:   Called with a snapshot of all discovered Toys whenever the available toys change.
+            callback:   Called with a snapshot of all discovered Toys whenever the available toys change, each with its
+                        model name filled in from the ToyCache (copies, so changing them does not affect the hub).
                         Called with an exception if the continuous scan encounters an error.
 
         Raises:
@@ -353,33 +394,35 @@ class _ToyHub:
     async def _apply_discovery(
         self,
         update: Exception | list[ToyData],
-        callback: Callable[[Exception | list[dict[str, Any]]], Any],
+        callback: Callable[[Exception | list[ToyData]], Any],
     ) -> None:
         """
-        Updates the discovery state under self._toy_lock, serializes ToyData to dicts, and delivers them to callback
+        Updates the discovery state under self._toy_lock, fills in the cached model names, and delivers the toys to callback
         Args:
             update: Either an exception indicating an error, or a list of discovered ToyData objects.
-            callback: The user callback that will receive a list of serialized ToyData dicts.
+            callback: The user callback that will receive the list of discovered toys (copies with cached model names).
         """
         async with self._toy_lock:
-            result: DiscoveryError | list[dict[str, str]]
+            result: DiscoveryError | list[ToyData]
             if isinstance(update, Exception):
                 self._toy_data.clear()
                 result = DiscoveryError(str(traceback.format_exception(update)))
             else:
                 self._toy_data = {toy.toy_id: toy for toy in update}
                 self._all_seen_toy_ids.update(data.toy_id for data in update)
-                result = [
-                    dict(
-                        toy_id=data.toy_id,
-                        name=data.name,
-                        brand=data.brand,
-                        model_name=self._toy_cache.get_model_name(data.name),
-                    )
-                    for data in update
-                ]
+                result = [self._with_cached_model(data) for data in update]
         self._log.debug("Discovery update: %s", result)
         await self._fire_callback(callback, result)
+
+    def _with_cached_model(self, data: ToyData) -> ToyData:
+        """
+        A copy of *data* with the model name the ToyCache remembers for it (or the default model).
+
+        Copying keeps the connection builder's discovery snapshot, which it hands out again, from being changed.
+        """
+        filled = copy.copy(data)
+        filled.model_name = self._toy_cache.get_model_name(data.name)
+        return filled
 
     async def _set_toy_status(self, toy_id: str, new_status: ToyStatus) -> None:
         """
@@ -646,6 +689,9 @@ class _ToyHub:
         """
         Execute a toy command with one automatic retry on ConnectionError. If the command fails after retry, triggers reconnection and raises ToyConnectionError.
 
+        Every command the hub sends to a toy goes through here, so this is also where a toy that is not connected is
+        refused (see :meth:`_require_connected`).
+
         Args:
             toy: The toy controller.
             command_name: Name of the command to execute.
@@ -653,16 +699,33 @@ class _ToyHub:
             *args: Arguments to pass to the command.
 
         Raises:
+            ToyNotConnectedError: The toy is not connected. Nothing was sent.
             ToyConnectionError: The command failed after retry.
 
         Returns:
             The command's result
         """
+        self._require_connected(toy, command_name)
         try:
             return await _retry(command, *args)
         except Exception as e:
             await self._handle_command_failure(toy)
             raise ToyConnectionError(toy.toy_id, toy.model_name, command_name) from e
+
+    def _require_connected(self, toy: _ToyController, command_name: str) -> None:
+        """
+        Refuse a command for a toy that is not connected, instead of sending it.
+
+        Args:
+            toy: The toy controller.
+            command_name: Name of the command, for the error.
+
+        Raises:
+            ToyNotConnectedError: The toy's status is not CONNECTED.
+        """
+        status = self._toy_status.get(toy.toy_id)
+        if status != ToyStatus.CONNECTED:
+            raise ToyNotConnectedError(toy.toy_id, toy.model_name, command_name, status)
 
     async def _battery_poll_loop(self) -> None:
         """
@@ -759,7 +822,7 @@ class _ToyHub:
 
     async def add(self, toy_id: str, model_name: str) -> None:
         """
-        Adds a new toy to the system.
+        Adds a new toy found by the running scan (see :meth:`start_scan`) to the system.
 
         Args:
             toy_id: Unique identifier of the toy to add.
@@ -787,6 +850,31 @@ class _ToyHub:
             # _apply_discovery may replace _toy_data[toy_id] at any await point below: keep our local model_name assignment independent.
             toy_data = copy.copy(toy_data)
             toy_data.model_name = model_name
+        await self.add_toy_data(toy_data)
+
+    async def add_toy_data(self, toy_data: ToyData) -> None:
+        """
+        Connect the toy that *toy_data* describes and add it to the system, as model ``toy_data.model_name``.
+
+        Unlike :meth:`add`, the toy does not have to come from the running scan: any discovered ToyData will do, e.g.,
+        from :meth:`discover`.
+
+        Args:
+            toy_data: The toy to connect, with its model name set.
+
+        Raises:
+            ToyAlreadyAddedError: The toy was already added.
+            InvalidModelError: The model name is not valid for the toy brand.
+            BadModelError: The model name is valid, but the toy still does not respond correctly to commands.
+            AddConnectionError: Proper connection failed.
+            RuntimeError: Unexpected result from create_toy. Development error.
+        """
+        toy_id = toy_data.toy_id
+        # Our own copy, so a caller changing its ToyData while we connect cannot affect the toy we add.
+        toy_data = copy.copy(toy_data)
+        async with self._toy_lock:
+            if toy_id in self._toys or toy_id in self._pending_toy_ids:
+                raise ToyAlreadyAddedError(toy_id, toy_data.model_name)
             self._pending_toy_ids.add(toy_id)
 
         try:
@@ -855,12 +943,15 @@ class _ToyHub:
             UnknownToyError: The toy was not added before
             InvalidModelError: the model name is not valid for the toy brand.
             BadModelError: the model name is valid, but the toy still does not respond correctly to commands.
+            ToyNotConnectedError: The toy is not connected, so the model was left unchanged.
             ToyConnectionError: The toy could not be stopped on its old command set, so the model was left unchanged.
                 Reconnecting is attempted automatically.
         """
         self._log.info(f"Setting model of {toy_id} to {model_name})")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
+            # A model switch talks to the toy (stop, then validate), so it needs the toy like any other command.
+            self._require_connected(toy, "set_model")
             try:
                 await toy.set_model_name(model_name)
             except LowLevelInvalidModelError as e:
@@ -884,13 +975,15 @@ class _ToyHub:
             toy_id: Identifier of the toy to stop.
 
         Raises:
+            ToyNotConnectedError: The toy is not connected, so nothing was sent. The pattern is paused all the same.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
         """
         self._log.info(f"Stopping toy at {toy_id}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
-            await self._run_toy_command(toy, "stop", toy.stop)
+            toy.apply_stop()
+            await self._run_toy_command(toy, "stop", toy.stop_output)
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
 
     async def intensity1(self, toy_id: str, intensity: int) -> bool:
@@ -905,6 +998,7 @@ class _ToyHub:
             intensity: Intensity level. The valid range depends on the toy type. Values outside the range are clamped.
 
         Raises:
+            ToyNotConnectedError: The toy is not connected. Nothing was sent, and the pattern keeps playing.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
         """
@@ -930,6 +1024,7 @@ class _ToyHub:
             intensity: Intensity level. The valid range depends on the toy type. Values outside the range are clamped.
 
         Raises:
+            ToyNotConnectedError: The toy is not connected. Nothing was sent, and the pattern keeps playing.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
         """
@@ -956,16 +1051,16 @@ class _ToyHub:
             toy_id: Identifier of the toy to toggle the pause state of.
 
         Raises:
+            ToyNotConnectedError: The toy is not connected, so nothing was sent. The new pause state is recorded all the same.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
         """
         self._log.info(f"Toggling pause of {toy_id}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
-            # Resolve the toggle to a target state once: a retry has to repeat the same change, not flip it back.
-            await self._run_toy_command(
-                toy, "toggle_pause", toy.set_paused, not toy.is_paused
-            )
+            # The toggle is resolved to a target state once, and only the stop is retried: a retry cannot flip it back.
+            if toy.apply_paused(not toy.is_paused):
+                await self._run_toy_command(toy, "toggle_pause", toy.stop_output)
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
 
     async def toggle_block(self, toy_id: str) -> None:
@@ -980,6 +1075,7 @@ class _ToyHub:
             toy_id: Identifier of the toy to toggle the block state of.
 
         Raises:
+            ToyNotConnectedError: The toy is not connected, so nothing was sent. The new block state is recorded all the same.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
         """
@@ -987,9 +1083,8 @@ class _ToyHub:
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
             # Same as toggle_pause: resolve the toggle once so the retry cannot undo it.
-            await self._run_toy_command(
-                toy, "toggle_block", toy.set_blocked, not toy.is_blocked
-            )
+            if toy.apply_blocked(not toy.is_blocked):
+                await self._run_toy_command(toy, "toggle_block", toy.stop_output)
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
 
     async def set_paused(self, toy_id: str, pause: bool) -> None:
@@ -1006,6 +1101,7 @@ class _ToyHub:
             pause: If true, the toy will be paused, else unpaused.
 
         Raises:
+            ToyNotConnectedError: The toy is not connected, so nothing was sent. The new pause state is recorded all the same.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
         """
@@ -1015,7 +1111,8 @@ class _ToyHub:
             # Check and act inside the same lock section, making this atomic wrt. other commands on this toy (e.g., a concurrent set_paused from a second client).
             if toy.is_paused == pause:
                 return
-            await self._run_toy_command(toy, "set_paused", toy.set_paused, pause)
+            if toy.apply_paused(pause):
+                await self._run_toy_command(toy, "set_paused", toy.stop_output)
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
 
     async def set_blocked(self, toy_id: str, block: bool) -> None:
@@ -1031,6 +1128,7 @@ class _ToyHub:
             block: If true, the toy will be blocked, else unblocked.
 
         Raises:
+            ToyNotConnectedError: The toy is not connected, so nothing was sent. The new block state is recorded all the same.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
         """
@@ -1040,7 +1138,8 @@ class _ToyHub:
             # Same check-then-act guard as set_paused above.
             if toy.is_blocked == block:
                 return
-            await self._run_toy_command(toy, "set_blocked", toy.set_blocked, block)
+            if toy.apply_blocked(block):
+                await self._run_toy_command(toy, "set_blocked", toy.stop_output)
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
 
     async def set_safety_hold(self, held: bool) -> list[str]:
@@ -1059,8 +1158,9 @@ class _ToyHub:
             held: True to hold every toy, False to release them.
 
         Returns:
-            Ids of the toys that could not be stopped when the hold was put on. They are held regardless (nothing
-            drives them once they are reachable again), but may still be running. Always empty when releasing.
+            Ids of the toys that could not be stopped when the hold was put on, including toys that were not connected
+            (e.g., reconnecting). They are held regardless (nothing drives them once they are reachable again), but may
+            still be running. Always empty when releasing.
         """
         self._log.info(f"Setting safety hold to {held}")
         async with self._toy_lock:
@@ -1102,6 +1202,8 @@ class _ToyHub:
 
         Raises:
             UnknownToyError: The toy was not added before.
+            ToyNotConnectedError: The limit was recorded, but the toy runs above it and is not connected, so it could
+                not be brought down. The reconnect stops it before it is used again.
             ToyConnectionError: The limit was recorded, but the toy could not be brought down to it. Reconnecting is
                 attempted automatically; the limit stays in force for every later command and playback tick.
         """
@@ -1109,9 +1211,10 @@ class _ToyHub:
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         try:
             async with cmd_lock:
-                await self._run_toy_command(
-                    toy, "set_intensity1_limit", toy.set_intensity1_limit, level
-                )
+                if toy.apply_intensity1_limit(level):
+                    await self._run_toy_command(
+                        toy, "set_intensity1_limit", toy.enforce_intensity1_limit
+                    )
         finally:
             # Report the new ceiling even when enforcing it failed: it *is* in force from here on.
             await self._fire_callback(self._on_toy_state_change, toy.get_state())
@@ -1128,6 +1231,8 @@ class _ToyHub:
 
         Raises:
             UnknownToyError: The toy was not added before.
+            ToyNotConnectedError: The limit was recorded, but the toy runs above it and is not connected, so it could
+                not be brought down. The reconnect stops it before it is used again.
             ToyConnectionError: The limit was recorded, but the toy could not be brought down to it. Reconnecting is
                 attempted automatically; the limit stays in force for every later command and playback tick.
         """
@@ -1135,9 +1240,10 @@ class _ToyHub:
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         try:
             async with cmd_lock:
-                await self._run_toy_command(
-                    toy, "set_intensity2_limit", toy.set_intensity2_limit, level
-                )
+                if toy.apply_intensity2_limit(level):
+                    await self._run_toy_command(
+                        toy, "set_intensity2_limit", toy.enforce_intensity2_limit
+                    )
         finally:
             # Report the new ceiling even when enforcing it failed: it *is* in force from here on.
             await self._fire_callback(self._on_toy_state_change, toy.get_state())
@@ -1166,6 +1272,8 @@ class _ToyHub:
             reset_time: If True, restart the pattern from the beginning, if False, start from the current elapsed time.
 
         Raises:
+            ToyNotConnectedError: The pattern was cleared, but the toy is not connected, so it could not be stopped. The
+                pattern is stored all the same.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added.
 
@@ -1175,10 +1283,94 @@ class _ToyHub:
         self._log.info(f"Setting pattern of {toy_id} to {pattern}")
         toy, cmd_lock = await self._get_toy_cmd(toy_id)
         async with cmd_lock:
-            await self._run_toy_command(
-                toy, "set_pattern", toy.set_pattern, pattern, wraparound, reset_time
-            )
+            if toy.apply_pattern(pattern, wraparound, reset_time):
+                await self._run_toy_command(toy, "set_pattern", toy.stop_output)
         await self._fire_callback(self._on_toy_state_change, toy.get_state())
+
+    async def apply_state(
+        self, toy_id: str, transition: Callable[[_ToyController], T]
+    ) -> T:
+        """
+        Apply a state transition to a toy right away, without talking to the toy, and return its result.
+
+        The transition is one of the controller's ``apply_*`` methods (or ``accept_manual_intensity``), which report
+        whether a command has to follow; send that with :meth:`send`. Unlike the command methods above, this does not
+        wait for a command already in flight on the toy, so the new state is visible as soon as this returns, and works
+        whatever the toy's connection status.
+
+        Args:
+            toy_id: Identifier of the toy.
+            transition: Called with the toy's controller. Must not do any I/O.
+
+        Raises:
+            UnknownToyError: The toy was not added before.
+
+        Returns:
+            Whatever *transition* returns.
+        """
+        toy = await self._get_toy(toy_id)
+        result = transition(toy)
+        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+        return result
+
+    async def send(
+        self,
+        toy_id: str,
+        command_name: str,
+        command: Callable[[_ToyController], Awaitable[T]],
+    ) -> T:
+        """
+        Send a command to a toy the way every command method does.
+
+        That is: under the toy's command lock (so in order with every other command on it), refused while the toy is
+        not connected, retried once after a ConnectionError, and followed by a reconnect if it fails again. Meant for
+        the command that has to follow a transition from :meth:`apply_state`.
+
+        Args:
+            toy_id: Identifier of the toy.
+            command_name: Name of the command, for errors and logs.
+            command: Called with the toy's controller, returns the awaitable that sends (e.g., ``stop_output()``).
+
+        Raises:
+            UnknownToyError: The toy was not added before.
+            ToyNotConnectedError: The toy is not connected. Nothing was sent.
+            ToyConnectionError: The command failed after retry. Reconnecting is attempted automatically.
+
+        Returns:
+            Whatever the command returns.
+        """
+        toy, cmd_lock = await self._get_toy_cmd(toy_id)
+        async with cmd_lock:
+            result = await self._run_toy_command(toy, command_name, command, toy)
+        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+        return result
+
+    async def fetch_battery(self, toy_id: str) -> int | None:
+        """
+        Ask the toy for its battery level now, instead of waiting for the next poll (see :meth:`get_battery`).
+
+        The level is remembered, and ``on_battery_change`` fires if it changed.
+
+        Args:
+            toy_id: Identifier of the toy.
+
+        Raises:
+            UnknownToyError: The toy was not added before.
+            ToyNotConnectedError: The toy is not connected. Nothing was sent.
+            ToyConnectionError: The query failed after retry. Reconnecting is attempted automatically.
+
+        Returns:
+            battery level (0-100) or None if the toy has no battery.
+        """
+        toy, cmd_lock = await self._get_toy_cmd(toy_id)
+        async with cmd_lock:
+            old_battery = toy.battery
+            battery = await self._run_toy_command(
+                toy, "fetch_battery", toy.refresh_battery
+            )
+        if battery != old_battery:
+            await self._fire_callback(self._on_battery_change, {toy_id: battery})
+        return battery
 
     # ---------------------------------------------
     # Toy State request and commands that do not modify the internal state
@@ -1268,6 +1460,7 @@ class _ToyHub:
             Cheap in the sense that the info is retrieved solely from the software representation.
 
         Raises:
+            ToyNotConnectedError: The toy is not connected (only with full=True). Nothing was sent.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
 
@@ -1288,6 +1481,7 @@ class _ToyHub:
         If full is True, it will return additional brand-dependent information. See self.get_info
 
         Raises:
+            ToyNotConnectedError: The toy is not connected (only with full=True). Nothing was sent.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
 
@@ -1331,6 +1525,7 @@ class _ToyHub:
             command: Command to send to the toy.
 
         Raises:
+            ToyNotConnectedError: The toy is not connected. Nothing was sent.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
             SafetyHoldError: The toy is under the safety hold (see :meth:`set_safety_hold`).
@@ -1359,6 +1554,7 @@ class _ToyHub:
             toy_id: Unique identifier of the toy that you want to change the rotation direction.
 
         Raises:
+            ToyNotConnectedError: The toy is not connected. Nothing was sent.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
 

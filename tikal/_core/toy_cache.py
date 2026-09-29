@@ -8,7 +8,7 @@ re-select models every time. The cache is stored as a JSON file on the disk.
 Note:
     The cache file is created if it doesn't exist.
     ToyCache does not raise exceptions. Encountered errors are logged, and ToyCache fails silently.
-    :class:`ToyHub` (part of the High-Level-API) uses ToyCache internally.
+    :class:`ToyHub` (part of the High-Level-API) and the WebSocket server use ToyCache internally.
 """
 
 import json
@@ -37,7 +37,7 @@ class ToyCache:
     Example::
 
         from pathlib import Path
-        from toy_cache import ToyCache
+        from tikal.high_level import ToyCache
 
         cache = ToyCache(
             cache_path=Path("./toys.json"),

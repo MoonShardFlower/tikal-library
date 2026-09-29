@@ -8,7 +8,7 @@ import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ._toy_hub import _ToyHub
+    from .._core import _ToyHub
 
 
 class ToyServerStatusPage:

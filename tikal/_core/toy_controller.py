@@ -1,8 +1,8 @@
 """
-Private Module of the WebSocket API
+Private Module of the async core
 
 Defines the _ToyController class, which extends the low-level Toy class with additional methods for pattern playback and toy control.
-Comparable to the ToyController class of the tikal library, but offering async methods instead of sync.
+Comparable to the High-Level ToyController class, but offering async methods instead of sync.
 Meant to be consumed by _ToyHub, which in turn is consumed by ToyServer. ToyServer defines a public API.
 """
 
@@ -104,97 +104,58 @@ class _ToyController(BaseToyController):
         # Switching models stops the toy on the old command set, so whatever playback last sent no longer holds.
         self._invalidate_last_values()
 
-    async def set_paused(self, pause: bool) -> None:
+    # ------------------------------------------------------------------
+    # State transitions
+    # ------------------------------------------------------------------
+
+    def apply_paused(self, pause: bool) -> bool:
         """
         Pause or resume pattern playback.
 
         When paused:
         - If a pattern is active, it stops advancing.
-        - Toy intensities are set to zero, but manual commands can override this.
+        - Toy intensities are to be set to zero, but manual commands can override this.
         - Block state is cleared if active (toy cannot be paused and blocked at the same time)
-
-        Sets the requested state instead of flipping it, so calling it again after a failed attempt finishes the change
-        rather than undoing it. ``_ToyHub`` relies on this: it retries a command once after a ``ConnectionError``.
 
         Args:
             pause: True to pause, False to resume.
 
-        Raises:
-            ConnectionError: The command could not be sent to the toy.
-            UnexpectedToyResponse: The command was sent to the toy, but the reply was not as excepted.
+        Returns:
+            True if the toy has to be stopped now (see :meth:`stop_output`), which is whenever it is paused.
         """
+        self._pattern_handler.set_paused(pause)
         if pause:
-            self._pattern_handler.set_paused(True)
-            await self._toy.strict_stop()
             self._is_blocked = False  # I don't want to pause and block at the same time
-        else:
-            self._pattern_handler.set_paused(False)
+        return pause
 
-    async def set_blocked(self, block: bool) -> None:
+    def apply_blocked(self, block: bool) -> bool:
         """
         Block or unblock the toy.
 
         When blocked:
-        - All intensity commands are rejected (return False via callback)
+        - All intensity commands are rejected (return False)
         - Toy intensities are forced to zero
         - Pattern continues advancing but doesn't control the toy
         - Pause state is cleared if active (toy cannot be paused and blocked at the same time)
 
-        Sets the requested state instead of flipping it (see :meth:`set_paused`). The block is recorded before the stop
-        is sent, so a stop that fails still leaves the toy blocked: pattern playback cannot drive it, and keeps sending
-        the stop on every tick until it gets through.
-
         Args:
             block: True to block, False to unblock.
 
-        Raises:
-            ConnectionError: The command could not be sent to the toy.
-            ToyRefusedError (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+        Returns:
+            True if the toy has to be stopped now (see :meth:`stop_output`), which is whenever it is blocked.
         """
+        self._is_blocked = block
         if block:
-            self._is_blocked = True
-            await self._toy.strict_stop()
             # I don't want to pause and block at the same time
             self._pattern_handler.set_paused(False)
-        else:
-            self._is_blocked = False
-
-    async def toggle_pause(self) -> bool:
-        """
-        Toggle pattern playback pause state. See :meth:`set_paused`.
-
-        Raises:
-            ConnectionError: The command could not be sent to the toy.
-            UnexpectedToyResponse: The command was sent to the toy, but the reply was not as excepted.
-
-        Returns:
-            bool: True if now paused, False if now unpaused.
-        """
-        pause = not self._pattern_handler.is_paused
-        await self.set_paused(pause)
-        return pause
-
-    async def toggle_block(self) -> bool:
-        """
-        Toggle block state. See :meth:`set_blocked`.
-
-        Raises:
-            ConnectionError: The command could not be sent to the toy.
-            ToyRefusedError (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
-
-        Returns:
-            bool: True if now blocked, False if now unblocked.
-        """
-        block = not self._is_blocked
-        await self.set_blocked(block)
         return block
 
-    async def set_pattern(
+    def apply_pattern(
         self,
         pattern: list[tuple[int, int, int]],
         wraparound: bool = True,
         reset_time: bool = True,
-    ) -> None:
+    ) -> bool:
         """
         Set a time-based pattern for automatic toy control.
 
@@ -202,19 +163,20 @@ class _ToyController(BaseToyController):
         - duration_ms: How long this segment lasts (milliseconds)
         - intensity1: Primary capability intensity (0-max)
         - intensity2: Secondary capability intensity (0-max)
-        The maximum possible intensity can be looked up via :meth:`get_info`. An empty list clears the pattern.
+        The maximum possible intensity can be looked up via :meth:`get_info`. An empty list clears the pattern, which
+        stops the toy like :meth:`apply_stop` does.
 
         Args:
             pattern: List of (duration_ms, intensity1, intensity2) tuples
             wraparound: If True, the pattern loops indefinitely. If False, the pattern stops after one playthrough.
             reset_time: If True, restart the pattern from the beginning. If False, maintain the current position in the pattern.
 
-        Raises:
-            ConnectionError: The command could not be sent to the toy.
-            ToyRefusedError (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+        Returns:
+            True if the toy has to be stopped now (see :meth:`stop_output`), which is whenever the pattern was cleared.
 
         Note:
-            Manual intensity commands automatically pause pattern playback to avoid conflicts. Call ``toggle_pause()`` to resume the pattern.
+            Manual intensity commands automatically pause pattern playback to avoid conflicts. Resume with
+            :meth:`apply_paused`.
 
         Note:
             The pattern is stored exactly as given. Intensity limits are applied on every playback tick instead, so a
@@ -223,7 +185,35 @@ class _ToyController(BaseToyController):
         """
         self._pattern_handler.set_pattern(pattern, wraparound, reset_time)
         if not pattern:  # ensure that intensities are 0 if pattern is cleared
-            await self.stop()
+            return self.apply_stop()
+        return False
+
+    def apply_stop(self) -> bool:
+        """
+        Pause the pattern, as every stop does, so playback does not start the toy again.
+
+        Unlike :meth:`apply_paused`, this leaves the block alone.
+
+        Returns:
+            Always True: the toy has to be stopped now (see :meth:`stop_output`).
+        """
+        self._pattern_handler.set_paused(True)
+        return True
+
+    def accept_manual_intensity(self) -> bool:
+        """
+        Decide whether a manual intensity command may be sent, and make way for it.
+
+        Refused while the toy is blocked or held. Accepting pauses the pattern, so playback does not override the
+        command.
+
+        Returns:
+            True if the command may be sent (see :meth:`send_intensity1`), False if the toy is blocked or held.
+        """
+        if self._is_blocked or self._held:
+            return False
+        self._pattern_handler.set_paused(True)
+        return True
 
     def _limit_intensity1(self, level: int) -> int:
         """Clamp a primary-capability level to the currently configured intensity1 limit."""
@@ -233,40 +223,36 @@ class _ToyController(BaseToyController):
         """Clamp a secondary-capability level to the currently configured intensity2 limit."""
         return min(level, self._intensity_limits[1])
 
-    async def set_intensity1_limit(self, level: int | None) -> None:
+    def apply_intensity1_limit(self, level: int | None) -> bool:
         """
         Set the upper limit for the primary intensity. All intensity1 commands and pattern values are clamped to it.
 
-        If the toy is already running above the new limit, it is brought down to the limit right away rather than only
-        being clamped from the next command onwards.
+        A limit is a safety ceiling, so a toy already running above it has to come down right away rather than only
+        being clamped from the next command onwards: see :meth:`enforce_intensity1_limit`.
 
         Args:
             level: Maximum allowed intensity1 value (0 – max_intensity). Clamped to that range. None removes the limit.
 
-        Raises:
-            ConnectionError: The corrective intensity command could not be delivered. The limit itself is still
-                recorded, so every later command and playback tick respects it.
-            UnexpectedToyResponse: (subclass of ConnectionError) The toy replied unexpectedly to the corrective command.
+        Returns:
+            True if the toy runs above the new limit and has to be brought down now (see :meth:`enforce_intensity1_limit`).
         """
         self._intensity_limits[0] = self._normalize_limit(level)
-        await self._enforce_intensity1_limit()
+        return self._toy.current_intensities[0] > self._intensity_limits[0]
 
-    async def set_intensity2_limit(self, level: int | None) -> None:
+    def apply_intensity2_limit(self, level: int | None) -> bool:
         """
         Set the upper limit for the secondary intensity. All intensity2 commands and pattern values are clamped to it.
 
-        Behaves like :meth:`set_intensity1_limit`, including bringing an already-running toy down to the new limit.
+        Behaves like :meth:`apply_intensity1_limit`.
 
         Args:
             level: Maximum allowed intensity2 value (0 – max_intensity). Clamped to that range. None removes the limit.
 
-        Raises:
-            ConnectionError: The corrective intensity command could not be delivered. The limit itself is still
-                recorded, so every later command and playback tick respects it.
-            UnexpectedToyResponse: (subclass of ConnectionError) The toy replied unexpectedly to the corrective command.
+        Returns:
+            True if the toy runs above the new limit and has to be brought down now (see :meth:`enforce_intensity2_limit`).
         """
         self._intensity_limits[1] = self._normalize_limit(level)
-        await self._enforce_intensity2_limit()
+        return self._toy.current_intensities[1] > self._intensity_limits[1]
 
     def _normalize_limit(self, level: int | None) -> int:
         """Turn a requested limit into a usable ceiling: ``None`` means "no limit", anything else is clamped to range."""
@@ -274,13 +260,18 @@ class _ToyController(BaseToyController):
             return self._toy.max_intensity
         return max(0, min(level, self._toy.max_intensity))
 
-    async def _enforce_intensity1_limit(self) -> None:
+    async def enforce_intensity1_limit(self) -> None:
         """
         Bring the toy down now if its primary capability is running above the current intensity1 limit.
 
-        A limit is a safety ceiling, so it has to apply to what the toy is doing *right now*, not just to the next
-        command. Pattern playback would pick the change up on its own next tick; this also covers the cases where
-        nothing else is about to send an intensity (no active pattern, or a segment that lasts minutes).
+        Pattern playback would pick the change up on its own next tick; this also covers the cases where nothing else
+        is about to send an intensity (no active pattern, or a segment that lasts minutes). Does nothing if the toy is
+        not above the limit, so it is safe to retry.
+
+        Raises:
+            ConnectionError: The corrective intensity command could not be delivered. The limit itself stays in force,
+                so every later command and playback tick respects it.
+            UnexpectedToyResponse: (subclass of ConnectionError) The toy replied unexpectedly to the corrective command.
         """
         limit = self._intensity_limits[0]
         if self._toy.current_intensities[0] <= limit:
@@ -289,8 +280,8 @@ class _ToyController(BaseToyController):
         # The toy now sits at the ceiling. Record it so the next playback tick does not repeat the command.
         self._last_values["intensity1"] = limit
 
-    async def _enforce_intensity2_limit(self) -> None:
-        """Bring the toy down now if its secondary capability is above the intensity2 limit. See :meth:`_enforce_intensity1_limit`."""
+    async def enforce_intensity2_limit(self) -> None:
+        """Bring the toy down now if its secondary capability is above the intensity2 limit. See :meth:`enforce_intensity1_limit`."""
         limit = self._intensity_limits[1]
         if self._toy.current_intensities[1] <= limit:
             return
@@ -299,7 +290,7 @@ class _ToyController(BaseToyController):
 
     async def intensity1(self, level: int) -> bool:
         """
-        Set the intensity of the primary capability.
+        Set the intensity of the primary capability: :meth:`accept_manual_intensity`, then :meth:`send_intensity1`.
 
         If a pattern is active and not paused, calling this method pauses the pattern to avoid conflicts.
 
@@ -311,14 +302,11 @@ class _ToyController(BaseToyController):
             UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
 
         Returns:
-            True if the command was accepted, False if the toy is blocked or held. See :meth:`toggle_block` and :meth:`set_held`
+            True if the command was accepted, False if the toy is blocked or held. See :meth:`apply_blocked` and :meth:`set_held`
         """
-        if self._is_blocked or self._held:
+        if not self.accept_manual_intensity():
             return False
-        # avoid the pattern overriding the command
-        self._pattern_handler.set_paused(True)
-        level = self._limit_intensity1(level)
-        return await self._toy.strict_intensity1(level)
+        return await self.send_intensity1(level)
 
     async def intensity2(self, level: int) -> bool:
         """
@@ -335,14 +323,47 @@ class _ToyController(BaseToyController):
             UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
 
         Returns:
-            True if the command was accepted, False if the toy has no second capability or is blocked or held. See :meth:`toggle_block` and :meth:`set_held`
+            True if the command was accepted, False if the toy has no second capability or is blocked or held. See :meth:`apply_blocked` and :meth:`set_held`
         """
-        if self._is_blocked or self._held:
+        if not self.accept_manual_intensity():
             return False
-        # avoid the pattern overriding the command
-        self._pattern_handler.set_paused(True)
-        level = self._limit_intensity2(level)
-        return await self._toy.strict_intensity2(level)
+        return await self.send_intensity2(level)
+
+    async def send_intensity1(self, level: int) -> bool:
+        """
+        Send a primary-capability level, clamped to the intensity1 limit, without touching the pattern.
+
+        The second half of a manual intensity command (see :meth:`accept_manual_intensity`). Blocked and held are
+        checked again, because either can have come in between the two halves.
+
+        Args:
+            level: Intensity level. Values outside the valid range are clamped.
+
+        Raises:
+            ConnectionError: The command could not be sent to the toy.
+            UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+
+        Returns:
+            True if the toy took the command, False if it is blocked or held (nothing is sent).
+        """
+        if self._output_suppressed():
+            return False
+        return await self._toy.strict_intensity1(self._limit_intensity1(level))
+
+    async def send_intensity2(self, level: int) -> bool:
+        """
+        Send a secondary-capability level, clamped to the intensity2 limit. See :meth:`send_intensity1`.
+
+        Raises:
+            ConnectionError: The command could not be sent to the toy.
+            UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+
+        Returns:
+            True if the toy took the command, False if it is blocked or held (nothing is sent) or has no second capability.
+        """
+        if self._output_suppressed():
+            return False
+        return await self._toy.strict_intensity2(self._limit_intensity2(level))
 
     async def change_rotation_direction(self) -> bool:
         """
@@ -364,7 +385,7 @@ class _ToyController(BaseToyController):
         """
         Stop all toy actions (set all intensities to zero).
 
-        If a pattern is active and not paused, this method pauses the pattern.
+        If a pattern is active and not paused, this method pauses the pattern: :meth:`apply_stop`, then :meth:`stop_output`.
 
         Raises:
             ConnectionError: The command could not be sent to the toy.
@@ -373,21 +394,22 @@ class _ToyController(BaseToyController):
         Returns:
             Always true
         """
-        self._pattern_handler.set_paused(True)
-        return await self._toy.strict_stop()
+        self.apply_stop()
+        return await self.stop_output()
 
-    async def get_battery_level(self) -> int | None:
+    async def refresh_battery(self) -> int | None:
         """
-        Retrieve the toy's battery level.
+        Ask the toy for its battery level and remember it (see :attr:`battery`).
 
         Raises:
-            ConnectionError: The command could not be sent to the toy.
+            ConnectionError: The command could not be sent to the toy. The last known level is kept.
             UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
 
         Returns:
             Battery level (0-100) or None if the toy has no battery.
         """
-        return await self._toy.strict_get_battery_level()
+        self._battery = await self._toy.strict_get_battery_level()
+        return self._battery
 
     async def get_info(
         self, full: bool
@@ -516,20 +538,18 @@ class _ToyController(BaseToyController):
         """
         Fetch the current battery level from the toy.
 
-        Updates internal _battery attribute if the value has changed and returns the new value.
+        Updates internal _battery attribute (see :meth:`refresh_battery`) and returns the new value if it changed.
         If the fetch fails (exception), return None and keep the old value.
 
         Returns:
-            battery level (0-100) or None if the toy has no battery or the fetch failed.
+            battery level (0-100) if it changed, else None (unchanged, no battery, or the fetch failed).
         """
+        old_battery = self._battery
         try:
-            new_battery = await self._toy.strict_get_battery_level()
+            new_battery = await self.refresh_battery()
         except Exception:
             return None
-        if new_battery != self._battery:
-            self._battery = new_battery
-            return new_battery
-        return None
+        return new_battery if new_battery != old_battery else None
 
     async def disconnect(self) -> None:
         """
