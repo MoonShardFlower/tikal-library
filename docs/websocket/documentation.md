@@ -20,7 +20,7 @@ Optional arguments are:
 - `--host <host>`: defaults to `localhost` and defines the host to bind to. Binding a non-loopback host (including `0.0.0.0`) is refused unless `--insecure` is also passed. See **security.md**.
 - `--port <port>`: defaults to `8142` and defines the port to bind to.
 - `--insecure`: allow binding a non-loopback `--host`. Only use this when the server is protected (reverse proxy, firewall, trusted LAN, or testing). See **security.md**.
-- `--timeout <seconds_to_timeout>`: defaults to `3` and defines how long the server stays up after the last client disconnects before shutting itself down. Set to `0` to disable auto-shutdown.
+- `--timeout <seconds_to_timeout>`: defaults to `3` and defines how long the server stays up after the last client disconnects before shutting itself down. Set to `0` to disable auto-shutdown. Regardless of this setting, every toy is stopped (and its pattern paused) as soon as the last client disconnects — nothing is left running unattended. The same applies when the server is stopped with Ctrl+C or SIGTERM.
 - `--toy-cache-path <path_to_cache_file>`: defaults to `./data/toy_cache.json` and defines the path and name of the toy cache file.
 If set to the string "None", the cache degrades to in-memory only (No persistence)
 If the file does not exist, it will be created. If the path up to the file does not exist, it will be created.

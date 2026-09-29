@@ -23,6 +23,14 @@ In the following I only define the data fields of each event and describe when t
 ### 1. `connection_status_changed`
 A toy’s connection status has changed. The server monitors the connection and broadcasts this event whenever the status transitions (e.g., connected -> reconnecting -> lost).
 
+- `reconnecting`: a command failed or the connection dropped. The server tries to reconnect, with several attempts over
+  up to about a minute. After reconnecting it first stops the toy, which also pauses its pattern: whatever the toy was
+  last told no longer applies.
+- `connected`: reconnecting succeeded. A `toy_state_changed` with the stopped state is sent just before.
+- `lost`: no attempt succeeded within that minute. The toy is removed (a `toy_ids_changed` follows) and has to be added
+  again once it is discovered again. The server can no longer tell whether the toy is still running.
+- `powered_off`: the toy was switched off with its power button (it reports this). It is removed as well.
+
 **Data**
 ```json
 {
@@ -55,7 +63,7 @@ The set of toys managed by the server changed: a toy was added or removed.
 ---
 
 ### 3. `toy_state_changed`
-Any part of a toy’s internal state has changed (intensities, intensity limits, pattern, pause/block state, pattern version, elapsed time)
+Any part of a toy’s internal state has changed (intensities, intensity limits, pattern, pause/block/hold state, pattern version, elapsed time)
 
 **Data**
 ```json
@@ -64,6 +72,7 @@ Any part of a toy’s internal state has changed (intensities, intensity limits,
   "current_intensities": [0, 0],
   "intensity_limits": [20, 20],
   "is_blocked": false,
+  "is_held": false,
   "pattern_version": 3,
   "pattern": [[500, 100, 0], [500, 0, 100]],
   "wraparound": true,
@@ -72,17 +81,18 @@ Any part of a toy’s internal state has changed (intensities, intensity limits,
 }
 ```
 
-| Field                 | Type                     | Description                                                                                                  |
-|-----------------------|--------------------------|--------------------------------------------------------------------------------------------------------------|
-| `toy_id`              | string                   | Unique identifier of the toy.                                                                                |
-| `current_intensities` | list[int]                | `[intensity1, intensity2]`; second value is always `0` for single‑intensity toys.                            |
-| `intensity_limits`    | list[int]                | `[limit1, limit2]`; current intensity limits. All intensity commands are clamped to these values.            |
-| `is_blocked`          | bool                     | `true` if the toy is forced to zero intensities.                                                             |
-| `pattern_version`     | int                      | Increments each time the pattern state changes.                                                              |
-| `pattern`             | list[tuple[int,int,int]] | Active pattern as a list of `(duration_ms, intensity1, intensity2)` segments.                                |
-| `wraparound`          | bool                     | `true` if the pattern loops after the last segment; `false` if it stops.                                     |
-| `is_paused`           | bool                     | `true` when pattern playback is paused (intensities zero, timer frozen).                                     |
-| `elapsed`             | float                    | Milliseconds elapsed since the start of the pattern or the last wraparound (does not advance during pauses). |
+| Field                 | Type                     | Description                                                                                                    |
+|-----------------------|--------------------------|----------------------------------------------------------------------------------------------------------------|
+| `toy_id`              | string                   | Unique identifier of the toy.                                                                                  |
+| `current_intensities` | list[int]                | `[intensity1, intensity2]`; second value is always `0` for single‑intensity toys.                              |
+| `intensity_limits`    | list[int]                | `[limit1, limit2]`; current intensity limits. All intensity commands are clamped to these values.              |
+| `is_blocked`          | bool                     | `true` if the toy is forced to zero intensities.                                                               |
+| `is_held`             | bool                     | `true` while the heartbeat watchdog's safety hold is on (intensities forced to zero, see `heartbeat_timeout`). |
+| `pattern_version`     | int                      | Increments each time the pattern state changes.                                                                |
+| `pattern`             | list[tuple[int,int,int]] | Active pattern as a list of `(duration_ms, intensity1, intensity2)` segments.                                  |
+| `wraparound`          | bool                     | `true` if the pattern loops after the last segment; `false` if it stops.                                       |
+| `is_paused`           | bool                     | `true` when pattern playback is paused (intensities zero, timer frozen).                                       |
+| `elapsed`             | float                    | Milliseconds elapsed since the start of the pattern or the last wraparound (does not advance during pauses).   |
 
 ---
 
@@ -197,24 +207,71 @@ Similar to replies, you can use the success field of the event envelope to deter
 ---
 
 ### 7. `heartbeat_timeout`
-Fired when the heartbeat watchdog triggers a safety stop. This happens in two cases:
-- A client subscribed to the heartbeat watchdog failed to send a `heartbeat` command within 3 seconds, or
-- A subscribed client **disconnected** while still subscribed (crash or dropped connection).
+Fired when the heartbeat watchdog trips. This happens in two cases:
+- A client subscribed to the heartbeat watchdog failed to send a `heartbeat` command within 3 seconds (`reason: "timeout"`), or
+- A subscribed client **disconnected** while still subscribed, e.g., a crash or dropped connection (`reason: "disconnect"`).
+  This includes a client that stayed overdue for 30 seconds: the server then treats it as disconnected and closes its
+  connection (close code `4000`), so a stuck client cannot hold the toys forever.
 
-In both cases the server stops **all** toys as a safety measure and removes the affected client's subscription.
-See the `enable_heartbeat` and `heartbeat` actions in **actions.md** for details.
+In both cases the server puts **every** toy under the **safety hold**: every toy is kept at zero (including toys added
+later), intensity commands are ignored, `direct_command` is refused, and patterns keep advancing without driving the
+toy. Block, pause, patterns, and limits are left untouched and stay editable. `get_state` reports `is_held: true`.
+See the `enable_heartbeat` action in **actions.md** for the full rules.
 
-This event is broadcast to **all** connected clients, not just the affected one.
+How the hold ends depends on `reason`:
+- `"timeout"`: automatically, once the overdue client sends a `heartbeat` again or unsubscribes (and no other
+  subscribed client is overdue).
+- `"disconnect"`: only when a client sends `release_hold`. The disconnected client can never send the heartbeat that
+  would end it, and another client's heartbeat does not end it either.
+
+If a toy cannot be stopped (the stop and an immediate retry both failed, e.g., because the connection dropped), it is
+listed in `failed_toy_ids`. It is held regardless, and the server reconnects to it for up to about a minute, stopping it
+as soon as the connection is back (which also pauses its pattern). Watch `connection_status_changed`: `connected` means
+the toy was stopped; `lost` means the server gave up and removed it, and can no longer tell whether it is still running.
+
+The event is sent every time the watchdog trips, also while the hold is already on, so you learn about each client
+that went overdue or disconnected. It is broadcast to **all** connected clients, not just the affected one.
 
 **Data**
 ```json
 {
-  "message": "Heartbeat timeout. All toys stopped."
+  "message": "Heartbeat timeout. All toys held until a heartbeat is received again.",
+  "reason": "timeout",
+  "failed_toy_ids": []
 }
 ```
 
-| Field     | Type   | Description                                                                                       |
-|-----------|--------|---------------------------------------------------------------------------------------------------|
-| `message` | string | Human-readable description of what happened (distinguishes a missed heartbeat from a disconnect). |
+| Field            | Type            | Description                                                                                         |
+|------------------|-----------------|-----------------------------------------------------------------------------------------------------|
+| `message`        | string          | Human-readable description of what happened.                                                        |
+| `reason`         | string          | `"timeout"` (a subscribed client is overdue) or `"disconnect"` (a subscribed client disconnected).  |
+| `failed_toy_ids` | list of strings | Toys whose stop failed even after an immediate retry (see above). Empty if the hold was already on. |
+
+---
+
+### 8. `hold_released`
+Fired when the safety hold ends: no subscribed client is overdue any more, and any hold caused by a disconnect was
+released with `release_hold`.
+
+Every toy then follows its own state again:
+- A **running pattern carries on** from its current position. It kept advancing during the hold, so it does not pick
+  up where it was when the hold started.
+- A **paused** toy (including one you were driving with manual intensity commands, which pause the pattern) stays
+  paused, and a **blocked** toy stays blocked. Manual intensity levels are not replayed.
+- A toy that **lost its connection** during the hold comes back paused: after reconnecting, the server always stops the
+  toy, which pauses its pattern (see `connection_status_changed`).
+
+This event is broadcast to **all** connected clients.
+
+**Data**
+```json
+{
+  "message": "Safety hold released. Toys follow their own state again."
+}
+```
+
+| Field     | Type   | Description                                  |
+|-----------|--------|----------------------------------------------|
+| `message` | string | Human-readable description of what happened. |
 
 ---

@@ -13,8 +13,32 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
         (Caddyfile with public-domain and LAN variants, an nginx equivalent, and a decision guide covering Caddy vs. Tailscale plus a Windows quick-start).
 
 ### Changed
+    - Web API: The heartbeat watchdog now puts every toy under a **safety hold** instead of just stopping it, and no longer disarms
+        itself when it fires. The hold is separate from block and pause and leaves both untouched: toys are kept at zero (including
+        toys added during the hold), `direct_command` is refused, and patterns advance without effect.
+        It stays on while any subscribed client is overdue and ends when it sends a `heartbeat` again (or unsubscribes).
+        A client that stays overdue for 30 seconds is treated as disconnected and closed with close code 4000. 
+        A hold caused by a subscribed client disconnecting only ends with the new `release_hold` command. When the hold
+        ends, every toy follows its own state again and the new `hold_released` event is broadcast.
+    - Web API: The `heartbeat_timeout` event payload gained `reason` ("timeout" or "disconnect") and `failed_toy_ids`, so a client can
+        tell whether the hold ends on its own and which toys could not be reached (and may still be running).
+    - High-Level API + Web API: A toy whose connection fails is now reconnected with repeated attempts for up to one minute before
+        it is given up (previously a single attempt, which the High-Level API also cut off after 5 seconds). Each attempt stops the
+        toy and pauses its pattern once connected, so a stop that failed before (e.g., the safety hold's) still gets through.
+        Web API: a toy that is given up is declared lost and removed. High-Level API: the reconnection-failure callback fires and
+        the toy is disconnected, as before.
+    - High-Level API: After reconnecting, a toy is now stopped and its pattern paused instead of resuming on its own (a block is
+        left alone). Resume with `set_paused(False)`.
+    - High-Level API: Commands for a toy that is not connected (reconnecting, given up, powered off, or disconnected) are no longer
+        queued: their callbacks receive None right away, as for a failed command. Previously they were sent up to a minute late
+        after a reconnect, or never, with a callback that never fired.
+    - Web API: Disconnecting the last client now stops every toy and pauses its pattern, regardless of the `--timeout` setting.
+        Previously `--timeout 0` (auto-shutdown disabled) left a running pattern driving the toy with nobody connected.
+    - Web API: The CLI now handles SIGINT/SIGTERM (where the platform supports it) by shutting the server down gracefully,
+        so a terminating signal stops the toys instead of killing the process with toys still running.
     - Web API: Status webpage performs an origin check. Other webpages are forbidden to access the status page.
-    - Web API: binding the websocket server to a non-localhost address is now only allowed if the server is started with the --insecure flag. Else an error message is logged and the server terminated.
+    - Web API: binding the websocket server to a non-localhost address is now only allowed if the server is started with the --insecure flag. 
+        Else an error message is logged and the server terminated.
     - Web API: set_pattern now stores the pattern exactly as sent instead of baking the current intensity limits into it.
         get_state therefore reports the pattern you sent, and withdrawing a limit restores the pattern's own values.
     - Web API: set_intensity1_limit / set_intensity2_limit now also bring a toy that is already running above the new limit down to it, instead of only clamping later commands.
@@ -26,7 +50,23 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     - Low-Level API: New helper `carried_over_capabilities(old, new)` in toy_data, exported from tikal.low_level. Brand Toy implementations
         use it to decide which capabilities survive a model change.
 
+### Added
+    - Web API: `release_hold` command and `hold_released` event for the heartbeat watchdog's safety hold, `is_held` in the toy state
+        (`get_state`, `get_all`, `toy_state_changed`), and a Safety Hold error for `direct_command` during the hold.
+    - Web API: `ToyServer.shutdown()`, a public, idempotent counterpart to `serve()` that stops and disconnects every toy and then closes the server.
+    - High-Level API: `ToyHub` now registers `shutdown()` as an `atexit` safety net. A program that never calls it (including one ending in an
+        uncaught exception or a KeyboardInterrupt) no longer leaves its toys running. The hook holds only a weak reference and is
+        unregistered by an explicit `shutdown()`. It cannot help if the process is killed outright (SIGKILL, `os._exit`).
+
 ### Fixed
+    - Web API: `set_blocked`, `set_paused`, `toggle_block` and `toggle_pause` no longer undo themselves when the first attempt hits a
+        connection error. The automatic retry used to flip the state back, so e.g. a block that hit a transient Bluetooth error left
+        the toy unblocked while the command reported success.
+    - Web API: Stopping the server with Ctrl+C no longer leaves toys connected and running. `serve()` now tears the toy hub down in a
+        `finally`, so cancellation still stops and disconnects every toy.
+    - High-Level API + Web API: The toy cache file is now treated as untrusted input. Entries that are not `str -> str` are logged and
+        skipped on load, so `get_model_name` always returns a str. 
+        `ToyCache.update` filters the same way, and a non-str `default_model` falls back to an empty model name.
     - Low-Level API: A model rejected while connecting no longer leaks the BLE connection.
     - Web API: Intensity limits now apply to a pattern that is already playing. Previously a limit lowered mid-playback was ignored until
         the pattern was re-sent. Limits are now applied on every playback tick and to every manual command.

@@ -137,6 +137,8 @@ OR
   "brand": null
 }
 ```
+The command was tried twice. The server now reconnects to the toy for up to about a minute and stops it once the
+connection is back; `connection_status_changed` tells you how that ends (see **events.md**).
 
 ---
 
@@ -256,5 +258,23 @@ This error can only occur in the `start_scan` command.
 }
 ```
 This error can only occur in the `discovered_toys` event.
+
+---
+
+### 10. Safety Hold
+
+**Payload:**
+```json
+{
+  "error": "Safety Hold",
+  "message": "Unable to execute '{cmd}' on '{toy_id}'. The toy is under the safety hold of the heartbeat watchdog. Wait for the hold_released event, or send release_hold if the hold was caused by a disconnected client.",
+  "traceback": null,
+  "toy_id": "AA:BB:CC:DD:EE:FF",
+  "model_name": null,
+  "brand": null
+}
+```
+This error can only occur in the `direct_command` command, while the heartbeat watchdog's safety hold is on (see
+`enable_heartbeat` in **actions.md**). Nothing was sent to the toy.
 
 ---
