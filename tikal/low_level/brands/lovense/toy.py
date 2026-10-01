@@ -125,8 +125,8 @@ class LovenseToy(Toy):
             model_name: New model name. Must be in LOVENSE_TOY_NAMES.keys() of module ToyData. Case Insensitive. Case Insensitive.
 
         Raises:
-            InvalidModelError: If model_name is not valid for this toy brand.
-            BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details.
+            ~tikal.low_level.InvalidModelError: If model_name is not valid for this toy brand.
+            ~tikal.low_level.BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details.
             ConnectionError: The new model was accepted, but a command releasing a replaced capability could not be
                 delivered. The model and the tracked levels are left unchanged, so the caller can retry. A command the
                 toy *refuses* does not raise: see the note below.

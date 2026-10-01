@@ -2,6 +2,7 @@
 Part of the Low-Level API: the abstract contract every BLE toy brand implements.
 
 A brand handler encapsulates everything brand-specific about BLE discovery and connection:
+
 - Recognizing the brand from a BLE advertisement
 - Creating the appropriate ``ToyData``
 - Establishing a connection and returning a ready-to-use ``Toy`` instance
@@ -27,6 +28,7 @@ class BLEBrandHandler(ABC):
     Abstract interface for handling a specific brand of BLE toy.
 
     Each concrete implementation provides the logic for:
+
     - Recognizing the brand from BLE advertisements
     - Creating the appropriate ``ToyData``
     - Establishing a connection and returning a ready-to-use ``Toy`` instance

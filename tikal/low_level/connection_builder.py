@@ -2,6 +2,7 @@
 Part of the Low-Level API: Provides connection management for toy devices.
 
 This module provides:
+
 - :class:`ConnectionBuilder`: The transport-agnostic entry point. Composes every per-transport connection builder
   (:class:`BLEConnectionBuilder` and the fictional ``MockConnectionBuilder``) and presents a single, unified
   discovery/connection API. This is the class the higher layers (and new code) should use.
@@ -266,6 +267,7 @@ class BLEConnectionBuilder:
 
         Returns:
             List where each element is either a connected Toy instance or a BaseException for failed connections. Possible exceptions per element:
+
             - ``KeyError``: toy address was not found in the cache (i.e., :meth:`discover_toys` was not called first)
             - ``StaleDeviceError``: Subclass of ConnectionError: Device was discovered, but has since become stale. Retrieve a new snapshot i.e., via :meth:`discover_toys`
             - ``ConnectionError``: BLE connection or notification setup failed, e.g., the toy may have become unavailable
@@ -276,6 +278,7 @@ class BLEConnectionBuilder:
             The order of results matches the order of the input list.
 
         Example::
+
                 toys = await builder.discover_toys(5.0)  # Discover toys
                 # Set model names (e.g., from user input)
                 toys[0].model_name = "Nora"
@@ -300,6 +303,7 @@ class BLEConnectionBuilder:
 
         Returns:
             connected Toy instance on success, or a BaseException on failure. Possible exceptions:
+
             - ``KeyError``: toy address was not found in the cache (i.e., :meth:`discover_toys` was not called first)
             - ``StaleDeviceError``: Subclass of ConnectionError: Device was discovered, but has since become stale. Retrieve a new snapshot i.e., via :meth:`discover_toys`
             - ``ConnectionError``: BLE connection or notification setup failed, e.g., the toy may have become unavailable
@@ -308,6 +312,7 @@ class BLEConnectionBuilder:
             - ``RuntimeError``: Developer error. I did not specify a handler for this subclass of ToyData. Should never happen.
 
         Example::
+
                 toys = await builder.discover_toys(5.0)  # Discover toys
                 # Set model names (e.g., from user input)
                 toys[0].model_name = "Nora"

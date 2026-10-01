@@ -5,6 +5,7 @@ MockEstimToys-specific toy data: model capabilities and the fake devices this br
 a tiny line protocol simulated by :class:`tikal.low_level.transport.MockTransport`. This module is the single place to
 edit when adjusting a mock model. Every model is defined **once** in :data:`MOCK_ESTIM_TOY_SPECIFICATIONS`; the public
 lookup tables are derived from it (mirroring the Lovense brand) so they can never drift apart. It defines:
+
 - :data:`MOCK_ESTIM_TOY_SPECIFICATIONS`: model name -> :class:`ToySpecification` (the single source of truth)
 - :data:`MOCK_ESTIM_TOY_NAMES`: model name -> :class:`ToyCommands` (capability/command mapping)
 - :data:`MAX_INTENSITY`: the intensity scale of the brand (0 - MAX_INTENSITY)

@@ -2,6 +2,7 @@
 Part of both the Low-Level and High-Level API: brand-agnostic data structures for toy device management.
 
 This module defines the shared data classes used throughout the toy control system:
+
 - Exception classes for validation errors (raised if model_name is invalid)
 - :class:`ToyData` returned by the connection builder after discovery
 - :class:`ToyCommands` describing a toy model's capabilities
@@ -57,8 +58,9 @@ class BadModelError(ValidationError):
     Exception raised when a model_name is valid, but its associated commands are not accepted by the toy.
 
     This exception can mean two things:
-        1) A valid, but wrong model_name is being set
-        2) the commands being incorrect -> the Library does not handle this model correctly. Please contact the library maintainer in this case.
+
+    1) A valid, but wrong model_name is being set
+    2) the commands being incorrect -> the Library does not handle this model correctly. Please contact the library maintainer in this case.
 
     Can be raised during toy initialization or when setting a toy's model name.
     """
@@ -140,12 +142,6 @@ class ToyCommands:
     protocol communication. You shouldn't need to instantiate this class, but if you use LOVENSE_TOY_NAMES you will
     use instances of this class.
 
-    Attributes:
-        intensity1_name: Display name for the primary capability shown to users (e.g., "Vibration", "Thrust").
-        intensity1_command: Command string for the primary capability sent to the toy (e.g., "Vibrate", "Thrusting").
-        intensity2_name: Display name for the secondary capability, or None if the toy has only one capability (e.g., "Rotation", "Air").
-        intensity2_command: Command string for the secondary capability, or None if the toy has no secondary capability (e.g., "Rotate", "Air:Level").
-
     Example:
         ::
 
@@ -156,9 +152,13 @@ class ToyCommands:
                 print(f"{commands.intensity2_name}: {commands.intensity2_command}")
     """
 
+    #: Display name for the primary capability shown to users (e.g., "Vibration", "Thrust").
     intensity1_name: str
+    #: Command string for the primary capability sent to the toy (e.g., "Vibrate", "Thrusting").
     intensity1_command: str
+    #: Display name for the secondary capability, or None if the toy has only one capability (e.g., "Rotation", "Air").
     intensity2_name: str | None = None
+    #: Command string for the secondary capability, or None if the toy has no secondary capability (e.g., "Rotate", "Air:Level").
     intensity2_command: str | None = None
 
 
@@ -210,11 +210,6 @@ class ToySpecification:
     Lets a brand keep its per-model data in **one** place. The brand's public lookup tables (command mapping,
     recommended interval, rotation support) are then derived from a mapping of ``model_name -> ToySpecification``
 
-    Attributes:
-        commands: The model's capability/command mapping (see :class:`ToyCommands`).
-        min_interval: Recommended minimum interval between intensity changes, in milliseconds. Callers are free to ignore it.
-        supports_rotation: Whether the model can change its rotation direction. Defaults to ``False``.
-
     Example:
         ::
 
@@ -225,6 +220,9 @@ class ToySpecification:
             )
     """
 
+    #: The model's capability/command mapping (see :class:`ToyCommands`).
     commands: ToyCommands
+    #: Recommended minimum interval between intensity changes, in milliseconds. Callers are free to ignore it.
     min_interval: int
+    #: Whether the model can change its rotation direction. Defaults to ``False``.
     supports_rotation: bool = False

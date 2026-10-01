@@ -5,8 +5,9 @@ Each supported BLE brand lives in its own subpackage (e.g. ``brands/lovense``) a
 builds its handler list from this registry, and the public ``BRANDS`` mapping (brand -> supported model names) is derived from it.
 
 Adding a new BLE brand:
-    1. Create a subpackage ``brands/<brand>/`` with a ``BLEBrandHandler`` subclass (and its toy class + model data).
-    2. Append one ``BrandRegistration`` entry to ``BRAND_REGISTRATIONS`` below.
+
+1. Create a subpackage ``brands/<brand>/`` with a ``BLEBrandHandler`` subclass (and its toy class + model data).
+2. Append one ``BrandRegistration`` entry to ``BRAND_REGISTRATIONS`` below.
 """
 
 from dataclasses import dataclass

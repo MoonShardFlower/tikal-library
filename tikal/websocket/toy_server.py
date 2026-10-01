@@ -12,20 +12,20 @@ offers some advantages:
 
 Request  (client -> server):
 
-.. code-block:: json
+.. code-block:: text
 
     {"request": "some_command", "id": "some_id", "data": {...}}
 
 Response (server -> client):
 
-.. code-block:: json
+.. code-block:: text
 
     {"reply": "some_command", "id": "some_id", "success": true,  "data": { ... }}
     {"reply": "some_command", "id": "some_id", "success": false, "data": {"error": "...", "message": "...", ...}}
 
 Event (server -> all clients / scan subscribers):
 
-.. code-block:: json
+.. code-block:: text
 
     {"event": "some_event", "success": true,  "data": {...}}
     {"event": "some_event", "success": false, "data": {"error": "...", "message": "..."}}
@@ -51,7 +51,7 @@ Response:
     {
         "reply": "get_battery",
         "id": "some_id",
-        "success": True,
+        "success": true,
         "data": {"battery": 85, "toy_id": "some_toy_id"}
     }
 
@@ -62,8 +62,15 @@ Error response:
     {
         "reply": "get_battery",
         "id": "some_id",
-        "success": False,
-        "data": {"error": "UnknownToyError", "message": "Unable to execute 'get_battery' on 'some_toy_id'. Please add the toy first."}
+        "success": false,
+        "data": {
+            "error": "Unknown Toy",
+            "message": "Unable to execute 'get_battery' on 'some_toy_id'. Please add the toy first.",
+            "traceback": null,
+            "toy_id": "some_toy_id",
+            "model_name": null,
+            "brand": null
+        }
     }
 
 Event:
@@ -71,21 +78,23 @@ Event:
 .. code-block:: json
 
     {
-        "event": "on_status_change",
-        "success": True,
-        "data": {"toy_id": "some_toy_id", "status": "RECONNECTING"}
+        "event": "connection_status_changed",
+        "success": true,
+        "data": {"toy_id": "some_toy_id", "status": "reconnecting"}
     }
 
 **Architecture**
 
 Each command is described by a CommandEntry dataclass that bundles:
-  - Request_model   : Pydantic model that validates the incoming data object.
-  - Response_model  : Pydantic model that validates (and serializes) the outgoing data.
-  - Handler         : async callable(hub: _ToyHub, data: req_model) -> dict that performs the actual work and returns the raw result dict.
+
+- Request_model   : Pydantic model that validates the incoming data object.
+- Response_model  : Pydantic model that validates (and serializes) the outgoing data.
+- Handler         : async callable(hub: _ToyHub, data: req_model) -> dict that performs the actual work and returns the raw result dict.
 
 _handle_message is a *generic* dispatcher: validate -> look up entry -> validate inner data -> call handler -> validate response -> send.
-The commands start_scan / stop_scan are a special case as they require a reference to the per-client WebSocket connection.
-They are handled by dedicated methods flagged via CommandEntry.is_scan.
+Commands that need the client's connection or the server's own state (scan subscriptions, the heartbeat watchdog,
+per-client limits, shutdown) have no handler in the registry. ToyServer handles them itself, see
+ToyServer._client_commands.
 """
 
 import asyncio
@@ -190,6 +199,7 @@ async def _cmd_get_state(hub: _ToyHub, data: ToyIdData) -> dict[str, Any]:
     Returns the current state of a toy. This is an inexpensive in-memory read (no BLE communication).
 
     State information contains:
+
     -  `toy_id` (str) Unique identifier of the toy
     -  `current_intensity` (list[int, int]) Current intensity values. The second value is always zero if the toy only has one intensity.
     -  `intensity_limits` (list[int, int]) Current intensity limits. All intensity commands are clamped to these values.
@@ -199,6 +209,7 @@ async def _cmd_get_state(hub: _ToyHub, data: ToyIdData) -> dict[str, Any]:
     -  `wraparound` (bool)  Whether the pattern repeats from the beginning after completing the last segment. If False, both Intensities are 0 after the last segment
     -  `is_paused` (bool) Whether the toy is currently paused (patterns do not advance)
     -  `elapsed` (float) Time elapsed since the start of the pattern or last wraparound in ms
+
     Args:
         hub: _ToyHub instance managing the toy
         data: Validated ToyIdData instance, containing the toy_id
@@ -253,6 +264,7 @@ async def _cmd_get_info(hub: _ToyHub, data: GetInfoData) -> dict[str, Any]:
     Gather information about the toy.
 
     Info gathered (always, also if full=False):
+
     -  `toy_id` (str) unique identifier of the toy, e.g., Bluetooth address
     -  `name` (str) human-readable identifier of the toy, e.g., Bluetooth advertisement name
     -  `model_name` (str) model name of the toy. Typically, not retrieved from the toy itself but set by you when adding the toy. This returns this set name.
@@ -565,6 +577,7 @@ async def _cmd_set_pattern(hub: _ToyHub, data: SetPatternData) -> dict[str, Any]
     Args:
         hub: _ToyHub instance managing the toy.
         data: Validated SetPatternData containing:
+
             - toy_id: Identifier of the target toy.
             - pattern: Sequence of (duration_ms, intensity1, intensity2) tuples.
             - wraparound: Whether the pattern loops after its final segment.
@@ -944,6 +957,7 @@ class ToyServer:
         While connected: Reads messages from the client in a loop, spawning a new task per message, so slow commands don't block later ones.
 
         On disconnect (normal close or connection error):
+
         - Removes the client from _clients and _scan_subscribers.
         - Makes the toys safe: an armed heartbeat client vanishing puts on the safety hold until a client sends
           release_hold; the *last* client leaving stops every toy and pauses its pattern, because nothing is watching

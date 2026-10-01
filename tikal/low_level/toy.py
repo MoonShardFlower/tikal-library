@@ -2,6 +2,7 @@
 Part of the Low Level API: the abstract :class:`Toy` interface.
 
 This module defines the brand-agnostic base class for communicating with toy devices:
+
 - :class:`Toy`: Abstract base class defining the toy communication interface
 - :class:`UnexpectedToyResponse`: raised when a toy returns an unexpected reply
 
@@ -174,6 +175,7 @@ class Toy(ABC):
             tuple[int, int]: A tuple of (primary_intensity, secondary_intensity). The secondary intensity is always 0 if the toy has only one capability.
 
         Example::
+
             intensity1, intensity2 = toy.current_intensities
             print(f"Primary intensity: {intensity1}, Secondary intensity: {intensity2}")")
         """
@@ -191,8 +193,8 @@ class Toy(ABC):
             model_name: New model name. Must be a valid model for this toy brand.
 
         Raises:
-            InvalidModelError: If model_name is not valid for this toy brand.
-            BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details.
+            ~tikal.low_level.InvalidModelError: If model_name is not valid for this toy brand.
+            ~tikal.low_level.BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details.
         """
         raise NotImplementedError
 

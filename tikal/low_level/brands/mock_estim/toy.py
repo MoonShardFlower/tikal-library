@@ -82,8 +82,8 @@ class MockEstimToy(Toy):
             model_name: New model name. Must be in ``MOCK_ESTIM_TOY_NAMES`` (case-insensitive).
 
         Raises:
-            InvalidModelError: If model_name is not valid for this brand.
-            BadModelError: If the model_name is valid, but commands still fail.
+            ~tikal.low_level.InvalidModelError: If model_name is not valid for this brand.
+            ~tikal.low_level.BadModelError: If the model_name is valid, but commands still fail.
             ConnectionError: The new model was accepted, but a command releasing a dropped channel could not be
                 delivered. The model and the tracked levels are left unchanged, so the caller can retry. A command the
                 device *refuses* does not raise: see the note below.

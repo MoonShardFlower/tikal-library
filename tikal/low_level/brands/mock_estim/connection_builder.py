@@ -107,6 +107,7 @@ class MockConnectionBuilder:
 
         Returns:
             A connected ``MockEstimToy`` on success, or a ``BaseException`` on failure:
+
             - ``KeyError``: the toy id is not one of the known fake devices.
             - ``InvalidModelError``: the model name is not valid for this brand.
             - ``ConnectionError``: connection or notification setup failed.

@@ -175,6 +175,7 @@ class MockBleakClient:
     Mock BLE client that simulates Lovense toy communication.
 
     Supports different behaviors based on device name:
+
     - Normal operation: Responds to all commands
     - connection_failure: Stops responding 5s after the first intensity command
     - POWEROFF: Sends POWEROFF and disconnects 5s after the first intensity command
