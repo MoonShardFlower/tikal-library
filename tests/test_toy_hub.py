@@ -1,612 +1,374 @@
-"""Tests for the High-Level :class:`ToyHub` orchestration."""
+"""
+Tests for the High-Level :class:`ToyHub`: the synchronous wrapper over the async core.
 
-import asyncio
+Driven end to end with MockEstimToys. Scans, reconnects and power-offs are started on the hub's core the way the
+Bluetooth layer would start them.
+"""
+
 import gc
 import json
 import threading
-import time
 import weakref
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from tikal.high_level import ToyHub
-from tikal.high_level.toy_controller import LovenseController
-from tikal.low_level import Toy, ToyData
+from tikal._core import ToyStatus
+from tikal.high_level import (
+    AddConnectionError,
+    DiscoveryStartError,
+    InvalidModelError,
+    ToyAlreadyAddedError,
+    ToyController,
+    ToyHub,
+    UnknownToyError,
+)
+from tikal.low_level import ToyData
+
+from .conftest import connect_mock_toy, wait_until
 
 
-def make_toy(toy_id="a1", model="Nora", name="LVS-A1", brand="Lovense"):
-    toy = AsyncMock(spec=Toy)
-    toy.toy_id = toy_id
-    toy.model_name = model
-    toy.name = name
-    toy.brand = brand
-    toy.max_intensity = 20
-    return toy
+def _core_toy(hub, toy_id="Thunder_ID"):
+    return hub._core.get_controller(toy_id)
 
 
-def lovense_data(toy_id="a1", model="Nora", name="LVS-A1"):
-    return ToyData(name, toy_id, model, "Lovense")
+def _on_loop(hub, coro):
+    """Run a coroutine of the hub's core on its event loop (as the Bluetooth layer's callbacks do) and wait for it."""
+    return hub._runner.run_async(coro)
 
 
-@pytest.fixture
-def mock_builder():
-    builder = MagicMock()
-    builder.discover_toys = AsyncMock(return_value=[])
-    builder.create_toys = AsyncMock(return_value=[])
-    builder.create_toy = AsyncMock()
+def _thunder_data(model_name="Thunder") -> ToyData:
+    return ToyData("Thunder1", "Thunder_ID", model_name, "MockEstimToys")
+
+
+# ---------------------------------------------------------------------------
+# Discovery
+# ---------------------------------------------------------------------------
+
+
+def test_discover_fills_in_the_default_and_the_cached_model(mock_hub, tmp_path):
+    cache_file = tmp_path / "cache.json"
+    cache_file.write_text('{"Thunder1": "Lightning"}', encoding="utf-8")
+    hub = mock_hub(toy_cache_path=cache_file, default_model="PICK_ME")
+
+    found = {t.toy_id: t.model_name for t in hub.discover_toys_blocking(0.1)}
+
+    assert found == {"Thunder_ID": "Lightning", "Lightning_ID": "PICK_ME"}
+
+
+def test_corrupted_cache_does_not_break_discovery(mock_hub, tmp_path):
+    """A cache entry that is not a model-name string must not break discovery for the other toys."""
+    cache_path = tmp_path / "toys.json"
+    cache_path.write_text(
+        json.dumps({"Thunder1": 123, "Lightning1": "Thunder"}), encoding="utf-8"
+    )
+    hub = mock_hub(toy_cache_path=cache_path, default_model="unknown")
+
+    found = {t.toy_id: t.model_name for t in hub.discover_toys_blocking(0.1)}
+
+    assert found == {"Thunder_ID": "unknown", "Lightning_ID": "Thunder"}
+
+
+def test_start_discovery_reports_toys_with_their_models(mock_hub, tmp_path):
+    cache_path = tmp_path / "toys.json"
+    cache_path.write_text(json.dumps({"Thunder1": ["Gush"]}), encoding="utf-8")
+    hub = mock_hub(toy_cache_path=cache_path, default_model="DEF")
+    builder = hub._core._connection_builder
     builder.start_continuous = AsyncMock()
-    builder.stop_continuous = AsyncMock()
-    builder.retrieve_continuous = AsyncMock(return_value=[])
-    return builder
+    updates: list = []
+
+    hub.start_discovery(updates.append)
+    scanner_callback = builder.start_continuous.call_args.args[0]
+    scanner_callback([_thunder_data(model_name="")])  # what the scanner does
+
+    assert wait_until(lambda: updates)
+    assert [(t.toy_id, t.model_name) for t in updates[0]] == [("Thunder_ID", "DEF")]
 
 
-@pytest.fixture
-def hub_factory(mock_builder):
-    """Build ToyHubs whose ConnectionBuilder is `mock_builder`; all hubs are shut down on teardown."""
-    hubs = []
+def test_a_failing_scan_goes_to_on_error_and_clears_the_toys(mock_hub):
+    errors: list = []
+    hub = mock_hub(on_error=lambda error, context, tb: errors.append((error, tb)))
+    builder = hub._core._connection_builder
+    builder.start_continuous = AsyncMock()
+    updates: list = []
 
-    def _make(**kwargs):
-        with patch(
-            "tikal.high_level.toy_hub.ConnectionBuilder", return_value=mock_builder
-        ):
-            hub = ToyHub(logger_name="test", **kwargs)
-        hubs.append(hub)
-        return hub
+    hub.start_discovery(updates.append)
+    builder.start_continuous.call_args.args[0](RuntimeError("scan died"))
 
-    yield _make
-
-    for hub in hubs:
-        try:
-            hub.shutdown()
-        except Exception:
-            pass
+    assert wait_until(lambda: updates and errors)
+    assert updates == [[]]
+    assert "scan died" in errors[0][1]  # the traceback of the scanner's error
 
 
-# ---------------------------------------------------------------------------
-# Discovery + cache fill
-# ---------------------------------------------------------------------------
-
-
-def test_discover_fills_default_model(hub_factory, mock_builder):
-    mock_builder.discover_toys.return_value = [lovense_data(model="")]
-    hub = hub_factory(default_model="PICK_ME")
-
-    toys = hub.discover_toys_blocking(0.1)
-
-    assert len(toys) == 1
-    assert toys[0].model_name == "PICK_ME"
-
-
-def test_discover_fills_model_from_cache(hub_factory, mock_builder, tmp_path):
-    cache_file = tmp_path / "cache.json"
-    cache_file.write_text('{"LVS-A1": "Lush"}', encoding="utf-8")
-    mock_builder.discover_toys.return_value = [lovense_data(model="")]
-    hub = hub_factory(toy_cache_path=cache_file, default_model="DEFAULT")
-
-    toys = hub.discover_toys_blocking(0.1)
-
-    assert toys[0].model_name == "Lush"
-
-
-# ---------------------------------------------------------------------------
-# Connecting
-# ---------------------------------------------------------------------------
-
-
-def test_connect_registers_controllers_and_updates_cache(
-    hub_factory, mock_builder, tmp_path
-):
-    cache_file = tmp_path / "cache.json"
-    mock_builder.create_toys.return_value = [make_toy()]
-    hub = hub_factory(toy_cache_path=cache_file)
-
-    result = hub.connect_toys_blocking([lovense_data()])
-
-    assert len(result) == 1
-    assert isinstance(result[0], LovenseController)
-    assert hub.is_running is True
-    assert json.loads(cache_file.read_text(encoding="utf-8"))["LVS-A1"] == "Nora"
-
-
-def test_connect_passes_through_exceptions(hub_factory, mock_builder):
-    err = ConnectionError("nope")
-    mock_builder.create_toys.return_value = [make_toy(toy_id="a1"), err]
-    hub = hub_factory()
-
-    result = hub.connect_toys_blocking(
-        [lovense_data(toy_id="a1"), lovense_data(toy_id="b2", name="LVS-B2")]
+def test_start_discovery_raises_when_the_scan_cannot_start(mock_hub):
+    hub = mock_hub()
+    hub._core._connection_builder.start_continuous = AsyncMock(
+        side_effect=RuntimeError("bt off")
     )
-
-    assert isinstance(result[0], LovenseController)
-    assert result[1] is err
-
-
-# ---------------------------------------------------------------------------
-# Disconnect / power-off
-# ---------------------------------------------------------------------------
+    with pytest.raises(DiscoveryStartError):
+        hub.start_discovery(lambda toys: None)
 
 
-def test_disconnect_unregisters_and_stops_loop(hub_factory, mock_builder):
-    toy = make_toy()
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory()
-    hub.connect_toys_blocking([lovense_data()])
-    assert hub.is_running is True
-
-    hub.disconnect_toys_blocking(["a1"])
-
-    toy.disconnect.assert_awaited()
-    assert hub.is_running is False  # last toy gone -> loop stops
+def test_stop_discovery_stops_the_scan(mock_hub):
+    hub = mock_hub()
+    hub._core._connection_builder.stop_continuous = AsyncMock()
+    hub.stop_discovery()
+    hub._core._connection_builder.stop_continuous.assert_awaited()
 
 
-def test_power_off_unregisters_and_fires_callback(hub_factory, mock_builder):
-    fired = []
-    toy = make_toy()
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory(on_power_off=fired.append)
-    hub.connect_toys_blocking([lovense_data()])
-
-    hub._handle_power_off("a1")
-
-    assert fired == ["a1"]
-    assert "a1" not in hub._toy_controllers
-
-
-# ---------------------------------------------------------------------------
-# Reconnection (success path)
-# ---------------------------------------------------------------------------
-
-
-def test_handle_disconnect_reconnect_success_reregisters(hub_factory, mock_builder):
-    reconnected = threading.Event()
-    disconnected = []
-    toy = make_toy()
-    toy.reconnect = AsyncMock(return_value=True)
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory(
-        on_disconnect=disconnected.append,
-        on_reconnection_success=lambda tid: reconnected.set(),
-    )
-    hub.connect_toys_blocking([lovense_data()])
-
-    hub._handle_disconnect("a1")
-
-    assert reconnected.wait(timeout=3.0), "reconnection-success callback never fired"
-    assert disconnected == ["a1"]
-    assert "a1" in hub._toy_controllers  # re-registered after successful reconnect
-
-
-def test_handle_disconnect_retries_until_the_toy_is_back(
-    hub_factory, mock_builder, short_reconnect_pause
-):
-    # One failed attempt (or one that raises) must not cost the toy: reconnecting is retried.
-    reconnected = threading.Event()
-    toy = make_toy()
-    toy.reconnect = AsyncMock(side_effect=[False, ConnectionError("hiccup"), True])
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory(on_reconnection_success=lambda tid: reconnected.set())
-    hub.connect_toys_blocking([lovense_data()])
-
-    hub._handle_disconnect("a1")
-
-    assert reconnected.wait(timeout=3.0), "reconnection-success callback never fired"
-    assert toy.reconnect.await_count == 3
-    assert "a1" in hub._toy_controllers
-
-
-def test_reconnect_stops_the_toy_and_pauses_its_pattern(hub_factory, mock_builder):
-    # After up to a minute away the pattern must not resume on its own.
-    reconnected = threading.Event()
-    toy = make_toy()
-    toy.reconnect = AsyncMock(return_value=True)
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory(on_reconnection_success=lambda tid: reconnected.set())
-    hub.connect_toys_blocking([lovense_data()])
-    controller = hub._toy_controllers["a1"]
-    controller.set_pattern([(10_000, 10, 0)])
-    assert controller.is_paused is False
-
-    hub._handle_disconnect("a1")
-
-    assert reconnected.wait(timeout=3.0), "reconnection-success callback never fired"
-    assert toy.strict_stop.await_count == 1
-    assert controller.is_paused is True
-
-
-def test_commands_during_the_outage_are_rejected_right_away(hub_factory, mock_builder):
-    # A command issued while the toy is reconnecting must not reach it up to a minute late: its callback hears None at
-    # once, the way it hears about a failed command. Commands issued after the reconnect run normally.
-    reconnected = threading.Event()
-    release = threading.Event()
+def test_discover_toys_callback_delivers_results_and_errors(mock_hub):
+    hub = mock_hub(default_model="DEF")
     results: list = []
 
-    async def gated_reconnect() -> bool:
-        # Hold the reconnect, so the command below is issued while the toy is certainly still disconnected.
-        while not release.is_set():
-            await asyncio.sleep(0.01)
-        return True
+    hub.discover_toys_callback(results.append, timeout=0.1)
+    assert wait_until(lambda: results)
+    assert {t.toy_id for t in results[0]} == {"Thunder_ID", "Lightning_ID"}
 
-    toy = make_toy()
-    toy.reconnect = AsyncMock(side_effect=gated_reconnect)
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory(on_reconnection_success=lambda tid: reconnected.set())
-    hub.connect_toys_blocking([lovense_data()])
-    controller = hub._toy_controllers["a1"]
-
-    hub._handle_disconnect("a1")
-    controller.intensity1(5, callback=results.append)  # issued while disconnected
-    assert results == [None]  # right away, not only once the reconnect ends
-    release.set()
-
-    assert reconnected.wait(timeout=3.0), "reconnection-success callback never fired"
-    toy.intensity1.assert_not_awaited()
-
-    controller.intensity1(7)
-    deadline = time.time() + 2.0
-    while toy.intensity1.await_count == 0 and time.time() < deadline:
-        time.sleep(0.01)
-    toy.intensity1.assert_awaited_once_with(7)
+    hub._core._connection_builder.discover_toys = AsyncMock(
+        side_effect=RuntimeError("bt off")
+    )
+    hub.discover_toys_callback(results.append, timeout=0.1)
+    assert wait_until(lambda: len(results) == 2)
+    assert isinstance(results[1], RuntimeError)
 
 
-def test_reconnect_leaves_a_block_alone(hub_factory, mock_builder):
-    reconnected = threading.Event()
-    toy = make_toy()
-    toy.reconnect = AsyncMock(return_value=True)
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory(on_reconnection_success=lambda tid: reconnected.set())
-    hub.connect_toys_blocking([lovense_data()])
-    controller = hub._toy_controllers["a1"]
-    controller.toggle_block()
-
-    hub._handle_disconnect("a1")
-
-    assert reconnected.wait(timeout=3.0), "reconnection-success callback never fired"
-    assert controller.is_blocked is True
+# ---------------------------------------------------------------------------
+# Connecting and disconnecting
+# ---------------------------------------------------------------------------
 
 
-def test_a_failed_stop_after_reconnecting_is_retried(
-    hub_factory, mock_builder, short_reconnect_pause
-):
-    reconnected = threading.Event()
-    toy = make_toy()
-    toy.reconnect = AsyncMock(return_value=True)
-    toy.strict_stop = AsyncMock(side_effect=[ConnectionError("flaky"), True])
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory(on_reconnection_success=lambda tid: reconnected.set())
-    hub.connect_toys_blocking([lovense_data()])
+def test_connect_hands_out_controllers_and_remembers_the_models(mock_hub, tmp_path):
+    cache_file = tmp_path / "cache.json"
+    hub = mock_hub(toy_cache_path=cache_file)
 
-    hub._handle_disconnect("a1")
+    toy = connect_mock_toy(hub, "Lightning_ID", "Thunder")
 
-    assert reconnected.wait(timeout=3.0), "reconnection-success callback never fired"
-    assert toy.strict_stop.await_count == 2
-    assert toy.reconnect.await_count == 2
+    assert isinstance(toy, ToyController) and toy.is_connected
+    assert toy.model_name == "Thunder"
+    assert json.loads(cache_file.read_text(encoding="utf-8"))["Lightning1"] == "Thunder"
 
 
-def test_handle_disconnect_reconnect_failure_disconnects_promptly(
-    hub_factory, mock_builder, short_reconnect_window
-):
-    # Regression: the failure path must clean up the toy without blocking the runner loop.
-    # The old code called the blocking run_async() from the loop thread and deadlocked ~4s.
-    # (The shortened reconnect window keeps the retries themselves well below the 1 s bound checked here.)
-    failed = threading.Event()
-    toy = make_toy()
-    toy.reconnect = AsyncMock(return_value=False)  # force the failure path
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory(on_reconnection_failure=lambda tid: failed.set())
-    hub.connect_toys_blocking([lovense_data()])
-
-    t0 = time.time()
-    hub._handle_disconnect("a1")
-    assert failed.wait(timeout=3.0), "reconnection-failure callback never fired"
-
-    deadline = time.time() + 2.0
-    while toy.disconnect.await_count == 0 and time.time() < deadline:
-        time.sleep(0.01)
-    elapsed = time.time() - t0
-
-    assert toy.disconnect.await_count == 1
-    assert elapsed < 1.0, f"disconnect took {elapsed:.2f}s (loop was blocked)"
-    assert "a1" not in hub._toy_controllers  # not re-registered
-    assert toy.reconnect.await_count > 1  # retried before giving up
-
-
-def test_given_up_toy_reports_leftover_commands_and_rejects_new_ones(
-    hub_factory, mock_builder, short_reconnect_window
-):
-    # The toy is gone for good. A command still queued from just before the connection was lost is reported as failed
-    # (None) before the reconnection-failure callback, and a command issued after that is rejected right away.
-    events: list = []
-    failed = threading.Event()
-
-    def on_failure(toy_id: str) -> None:
-        events.append("lost")
-        failed.set()
-
-    toy = make_toy()
-    toy.reconnect = AsyncMock(return_value=False)
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory(on_reconnection_failure=on_failure)
-    hub.connect_toys_blocking([lovense_data()])
-    controller = hub._toy_controllers["a1"]
-
-    hub._handle_disconnect("a1")
-    # A command that made it into the queue just before the disconnect was noticed: the race the drop exists for.
-    leftover = AsyncMock()
-    controller._command_queue.append(
-        (leftover, lambda result: events.append(("leftover", result)))
+def test_connect_reports_each_failure_in_its_place(mock_hub):
+    hub = mock_hub()
+    found = {t.toy_id: t for t in hub.discover_toys_blocking(0.1)}
+    found["Thunder_ID"].model_name = "Thunder"
+    found["Lightning_ID"].model_name = "Bogus"
+    hub._core._connection_builder.create_toy = AsyncMock(
+        wraps=hub._core._connection_builder.create_toy
     )
 
-    assert failed.wait(timeout=3.0), "reconnection-failure callback never fired"
-    assert events == [("leftover", None), "lost"]
-    leftover.assert_not_awaited()
+    thunder, lightning, again = hub.connect_toys_blocking(
+        [found["Thunder_ID"], found["Lightning_ID"], found["Thunder_ID"]]
+    )
 
-    controller.intensity1(5, callback=lambda result: events.append(("after", result)))
-    assert events[-1] == ("after", None)
-    toy.intensity1.assert_not_awaited()
-
-
-def test_handle_disconnect_reconnect_raising_reports_failure(
-    hub_factory, mock_builder, short_reconnect_window
-):
-    # If reconnect() itself keeps raising, every attempt counts as failed: once the window runs out the
-    # failure callback must fire and the toy must still be cleaned up.
-    failed = threading.Event()
-    toy = make_toy()
-    toy.reconnect = AsyncMock(side_effect=ConnectionError("boom"))
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory(on_reconnection_failure=lambda tid: failed.set())
-    hub.connect_toys_blocking([lovense_data()])
-
-    hub._handle_disconnect("a1")
-
-    assert failed.wait(timeout=3.0), "reconnection-failure callback never fired"
-    assert "a1" not in hub._toy_controllers
+    assert isinstance(thunder, ToyController)
+    assert isinstance(lightning, InvalidModelError)
+    assert isinstance(again, ToyAlreadyAddedError)
 
 
-def test_handle_disconnect_unknown_toy_is_ignored(hub_factory):
-    hub = hub_factory()
-    hub._handle_disconnect("ghost")  # must not raise
+def test_connect_reports_a_toy_that_cannot_be_reached(mock_hub):
+    hub = mock_hub()
+    hub._core._connection_builder.create_toy = AsyncMock(
+        return_value=ConnectionError("out of range")
+    )
+    (result,) = hub.connect_toys_blocking([_thunder_data()])
+    assert isinstance(result, AddConnectionError)
 
 
-def test_handle_power_off_unknown_toy_is_ignored(hub_factory):
-    hub = hub_factory()
-    hub._handle_power_off("ghost")  # must not raise
+def test_connect_toys_callback_delivers_the_controllers(mock_hub):
+    hub = mock_hub()
+    results: list = []
+    hub.connect_toys_callback([_thunder_data()], results.append)
+    assert wait_until(lambda: results)
+    assert isinstance(results[0][0], ToyController)
 
 
-# ---------------------------------------------------------------------------
-# Callback setters
-# ---------------------------------------------------------------------------
+def test_disconnect_reports_each_toy_in_its_place(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
 
-
-def test_callback_setters_replace_callbacks(hub_factory):
-    hub = hub_factory()
-    sentinel = lambda *a: None  # noqa: E731
-    # None of these should raise; they just swap the stored callback.
-    hub.battery_update_callback(sentinel)
-    hub.error_callback(sentinel)
-    hub.disconnect_callback(sentinel)
-    hub.reconnection_failure_callback(sentinel)
-    hub.reconnection_success_callback(sentinel)
-    hub.power_off_callback(sentinel)
-    assert hub._battery_update_callback is sentinel
-    assert hub._power_off_callback is sentinel
-
-
-# ---------------------------------------------------------------------------
-# Continuous discovery (start_discovery / stop_discovery)
-# ---------------------------------------------------------------------------
-
-
-def test_start_discovery_fills_models_and_forwards(hub_factory, mock_builder):
-    updates = []
-    hub = hub_factory(default_model="DEF")
-    hub.start_discovery(updates.append)
-
-    # ToyHub wraps our callback; grab the wrapper it handed to the builder and drive it.
-    wrapper = mock_builder.start_continuous.call_args.args[0]
-    wrapper([lovense_data(model="")])
-
-    assert len(updates) == 1
-    assert updates[0][0].model_name == "DEF"  # filled from cache/default
-
-
-def test_start_discovery_exception_reports_error_and_clears(hub_factory, mock_builder):
-    errors = []
-    updates = []
-    hub = hub_factory(on_error=lambda e, ctx, tb: errors.append(e))
-    hub.start_discovery(updates.append)
-
-    wrapper = mock_builder.start_continuous.call_args.args[0]
-    boom = RuntimeError("scan died")
-    wrapper(boom)
-
-    assert errors == [boom]
-    assert updates == [[]]  # cleared on error
-
-
-def test_stop_discovery_delegates(hub_factory, mock_builder):
-    hub = hub_factory()
-    hub.stop_discovery()
-    mock_builder.stop_continuous.assert_awaited()
-
-
-# ---------------------------------------------------------------------------
-# Callback (non-blocking) variants
-# ---------------------------------------------------------------------------
-
-
-def test_discover_toys_callback_delivers_results(hub_factory, mock_builder):
-    done = threading.Event()
-    result = []
-    mock_builder.discover_toys.return_value = [lovense_data(model="")]
-    hub = hub_factory(default_model="DEF")
-
-    def on_discovered(toys):
-        result.append(toys)
-        done.set()
-
-    hub.discover_toys_callback(on_discovered, timeout=1.0)
-    assert done.wait(3.0)
-    assert result[0][0].model_name == "DEF"
-
-
-def test_discover_toys_callback_delivers_exception(hub_factory, mock_builder):
-    done = threading.Event()
-    result = []
-    mock_builder.discover_toys.side_effect = RuntimeError("bt off")
-    hub = hub_factory()
-
-    def on_discovered(res):
-        result.append(res)
-        done.set()
-
-    hub.discover_toys_callback(on_discovered, timeout=1.0)
-    assert done.wait(3.0)
-    assert isinstance(result[0], Exception)
-
-
-def test_connect_toys_callback_delivers_controllers(hub_factory, mock_builder):
-    done = threading.Event()
-    result = []
-    mock_builder.create_toys.return_value = [make_toy()]
-    hub = hub_factory()
-
-    def on_connected(controllers):
-        result.extend(controllers)
-        done.set()
-
-    hub.connect_toys_callback([lovense_data()], on_connected)
-    assert done.wait(3.0)
-    assert isinstance(result[0], LovenseController)
-    assert "a1" in hub._toy_controllers
-
-
-def test_disconnect_toys_callback_disconnects(hub_factory, mock_builder):
-    done = threading.Event()
-    result = []
-    toy = make_toy()
-    toy.disconnect = AsyncMock(return_value=None)  # real Toy.disconnect returns None
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory()
-    hub.connect_toys_blocking([lovense_data()])
-
-    def on_disconnected(res):
-        result.append(res)
-        done.set()
-
-    hub.disconnect_toys_callback(["a1"], on_disconnected)
-    assert done.wait(3.0)
-    toy.disconnect.assert_awaited()
-    assert result[0] == [None]
-
-
-def test_disconnect_blocking_ignores_empty_and_unknown(hub_factory):
-    hub = hub_factory()
     assert hub.disconnect_toys_blocking([]) == []
-    assert hub.disconnect_toys_blocking(["ghost"]) == []  # unknown -> skipped
+    results = hub.disconnect_toys_blocking([toy.toy_id, "ghost"])
+
+    assert results[0] is None
+    assert isinstance(results[1], UnknownToyError)
+    assert toy.is_connected is False
+
+
+def test_disconnect_toys_callback_disconnects(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+    results: list = []
+    hub.disconnect_toys_callback([toy.toy_id], results.append)
+    assert wait_until(lambda: results)
+    assert results == [[None]] and toy.is_connected is False
+
+
+def test_update_model_name(mock_hub, tmp_path):
+    cache_file = tmp_path / "cache.json"
+    hub = mock_hub(toy_cache_path=cache_file)
+    toy = connect_mock_toy(hub, "Lightning_ID", "Lightning")
+
+    assert hub.update_model_name(toy.toy_id, "Thunder") is toy
+    assert toy.model_name == "Thunder"
+    assert json.loads(cache_file.read_text(encoding="utf-8"))["Lightning1"] == "Thunder"
+
+    assert isinstance(hub.update_model_name(toy.toy_id, "Bogus"), InvalidModelError)
+    assert json.loads(cache_file.read_text(encoding="utf-8"))["Lightning1"] == "Thunder"
+    assert isinstance(hub.update_model_name("ghost", "Thunder"), UnknownToyError)
 
 
 # ---------------------------------------------------------------------------
-# update_model_name
+# Connection loss, reconnection and power-off
 # ---------------------------------------------------------------------------
 
 
-def test_update_model_name_unknown_toy_returns_valueerror(hub_factory):
-    hub = hub_factory()
-    result = hub.update_model_name("ghost", "Lush")
-    assert isinstance(result, ValueError)
+def test_reconnect_success(mock_hub, short_reconnect_pause):
+    """The toy comes back stopped with its pattern paused (a block stays), and the callbacks tell the story."""
+    events: list = []
+    hub = mock_hub(
+        on_disconnect=lambda toy_id: events.append(("disconnect", toy_id)),
+        on_reconnection_success=lambda toy_id: events.append(("back", toy_id)),
+    )
+    toy = connect_mock_toy(hub)
+    toy.set_pattern([(60_000, 40, 0)])
+    assert wait_until(lambda: toy.current_intensities == (40, 0))
+    core_toy = _core_toy(hub)
+    core_toy.reconnect = AsyncMock(side_effect=[ConnectionError("gone"), None])
+
+    _on_loop(hub, hub._core._on_disconnect(toy.toy_id))
+    results: list = []
+    toy.intensity1(5, results.append)  # during the outage
+    assert results == [None]
+
+    assert wait_until(lambda: ("back", "Thunder_ID") in events)
+    assert events == [("disconnect", "Thunder_ID"), ("back", "Thunder_ID")]
+    assert toy.is_connected is True
+    assert toy.is_paused is True and toy.current_intensities == (0, 0)
+    assert core_toy.reconnect.await_count == 2
+
+    toy.set_blocked(True)
+    core_toy.reconnect = AsyncMock()  # back on the first attempt this time
+    _on_loop(hub, hub._core._on_disconnect(toy.toy_id))
+    assert wait_until(lambda: events.count(("back", "Thunder_ID")) == 2)
+    assert toy.is_blocked is True  # a reconnect leaves the block alone
 
 
-def test_update_model_name_success(hub_factory, mock_builder):
-    toy = make_toy()
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory()
-    (controller,) = hub.connect_toys_blocking([lovense_data()])
+def test_reconnect_failure(mock_hub, short_reconnect_window):
+    lost = threading.Event()
+    hub = mock_hub(on_reconnection_failure=lambda toy_id: lost.set())
+    toy = connect_mock_toy(hub)
+    _core_toy(hub).reconnect = AsyncMock(side_effect=ConnectionError("gone"))
 
-    result = hub.update_model_name("a1", "Lush")
+    _on_loop(hub, hub._core._on_disconnect(toy.toy_id))
 
-    assert result is controller
-    toy.set_model_name.assert_awaited_with("Lush")
+    assert lost.wait(3.0), "reconnection-failure callback never fired"
+    assert wait_until(lambda: hub._core.get_controller(toy.toy_id) is None)
+    results: list = []
+    toy.intensity1(5, results.append)
+    assert results == [None]  # rejected right away
 
 
-def test_update_model_name_propagates_command_error(hub_factory, mock_builder):
-    toy = make_toy()
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory()
-    hub.connect_toys_blocking([lovense_data()])
-    toy.set_model_name = AsyncMock(side_effect=ValueError("bad model"))
+def test_a_command_that_fails_twice_starts_a_reconnect(mock_hub, short_reconnect_pause):
+    events: list = []
+    hub = mock_hub(
+        on_disconnect=lambda toy_id: events.append("disconnect"),
+        on_reconnection_success=lambda toy_id: events.append("back"),
+    )
+    toy = connect_mock_toy(hub)
+    _core_toy(hub)._toy.strict_intensity1 = AsyncMock(
+        side_effect=ConnectionError("radio gone")
+    )
+    results: list = []
 
-    result = hub.update_model_name("a1", "Bogus")
-    assert isinstance(result, ValueError)
+    toy.intensity1(5, results.append)
+
+    assert wait_until(lambda: results)
+    assert results == [None]
+    assert wait_until(lambda: events[:1] == ["disconnect"])
+
+
+def test_power_off(mock_hub):
+    fired: list = []
+    hub = mock_hub(on_power_off=fired.append)
+    toy = connect_mock_toy(hub)
+
+    _on_loop(hub, hub._core._on_power_off(toy.toy_id))
+
+    assert fired == ["Thunder_ID"]
+    assert wait_until(lambda: not toy.is_connected)
 
 
 # ---------------------------------------------------------------------------
-# Background battery polling
+# Battery, errors and callbacks
 # ---------------------------------------------------------------------------
 
 
-def test_battery_poll_reports_levels(hub_factory, mock_builder):
-    got = threading.Event()
-    levels = {}
-    toy = make_toy()
-    toy.get_battery_level = AsyncMock(return_value=88)
-    mock_builder.create_toys.return_value = [toy]
+def test_battery_levels_are_reported_after_connecting_and_on_a_change(mock_hub):
+    reports: list = []
+    hub = mock_hub(on_battery_update=reports.append)
+    toy = connect_mock_toy(hub)
+    assert wait_until(lambda: reports)
+    assert reports[-1] == {"Thunder_ID": 77}
 
-    def on_battery(batteries):
-        levels.update(batteries)
-        got.set()
+    _core_toy(hub)._toy.strict_get_battery_level = AsyncMock(return_value=55)
+    _on_loop(hub, hub._core._poll_all_batteries())
 
-    hub = hub_factory(on_battery_update=on_battery)
-    hub.connect_toys_blocking([lovense_data()])  # forces an immediate battery poll
-
-    assert got.wait(3.0), "battery callback never fired"
-    assert levels == {"a1": 88}
+    assert wait_until(lambda: reports[-1] == {"Thunder_ID": 55})
+    assert toy.is_connected
 
 
-def test_communication_loop_error_goes_to_on_error(hub_factory, mock_builder):
-    got = threading.Event()
-    errors = []
-    toy = make_toy()
-    toy.get_battery_level = AsyncMock(return_value=50)
-    mock_builder.create_toys.return_value = [toy]
+def test_a_battery_callback_that_raises_goes_to_on_error(mock_hub):
+    errors: list = []
 
-    def on_battery(_):
+    def broken(levels):
         raise RuntimeError("callback boom")
 
-    def on_error(exc, ctx, tb):
-        errors.append(exc)
-        got.set()
-
-    hub = hub_factory(on_battery_update=on_battery, on_error=on_error)
-    hub.connect_toys_blocking([lovense_data()])
-
-    assert got.wait(3.0), "on_error never fired"
+    hub = mock_hub(
+        on_battery_update=broken, on_error=lambda e, context, tb: errors.append(e)
+    )
+    connect_mock_toy(hub)
+    assert wait_until(lambda: errors)
     assert isinstance(errors[0], RuntimeError)
 
 
-def test_shutdown_logs_disconnect_errors(hub_factory, mock_builder):
-    toy = make_toy()
-    toy.disconnect = AsyncMock(side_effect=ConnectionError("cannot close"))
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory()
-    hub.connect_toys_blocking([lovense_data()])
+def test_callback_setters_replace_callbacks(mock_hub):
+    hub = mock_hub()
+    fired: list = []
+    hub.battery_update_callback(fired.append)
+    hub.error_callback(lambda *args: None)
+    hub.disconnect_callback(lambda toy_id: None)
+    hub.reconnection_failure_callback(lambda toy_id: None)
+    hub.reconnection_success_callback(lambda toy_id: None)
+    hub.power_off_callback(fired.append)
+    toy = connect_mock_toy(hub)
 
-    hub.shutdown()  # must swallow the disconnect error, not raise
-    assert hub.is_running is False
+    _on_loop(hub, hub._core._on_power_off(toy.toy_id))
+    assert wait_until(lambda: "Thunder_ID" in fired)
+    assert {"Thunder_ID": 77} in fired
 
 
-def test_shutdown_is_idempotent(hub_factory, mock_builder):
-    toy = make_toy()
-    mock_builder.create_toys.return_value = [toy]
-    hub = hub_factory()
-    hub.connect_toys_blocking([lovense_data()])
+# ---------------------------------------------------------------------------
+# Shutdown
+# ---------------------------------------------------------------------------
 
-    hub.shutdown()
-    t0 = time.time()
-    hub.shutdown()  # no-op; must return promptly
-    assert time.time() - t0 < 2.0
-    assert hub.is_running is False
+
+def test_shutdown_disconnects_and_is_idempotent(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+    _core_toy(hub)._toy.strict_disconnect = AsyncMock(
+        side_effect=ConnectionError("cannot close")
+    )
+
+    hub.shutdown()  # swallows the disconnect error
+    hub.shutdown()  # no-op
+
+    assert toy.is_connected is False
+    assert toy.model_name == "Thunder"  # still readable
+    results: list = []
+    toy.intensity1(5, results.append)
+    assert results == [None]
+    assert toy.toggle_pause() is True  # and still usable without a hub behind it
 
 
 # ---------------------------------------------------------------------------
@@ -614,17 +376,14 @@ def test_shutdown_is_idempotent(hub_factory, mock_builder):
 # ---------------------------------------------------------------------------
 
 
-def test_shutdown_is_registered_at_exit(mock_builder):
+def test_shutdown_is_registered_at_exit():
     """
     shutdown() is documented as mandatory, but a forgotten (or skipped) call must not leave toys running.
 
     The interpreter still runs atexit hooks after an uncaught exception or a KeyboardInterrupt, which is the last
     chance to stop and disconnect everything.
     """
-    with (
-        patch("tikal.high_level.toy_hub.ConnectionBuilder", return_value=mock_builder),
-        patch("tikal.high_level.toy_hub.atexit") as fake_atexit,
-    ):
+    with patch("tikal.high_level.toy_hub.atexit") as fake_atexit:
         hub = ToyHub(logger_name="test")
     try:
         fake_atexit.register.assert_called_once()
@@ -637,12 +396,9 @@ def test_shutdown_is_registered_at_exit(mock_builder):
         hub.shutdown()
 
 
-def test_explicit_shutdown_unregisters_the_atexit_hook(mock_builder):
+def test_explicit_shutdown_unregisters_the_atexit_hook():
     """A hub shut down properly must not run its safety net again at exit."""
-    with (
-        patch("tikal.high_level.toy_hub.ConnectionBuilder", return_value=mock_builder),
-        patch("tikal.high_level.toy_hub.atexit") as fake_atexit,
-    ):
+    with patch("tikal.high_level.toy_hub.atexit") as fake_atexit:
         hub = ToyHub(logger_name="test")
         hub.shutdown()
 
@@ -650,12 +406,9 @@ def test_explicit_shutdown_unregisters_the_atexit_hook(mock_builder):
     fake_atexit.unregister.assert_called_once_with(hook)
 
 
-def test_atexit_hook_does_not_keep_the_hub_alive(mock_builder):
+def test_atexit_hook_does_not_keep_the_hub_alive():
     """The hook holds only a weak reference, so it neither leaks the hub nor fires for a collected one."""
-    with (
-        patch("tikal.high_level.toy_hub.ConnectionBuilder", return_value=mock_builder),
-        patch("tikal.high_level.toy_hub.atexit") as fake_atexit,
-    ):
+    with patch("tikal.high_level.toy_hub.atexit") as fake_atexit:
         hub = ToyHub(logger_name="test")
 
     hook = fake_atexit.register.call_args.args[0]
@@ -668,48 +421,11 @@ def test_atexit_hook_does_not_keep_the_hub_alive(mock_builder):
     hook()  # firing it after collection must be a harmless no-op
 
 
-# ---------------------------------------------------------------------------
-# Untrusted toy cache
-# ---------------------------------------------------------------------------
-
-
-def test_corrupted_cache_does_not_break_blocking_discovery(
-    hub_factory, mock_builder, tmp_path
-):
-    """A cache entry that is not a model-name string must not break discovery for the other toys."""
-    cache_path = tmp_path / "toys.json"
-    cache_path.write_text(
-        json.dumps({"LVS-A1": 123, "LVS-B2": "Edge"}), encoding="utf-8"
-    )
-    mock_builder.discover_toys.return_value = [
-        lovense_data(toy_id="a1", model="", name="LVS-A1"),
-        lovense_data(toy_id="b2", model="", name="LVS-B2"),
-    ]
-    hub = hub_factory(toy_cache_path=cache_path, default_model="unknown")
-
-    found = hub.discover_toys_blocking(0.1)
-
-    assert [toy.model_name for toy in found] == ["unknown", "Edge"]
-
-
-def test_corrupted_cache_does_not_break_continuous_discovery(
-    hub_factory, mock_builder, tmp_path
-):
-    """
-    Regression: the model name is filled in inside the scanner's callback.
-
-    A non-str cache value used to raise TypeError there, far from the bad entry and on a Bluetooth worker thread.
-    """
-    cache_path = tmp_path / "toys.json"
-    cache_path.write_text(json.dumps({"LVS-A1": ["Gush"]}), encoding="utf-8")
-    hub = hub_factory(toy_cache_path=cache_path, default_model="unknown")
-
-    updates = []
-    hub.start_discovery(updates.append)
-    on_update = mock_builder.start_continuous.call_args.args[0]
-
-    on_update(
-        [lovense_data(toy_id="a1", model="", name="LVS-A1")]
-    )  # what the scanner does
-
-    assert [toy.model_name for toy in updates[-1]] == ["unknown"]
+def test_status_names_match_the_callbacks():
+    # _on_status_change maps every core status to a callback; a new status must not silently fall through.
+    assert {s.value for s in ToyStatus} == {
+        "connected",
+        "reconnecting",
+        "lost",
+        "powered_off",
+    }

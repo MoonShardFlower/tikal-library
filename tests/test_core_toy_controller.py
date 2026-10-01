@@ -1,4 +1,4 @@
-"""Tests for the WebSocket :class:`_ToyController` (async toy control with intensity limits)."""
+"""Tests for the core :class:`_ToyController` (async toy control with pattern playback and intensity limits)."""
 
 from unittest.mock import AsyncMock
 
@@ -263,10 +263,17 @@ async def test_fetch_and_update_battery(mock_toy):
 
 
 @pytest.mark.asyncio
-async def test_disconnect_blocks_and_calls_strict_disconnect(controller, mock_toy):
+async def test_disconnect_silences_playback_and_keeps_the_state(controller, mock_toy):
+    # A playback tick scheduled before the toy was dropped can still run after the disconnect: it must send nothing.
+    # Regression: this used to be done by blocking the toy, so a disconnected toy reported is_blocked=True.
+    controller.apply_pattern([(10_000, 5, 3)])
     await controller.disconnect()
-    assert controller.is_blocked is True
     mock_toy.strict_disconnect.assert_awaited_once()
+
+    mock_toy.reset_mock()
+    await controller.process_communication()
+    assert not mock_toy.mock_calls
+    assert controller.is_blocked is False and controller.is_paused is False
 
 
 @pytest.mark.asyncio

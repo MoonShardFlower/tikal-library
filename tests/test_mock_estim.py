@@ -7,8 +7,8 @@ import pytest
 from tikal._core import _CONTROLLER_BY_BRAND
 from tikal._core import BadModelError as WsBadModelError
 from tikal._core import _MockEstimController, _ToyHub
-from tikal.high_level import ToyHub
-from tikal.high_level.toy_controller import CONTROLLER_BY_BRAND, MockEstimController
+from tikal.high_level import BadModelError as HighLevelBadModelError
+from tikal.high_level import ToyController, ToyHub
 from tikal.low_level import (
     BadModelError,
     ConnectionBuilder,
@@ -373,8 +373,7 @@ async def test_composite_surfaces_and_routes_mock_toys(callbacks):
 # ---------------------------------------------------------------------------
 
 
-def test_controller_registries_include_mock_estim():
-    assert CONTROLLER_BY_BRAND["MockEstimToys"] is MockEstimController
+def test_controller_registry_includes_mock_estim():
     assert _CONTROLLER_BY_BRAND["MockEstimToys"] is _MockEstimController
 
 
@@ -384,56 +383,69 @@ def test_brands_mapping_includes_mock_estim():
     assert BRANDS["MockEstimToys"] == ["Thunder", "Lightning"]
 
 
-@pytest.mark.asyncio
-async def test_high_level_controller_get_information(callbacks):
-    builder = MockConnectionBuilder(*callbacks, logger_name="test")
-    toy = await builder.create_toy(_thunder())
-
-    controller = MockEstimController(toy, "test")
-    controller.is_connected = True
-    assert controller.brand == "MockEstimToys"
-    assert controller.max_intensity == 100
-    assert controller.intensity_names == ("Stimulation", None)
-
-    captured: dict = {}
-    controller.get_information(captured.update)
-    await controller.process_communication()  # drains the queued command
-
-    assert captured["Brand"] == "MockEstimToys"
-    assert captured["Model"] == "Thunder"
-    assert captured["Battery level"] == "77%"
-
-    await toy.disconnect()
+def _wait_for(results: list, timeout: float = 5.0) -> None:
+    """Wait until a callback has put something into *results*."""
+    deadline = time.monotonic() + timeout
+    while not results and time.monotonic() < deadline:
+        time.sleep(0.02)
 
 
-@pytest.mark.asyncio
-async def test_high_level_controller_set_model_name_is_executed(callbacks):
-    builder = MockConnectionBuilder(*callbacks, logger_name="test")
-    toy = await builder.create_toy(_lightning())
+def _connect_mock_estim(hub: ToyHub, toy_id: str, model_name: str) -> ToyController:
+    toys = hub.discover_toys_blocking(0.1)
+    td = next(t for t in toys if t.toy_id == toy_id)
+    td.model_name = model_name
+    controller = hub.connect_toys_blocking([td])[0]
+    assert isinstance(controller, ToyController)
+    return controller
 
-    controller = MockEstimController(toy, "test")
-    controller.is_connected = True
 
-    captured: list = []
-    controller.set_model_name("Thunder", captured.append)
-    await controller.process_communication()  # drains the queued command
+def test_high_level_controller_get_information():
+    hub = ToyHub(
+        logger_name="test", bluetooth_scanner=_no_ble_scanner(), mock_toys=True
+    )
+    try:
+        controller = _connect_mock_estim(hub, "Thunder_ID", "Thunder")
+        assert controller.brand == "MockEstimToys"
+        assert controller.max_intensity == 100
+        assert controller.intensity_names == ("Stimulation", None)
 
-    assert captured == ["Thunder"]
-    assert controller.model_name == "Thunder"
+        captured: list = []
+        controller.get_information(captured.append)
+        _wait_for(captured)
 
-    # An invalid model reports None via the callback and leaves the model unchanged.
-    captured.clear()
-    controller.set_model_name("Nonexistent", captured.append)
-    await controller.process_communication()
+        info = captured[0]
+        assert info["brand"] == "MockEstimToys"
+        assert info["model_name"] == "Thunder"
+        assert info["battery"] == 77
+    finally:
+        hub.shutdown()
 
-    assert captured == [None]
-    assert controller.model_name == "Thunder"
 
-    await toy.disconnect()
+def test_high_level_controller_set_model_name_is_executed():
+    hub = ToyHub(
+        logger_name="test", bluetooth_scanner=_no_ble_scanner(), mock_toys=True
+    )
+    try:
+        controller = _connect_mock_estim(hub, "Lightning_ID", "Lightning")
+
+        captured: list = []
+        controller.set_model_name("Thunder", captured.append)
+        _wait_for(captured)
+        assert captured == ["Thunder"]
+        assert controller.model_name == "Thunder"
+
+        # An invalid model reports None via the callback and leaves the model unchanged.
+        captured.clear()
+        controller.set_model_name("Nonexistent", captured.append)
+        _wait_for(captured)
+        assert captured == [None]
+        assert controller.model_name == "Thunder"
+    finally:
+        hub.shutdown()
 
 
 def test_toy_hub_connects_mock_estim_toy():
-    # BLE finds nothing; with mock_toys=True the fake toys still come through ToyHub and connect to a MockEstimController.
+    # BLE finds nothing; with mock_toys=True the fake toys still come through ToyHub and connect.
     scanner = MagicMock()
     scanner.discover = AsyncMock(return_value=[])
     hub = ToyHub(logger_name="test", bluetooth_scanner=scanner, mock_toys=True)
@@ -446,7 +458,7 @@ def test_toy_hub_connects_mock_estim_toy():
             td.model_name = "Thunder" if td.toy_id == "Thunder_ID" else "Lightning"
 
         controllers = hub.connect_toys_blocking(mock_toys)
-        assert all(isinstance(c, MockEstimController) for c in controllers)
+        assert all(isinstance(c, ToyController) for c in controllers)
         assert {c.model_name for c in controllers} == {"Thunder", "Lightning"}
     finally:
         hub.shutdown()
@@ -588,13 +600,13 @@ def test_high_level_update_model_name_to_unsupported_model_is_rejected(
 
         result = hub.update_model_name("Lightning_ID", "Lightning")
 
-        assert isinstance(result, BadModelError)
+        assert isinstance(result, HighLevelBadModelError)
         assert controller.model_name == "Thunder"
     finally:
         hub.shutdown()
 
 
-def test_high_level_queued_set_model_name_to_unsupported_model_is_rejected(
+def test_high_level_set_model_name_to_unsupported_model_is_rejected(
     channel2_refusing_device,
 ):
     hub = ToyHub(
@@ -612,7 +624,7 @@ def test_high_level_queued_set_model_name_to_unsupported_model_is_rejected(
         while not results and time.monotonic() < deadline:
             time.sleep(0.02)
 
-        # The queued command reports failure via the callback, and the toy keeps its supported model.
+        # The command reports failure via the callback, and the toy keeps its supported model.
         assert results == [None]
         assert controller.model_name == "Thunder"
     finally:

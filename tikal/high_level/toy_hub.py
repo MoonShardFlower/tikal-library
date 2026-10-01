@@ -2,9 +2,9 @@
 Part of the High-Level API: Provides connection management for toy devices.
 
 This module provides the ToyHub class, which serves as the entry point for all toy operations. The ToyHub manages:
+
 - **Toy Discovery**: Scanning for available devices via Bluetooth
 - **Connection Management**: Establishing and maintaining connections
-- **Command Queueing**: Processing commands from multiple toys concurrently
 - **Pattern Playback**: Managing time-based pattern execution
 - **Battery Monitoring**: Automatic periodic battery level updates
 - **Reconnection**: Automatic recovery from unexpected disconnects
@@ -40,29 +40,35 @@ Example:
         )
 """
 
+from __future__ import annotations
+
 import asyncio
 import atexit
-import copy
 import traceback
 import weakref
 from logging import getLogger
 from pathlib import Path
-from threading import Lock
-from time import time
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Awaitable, Callable, Optional, Sequence, TypeVar
 
 from bleak import BleakClient, BleakScanner
 
-from .._core import ToyCache
-from .._private import (
-    BATTERY_UPDATE_INTERVAL,
-    COMMUNICATION_INTERVAL,
-    RECONNECT_WINDOW,
-    AsyncRunner,
-    retry_within_window,
+from .._core import (
+    DiscoveryError,
+    ToyConnectionError,
+    ToyNotConnectedError,
+    ToyStatus,
+    UnknownToyError,
+    _ToyHub,
 )
-from ..low_level import ConnectionBuilder, Toy, ToyData
-from .toy_controller import CONTROLLER_BY_BRAND, ToyController
+from .._private import RECONNECT_WINDOW, AsyncRunner
+from ..low_level import ToyData
+from .toy_controller import ToyController
+
+T = TypeVar("T")
+
+#: How long a caller waits for a state change to be applied on the event loop. It needs no I/O, so this is only reached
+#: if the loop is stuck (e.g., a callback that never returns).
+_APPLY_TIMEOUT = 5.0  # seconds
 
 
 class ToyHub:
@@ -71,23 +77,32 @@ class ToyHub:
 
     Part of the High-Level API: Handles discovery, connection, battery monitoring, and control of toys.
 
+    Callbacks (the ones given here, and the ones given to :class:`ToyController` commands) run on the hub's background
+    thread. From a callback you can use every :class:`ToyController` method and the ``*_callback`` methods of this
+    class, but not its blocking methods, which raise ``RuntimeError`` there.
+
     Args:
-        on_battery_update: Callback invoked when battery levels are updated (regularly). Receives dict mapping toy_id to battery level (int) or None if unavailable.
-        on_error: Callback invoked when critical errors occur. Receives (exception, context_message, traceback_string).
-        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives toy_id. ToyHub automatically attempts reconnection,
-            with repeated attempts for up to one minute.
-        on_reconnection_failure: Callback invoked when no reconnect attempt succeeded within that minute. Receives toy_id.
-            Commands sent to the toy from then on are rejected right away (their callbacks receive None).
-        on_reconnection_success: Callback invoked when automatic reconnection succeeds. Receives toy_id. The toy is stopped
-            and its pattern paused at that point; resume it (e.g., ``set_paused(False)``) if it should continue. Commands
-            issued while it was disconnected were rejected right away (their callbacks received None).
+        on_battery_update: Callback invoked with the battery levels of all connected toys (dict mapping toy_id to the
+            level, or None if the toy has no battery) whenever one of them changes (checked every 2 minutes), and after
+            toys were connected or reconnected.
+        on_error: Callback invoked when an unexpected error occurs, including an exception raised by one of your
+            callbacks and a failing discovery. Receives (exception, context_message, traceback_string). Without it,
+            these errors are logged.
+        on_disconnect: Callback invoked when a toy's connection is lost unexpectedly, or a command to it failed twice.
+            Receives toy_id. ToyHub automatically attempts reconnection, with repeated attempts for up to one minute.
+        on_reconnection_failure: Callback invoked when no reconnect attempt succeeded within that minute. Receives
+            toy_id. The toy is disconnected; commands sent to it from then on are rejected right away (their callbacks
+            receive None).
+        on_reconnection_success: Callback invoked when automatic reconnection succeeds. Receives toy_id. The toy is
+            stopped and its pattern paused at that point; resume it (e.g., ``set_paused(False)``) if it should continue.
+            Commands issued while it was disconnected were rejected right away (their callbacks received None).
         on_power_off: Callback invoked when a toy is powered off via its physical button. Receives toy_id.
         logger_name: Name of the logger to use for logging messages.
         toy_cache_path: Path to a file for caching toy model names. Allows automatic model name assignment on later discoveries.
         default_model: Default model name to use if a toy isn't in the cache.
         bluetooth_scanner: BLE scanner class to use (defaults to BleakScanner). Can be overridden for testing.
         bluetooth_client: BLE client class to use (defaults to BleakClient). Can be overridden for testing.
-        mock_toys: If True, use the MockEstimToys brand. Not part of the public API. This parameter may be removed without notice.
+        mock_toys: If True, also offer the fictional MockEstimToys brand. Not part of the public API. This parameter may be removed without notice.
     """
 
     def __init__(
@@ -114,21 +129,20 @@ class ToyHub:
         self._log = getLogger(logger_name)
 
         self._runner = AsyncRunner()
-        self._toy_cache = ToyCache(toy_cache_path, default_model, logger_name)
-        self._toy_controllers: dict[str, "ToyController"] = {}
-        self._lock = Lock()
-        self._last_battery_update = 0.0
-        self._cancel_communication_loop: Optional[Callable[[], None]] = None
-        self._shut_down = False
-        # Single transport-agnostic entry point composing every per-transport connection builder.
-        self._connection_builder = ConnectionBuilder(
-            self._handle_disconnect,
-            self._handle_power_off,
-            logger_name,
-            bluetooth_scanner,
-            bluetooth_client,
-            mock_toys,
+        self._core = _ToyHub(
+            on_status_change=self._on_status_change,
+            on_battery_change=self._on_battery_change,
+            toy_cache_path=toy_cache_path,
+            default_model=default_model,
+            log_name=logger_name,
+            mock_toys=mock_toys,
+            bluetooth_scanner=bluetooth_scanner,
+            bluetooth_client=bluetooth_client,
         )
+        self._runner.run_async(self._core.startup())
+        # One controller per toy, so every method hands out the same object for a toy.
+        self._controllers: dict[str, ToyController] = {}
+        self._shut_down = False
         self._atexit_hook: Optional[Callable[[], None]] = self._register_atexit()
 
     def _register_atexit(self) -> Callable[[], None]:
@@ -163,18 +177,9 @@ class ToyHub:
         atexit.register(shutdown_at_exit)
         return shutdown_at_exit
 
-    @property
-    def is_running(self) -> bool:
-        """
-        Check if the communication loop is currently running.
-
-        Returns:
-            bool: True if the loop is active, False otherwise.
-
-        Note:
-            The loop starts automatically when toys are connected and stops when all toys are disconnected.
-        """
-        return self._cancel_communication_loop is not None
+    # ------------------------------------------------------------------------------------------------------------------
+    # Callback setters
+    # ------------------------------------------------------------------------------------------------------------------
 
     def battery_update_callback(
         self, callback: Optional[Callable[[dict[str, int | None]], Any]]
@@ -252,43 +257,40 @@ class ToyHub:
         """
         self._power_off_callback = callback
 
+    # ------------------------------------------------------------------------------------------------------------------
+    # Discovery
+    # ------------------------------------------------------------------------------------------------------------------
+
     def start_discovery(self, on_update: Callable[[list[ToyData]], Any]) -> None:
         """
-        Starts the discovery process for toys and updates the provided callback whenever new toy data is discovered or an error occurs.
+        Start scanning for toys continuously, and report the available toys whenever they change.
 
         Args:
-            on_update (Callable[[list[ToyData]], Any]): Called with a list[ToyData] of ALL available toys whenever availability changes.
-                'ALL' includes toys that were previously discovered and are still available. Connected toys do not advertise and are not included.
-                Invoked with an empty list if an exception occurs.
+            on_update: Called with a list[ToyData] of ALL available toys whenever availability changes. 'ALL' includes
+                toys that were previously discovered and are still available. Connected toys do not advertise and are
+                not included. Model names are filled in from the ToyCache. Invoked with an empty list if the scan fails.
+
+        Raises:
+            DiscoveryStartError: The scan could not be started (e.g., Bluetooth is off).
+
         Note:
-            Should any exception occur, it is provided to self.error_callback. Any exception stops discovery.
+            A scan that fails after it started is reported to the error callback, and ends.
         """
 
-        def callback(toys: list[ToyData] | Exception) -> None:
-            if isinstance(toys, Exception):
-                self._log.error(f"Discovery failed: {toys}")
-                if self._error_callback:
-                    self._error_callback(
-                        toys,
-                        "Toy Discovery process failed. Is the Bluetooth still on?",
-                        traceback.format_exc(),
-                    )
-                on_update([])  # Clear any now stale toy
-                return
-            else:
-                # Copy before mutating: in continuous-scan mode the builder re-emits the same ToyData objects,
-                # so writing model_name in place would corrupt its shared snapshot.
-                filled = []
-                for td in toys:
-                    td = copy.copy(td)
-                    td.model_name = self._toy_cache.get_model_name(td.name)
-                    filled.append(td)
-                on_update(filled)
+        def forward(update: Exception | list[ToyData]) -> None:
+            if isinstance(update, Exception):
+                self._log.error(f"Discovery failed: {update!r}")
+                self._report_error(
+                    update, "Toy Discovery process failed. Is the Bluetooth still on?"
+                )
+                update = []  # Clear any now stale toy
+            self._run_callback(on_update, update, "discovery update")
 
-        self._runner.run_async(self._connection_builder.start_continuous(callback))
+        self._runner.run_async(self._core.start_scan(forward))
 
     def stop_discovery(self) -> None:
-        self._runner.run_async(self._connection_builder.stop_continuous())
+        """Stop the scan started by :meth:`start_discovery`. The update callback is not invoked anymore afterward."""
+        self._runner.run_async(self._core.stop_scan())
 
     def discover_toys_blocking(self, timeout: float = 10.0) -> list[ToyData]:
         """
@@ -306,7 +308,8 @@ class ToyHub:
         Raises:
             TimeoutError: If discovery exceeds timeout * 2. Should not occur with BleakScanner
             Exception: Any exception from the underlying BLE scanner.
-            RuntimeError: If a continuous scan is in progress. See meth: start_continuous_scan and meth: stop_continuous_scan
+            RuntimeError: If a continuous scan is in progress (see :meth:`start_discovery`), or if called from a
+                callback.
 
         Example:
             ::
@@ -321,21 +324,13 @@ class ToyHub:
                         print(f"Model unknown. Please set manually")
         """
         self._log.info("Starting toy discovery (blocking)...")
-        result: list[ToyData] = []
-        toy_data = self._runner.run_async(
-            self._connection_builder.discover_toys(timeout), timeout * 2
-        )
-        for td in toy_data:
-            # Copy so filling in the cached model name can't mutate the connection builder's shared discovery snapshot.
-            td = copy.copy(td)
-            td.model_name = self._toy_cache.get_model_name(td.name)
-            result.append(td)
-        self._log.info(f"Discovered {len(result)} toy(s)")
-        return result
+        toys = self._runner.run_async(self._core.discover(timeout), timeout * 2)
+        self._log.info(f"Discovered {len(toys)} toy(s)")
+        return toys
 
     def discover_toys_callback(
         self,
-        on_discovered: Callable[[list[ToyData] | BaseException], None],
+        on_discovered: Callable[[list[ToyData] | BaseException], Any],
         timeout: float = 10.0,
     ) -> None:
         """
@@ -362,23 +357,13 @@ class ToyHub:
                 hub.discover_toys_callback(handle_discovery, timeout=5.0)
         """
         self._log.info("Starting toy discovery (callback)...")
+        self._submit_with_result(
+            lambda: self._core.discover(timeout), on_discovered, timeout * 2
+        )
 
-        async def discovery_task() -> list[ToyData] | Exception:
-            result: list[ToyData] = []
-            try:
-                toy_data = await self._connection_builder.discover_toys(timeout)
-                for td in toy_data:
-                    # Copy before mutating (see discover_toys_blocking / start_discovery).
-                    td = copy.copy(td)
-                    td.model_name = self._toy_cache.get_model_name(td.name)
-                    result.append(td)
-                self._log.info(f"Discovered {len(result)} toy(s)")
-            except Exception as e:
-                e.add_note(traceback.format_exc())
-                return e
-            return result
-
-        self._runner.run_callback(discovery_task(), on_discovered, timeout * 2)
+    # ------------------------------------------------------------------------------------------------------------------
+    # Connecting and disconnecting
+    # ------------------------------------------------------------------------------------------------------------------
 
     def connect_toys_blocking(
         self, to_connect: list[ToyData], timeout: float = 30.0
@@ -387,15 +372,20 @@ class ToyHub:
         Connect to specified toys synchronously (blocking call).
 
         Attempts to connect to each toy in the list concurrently. Toys that connect successfully return ToyController
-        instances; failed connections return exceptions.
+        instances; failed connections return exceptions. On success, the ToyCache remembers each toy's model name.
 
         Args:
             to_connect: List of ToyData objects with a valid model_name set. Must have been discovered first.
             timeout: Maximum time to wait for all connections in seconds.
 
         Returns:
-            list[ToyController | BaseException]: Each element is either a connected ToyController or an exception.
-                Order matches the input list.
+            list[ToyController | BaseException]: Each element is either a connected ToyController or an exception
+                (e.g., :class:`InvalidModelError`, :class:`BadModelError`, :class:`AddConnectionError`,
+                :class:`ToyAlreadyAddedError`). Order matches the input list.
+
+        Raises:
+            TimeoutError: The connections took longer than *timeout*.
+            RuntimeError: Called from a callback.
 
         Example:
             ::
@@ -420,44 +410,26 @@ class ToyHub:
                         controllers.append(result)
         """
         self._log.info(f"Connecting to {len(to_connect)} toy(s) (blocking)...")
-
-        controllers: list["ToyController | BaseException"] = []
-        cache_updates = {}
-
-        toys = self._runner.run_async(
-            self._connection_builder.create_toys(to_connect), timeout
-        )
-        for data, toy in zip(to_connect, toys):
-            if isinstance(toy, Toy):
-                controller = self._create_controller(toy)
-                controllers.append(controller)
-                self._register_controller(controller)
-                cache_updates[data.name] = toy.model_name
-            else:
-                # Connection failed, toy is an exception
-                controllers.append(toy)
-
-        # Update cache with newly connected toys
-        if self._toy_cache and cache_updates:
-            self._toy_cache.update(cache_updates)
-
-        self._log.info("Connection process finished")
-        return controllers
+        return self._runner.run_async(self._connect(to_connect), timeout)
 
     def connect_toys_callback(
         self,
         to_connect: list[ToyData],
-        on_connected: Callable[[list["ToyController | BaseException"]], Any],
+        on_connected: Callable[
+            [list[ToyController | BaseException] | BaseException], Any
+        ],
         timeout: float = 30.0,
     ) -> None:
         """
         Connect to specified toys with a callback (non-blocking).
 
-        Starts connections in the background and returns immediately. The callback is invoked when all connection attempts are complete.
+        Starts connections in the background and returns immediately. The callback is invoked when all connection
+        attempts are complete.
 
         Args:
             to_connect: List of ToyData objects with a valid model_name set.
-            on_connected: Callback invoked with a list of controllers or exceptions. Order matches the input list.
+            on_connected: Callback invoked with a list of controllers or exceptions (order matches the input list), or
+                with a TimeoutError if the connections took longer than *timeout*.
             timeout: Maximum time to wait for all connections in seconds.
 
         Example:
@@ -473,25 +445,9 @@ class ToyHub:
                 hub.connect_toys_callback(toys, handle_connection, timeout=30.0)
         """
         self._log.info(f"Connecting to {len(to_connect)} toy(s) (callback)...")
-
-        async def connection_task() -> list[ToyController | BaseException]:
-            controllers: list["ToyController | BaseException"] = []
-            cache_updates = {}
-            toys = await self._connection_builder.create_toys(to_connect)
-            for data, toy in zip(to_connect, toys):
-                if isinstance(toy, Toy):
-                    controller = self._create_controller(toy)
-                    controllers.append(controller)
-                    self._register_controller(controller)
-                    cache_updates[data.name] = toy.model_name
-                else:
-                    controllers.append(toy)
-            if self._toy_cache and cache_updates:
-                self._toy_cache.update(cache_updates)
-            self._log.info("Connection process finished")
-            return controllers
-
-        self._runner.run_callback(connection_task(), on_connected, timeout)
+        self._submit_with_result(
+            lambda: self._connect(to_connect), on_connected, timeout
+        )
 
     def disconnect_toys_blocking(
         self, to_disconnect: list[str], timeout: float = 10.0
@@ -506,41 +462,33 @@ class ToyHub:
             timeout: Maximum time to wait for all disconnections in seconds.
 
         Returns:
-            list[BaseException | None]: List where each element is either None (successful disconnect)
-            or an exception (failed disconnect). Order matches the input list. Toys are still disconnected even if an exception occurs.
+            list[BaseException | None]: List where each element is either None (successful disconnect) or an exception
+            (:class:`UnknownToyError` for a toy that is not connected, :class:`ToyConnectionError` for a disconnect that
+            failed). Order matches the input list. Toys are still disconnected even if an exception occurs.
+
+        Raises:
+            TimeoutError: The disconnections took longer than *timeout*.
+            RuntimeError: Called from a callback.
 
         Example:
             ::
 
-                # Disconnect specific toys
                 toy_ids = [controller.toy_id for controller in controllers]
                 results = hub.disconnect_toys_blocking(toy_ids, timeout=10.0)
 
-                # Check results
                 for toy_id, result in zip(toy_ids, results):
                     if result is None:
                         print(f"{toy_id} disconnected successfully")
                     else:
                         print(f"{toy_id} disconnect failed: {result}")
         """
-        if not to_disconnect:
-            return []
         self._log.info(f"Disconnecting from {len(to_disconnect)} toy(s) (blocking)...")
-        coroutines = []
-        for toy_id in to_disconnect:
-            if toy_id not in self._toy_controllers:
-                self._log.warning(f"Attempted to disconnect unknown toy {toy_id}")
-                continue
-            controller = self._toy_controllers[toy_id]
-            self._unregister_controller(toy_id)
-            coroutines.append(controller.toy.disconnect())
-        self._log.info(f"Disconnected from {len(to_disconnect)} toy(s)")
-        return self._runner.run_async_parallel(coroutines, timeout)
+        return self._runner.run_async(self._disconnect(to_disconnect), timeout)
 
     def disconnect_toys_callback(
         self,
         to_disconnect: list[str],
-        on_disconnected: Callable[[list[BaseException | None]], Any],
+        on_disconnected: Callable[[list[BaseException | None] | BaseException], Any],
         timeout: float = 10.0,
     ) -> None:
         """
@@ -551,8 +499,9 @@ class ToyHub:
 
         Args:
             to_disconnect: List of toy_ids to disconnect.
-            on_disconnected: Callback invoked with a list of exceptions (or None for successful disconnects).
-                    Toys are still disconnected even if an exception occurs. Order matches the input list.
+            on_disconnected: Callback invoked with a list of exceptions (or None for successful disconnects), see
+                :meth:`disconnect_toys_blocking`, or with a TimeoutError if the disconnections took longer than
+                *timeout*. Toys are still disconnected even if an exception occurs.
             timeout: Maximum time to wait for all disconnections in seconds.
 
         Example:
@@ -566,21 +515,9 @@ class ToyHub:
                 hub.disconnect_toys_callback(toy_ids, handle_disconnects)
         """
         self._log.info(f"Disconnecting from {len(to_disconnect)} toy(s) (callback)...")
-
-        async def disconnect_task() -> list[Any]:
-            coroutines = []
-            for toy_id in to_disconnect:
-                if toy_id not in self._toy_controllers:
-                    self._log.warning(f"Attempted to disconnect unknown toy {toy_id}")
-                    continue
-                controller = self._toy_controllers[toy_id]
-                self._unregister_controller(toy_id)
-                coroutines.append(controller.toy.disconnect())
-            result = await asyncio.gather(*coroutines, return_exceptions=True)
-            self._log.info(f"Disconnected from {len(to_disconnect)} toy(s)")
-            return result
-
-        self._runner.run_callback(disconnect_task(), on_disconnected, timeout)
+        self._submit_with_result(
+            lambda: self._disconnect(to_disconnect), on_disconnected, timeout
+        )
 
     def update_model_name(
         self, toy_id: str, model_name: str
@@ -588,7 +525,8 @@ class ToyHub:
         """
         Update the model name for a connected toy.
 
-        Changes the toy's model name, which affects which commands are available and how they're interpreted
+        Changes the toy's model name, which affects which commands are available and how they're interpreted. On
+        success, the ToyCache remembers the new model for this toy.
 
         Args:
             toy_id: Unique identifier of the toy to update.
@@ -596,9 +534,14 @@ class ToyHub:
 
         Returns:
             ToyController | BaseException: The updated controller if successful, or:
-                - InvalidModelError: If model_name is not valid for this toy brand.
-                - BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details
-                - ValueError if the toy_id is unknown.
+
+            - :class:`InvalidModelError`: model_name is not valid for this toy brand.
+            - :class:`BadModelError`: the model_name is valid, but commands still fail.
+            - :class:`UnknownToyError`: the toy is not connected to this hub.
+            - :class:`ToyConnectionError`: the toy could not be reached, so its model was left unchanged.
+
+        Raises:
+            RuntimeError: Called from a callback (use :meth:`ToyController.set_model_name` there).
 
         Example:
             ::
@@ -610,263 +553,17 @@ class ToyHub:
                 else:
                     print(f"Model updated to {result.model_name}")
         """
-        with self._lock:
-            controller = self._toy_controllers.get(toy_id)
-            if controller is None:
-                return ValueError(
-                    f"Attempted to update model name for unknown toy {toy_id}"
-                )
-            self._toy_cache.update({controller.toy.name: model_name})
-
-        # Must NOT run while holding self._lock: the background communication loop also acquires
-        # self._lock every tick, so blocking on run_async here would stall the loop thread.
         try:
-            self._runner.run_async(controller.internal_set_model_name(model_name))
+            self._runner.run_async(self._core.set_model(toy_id, model_name))
+        except RuntimeError:
+            raise
         except Exception as e:
             return e
         self._log.info(f"Updated model name for toy {toy_id} to {model_name}")
+        controller = self._controller_for(toy_id)
+        if controller is None:  # removed in the meantime
+            return UnknownToyError(toy_id)
         return controller
-
-    # ------------------------------------------------------------------------------------------------------------------
-    # Controller Management
-    # ------------------------------------------------------------------------------------------------------------------
-
-    def _create_controller(self, toy: Toy) -> ToyController:
-        """
-        Create the high-level controller matching the toy's brand.
-
-        Args:
-            toy: A connected low-level toy.
-
-        Returns:
-            A brand-appropriate ToyController.
-        """
-        controller_cls = CONTROLLER_BY_BRAND[toy.brand]
-        return controller_cls(toy, self._log.name)
-
-    def _register_controller(self, controller: ToyController) -> None:
-        """
-        Register a toy controller for background communication
-
-        Adds the controller to the active controllers dict. Starts the communication loop if this is the first controller.
-
-        Args:
-            controller: Controller instance to register.
-        """
-        with self._lock:
-            self._toy_controllers[controller.toy_id] = controller
-            controller.is_connected = True
-            if len(self._toy_controllers) == 1:
-                self._start_communication_loop()
-        # Trigger immediate battery update for new device
-        self._last_battery_update = time() - BATTERY_UPDATE_INTERVAL
-        self._log.debug(
-            f"Registered toy {controller.toy_id}. ({len(self._toy_controllers)} total)"
-        )
-
-    def _unregister_controller(self, toy_id: str) -> None:
-        """
-        Unregister a toy controller from background communication.
-
-        Removes the controller from active controllers. Stops the communication loop if no controllers remain.
-
-        Args:
-            toy_id: Unique identifier of the toy to unregister.
-        """
-        with self._lock:
-            if toy_id not in self._toy_controllers:
-                return
-            toy_controller = self._toy_controllers[toy_id]
-            toy_controller.is_connected = False
-            del self._toy_controllers[toy_id]
-            if len(self._toy_controllers) == 0:
-                self._stop_communication_loop()
-        self._log.debug(
-            f"Unregister toy {toy_id}. ({len(self._toy_controllers)} remaining)"
-        )
-
-    # ------------------------------------------------------------------------------------------------------------------
-    # Background Communication Loop
-    # ------------------------------------------------------------------------------------------------------------------
-
-    def _start_communication_loop(self) -> None:
-        """
-        Start the background communication loop
-
-        The loop runs every COMMUNICATION_INTERVAL seconds (50ms / 20 ticks per second) and handles:
-        - Processing queued commands
-        - Updating toy intensities based on patterns
-        - Periodic battery level queries
-        """
-        if self._cancel_communication_loop is not None:
-            return
-
-        sleep_time = COMMUNICATION_INTERVAL
-
-        async def communication_iteration() -> None:
-            try:
-                # Get a snapshot of controllers (avoid holding lock during I/O)
-                with self._lock:
-                    if not self._toy_controllers:
-                        return
-                    controllers = list(self._toy_controllers.values())
-                # Update battery levels periodically
-                if self._battery_update_callback:
-                    if time() - self._last_battery_update >= BATTERY_UPDATE_INTERVAL:
-                        await self._update_battery_levels(controllers)
-                # Process controller communication (pattern playback, etc.)
-                await ToyHub._process_controller_communication(controllers)
-            except Exception as e:
-                if self._error_callback:
-                    self._error_callback(
-                        e, "Communication loop error", traceback.format_exc()
-                    )
-                else:
-                    self._log.exception(
-                        f"Communication loop error: {e!r}", exc_info=True
-                    )
-
-        self._cancel_communication_loop = self._runner.schedule_recurring(
-            communication_iteration, sleep_time
-        )
-        self._log.debug("Communication loop started")
-
-    def _stop_communication_loop(self) -> None:
-        """Stop the background communication loop"""
-        if self._cancel_communication_loop is None:
-            return
-        self._cancel_communication_loop()
-        self._cancel_communication_loop = None
-        self._log.debug("Communication loop stopped")
-
-    async def _update_battery_levels(self, controllers: list["ToyController"]) -> None:
-        """
-        Update battery levels for all controllers concurrently
-
-        Args:
-            controllers: List of controllers to query.
-        """
-        self._log.info("Updating battery levels...")
-        self._last_battery_update = time()
-        # Run all battery queries in parallel
-        battery_coroutines = [
-            controller.toy.get_battery_level() for controller in controllers
-        ]
-        battery_results = await asyncio.gather(
-            *battery_coroutines, return_exceptions=True
-        )
-        # Map results to toy IDs, treating any failed query as an unknown (None) level.
-        batteries: dict[str, int | None] = {
-            controller.toy_id: (
-                result if not isinstance(result, BaseException) else None
-            )
-            for controller, result in zip(controllers, battery_results)
-        }
-        if self._battery_update_callback is not None:
-            self._battery_update_callback(batteries)
-        self._log.info("Battery levels updated")
-
-    @staticmethod
-    async def _process_controller_communication(
-        controllers: list[ToyController],
-    ) -> None:
-        """
-        Process communication for all controllers concurrently.
-
-        This includes pattern playback, command execution, and state management. The loop cadence is owned by
-        ``schedule_recurring`` (see :meth:`_start_communication_loop`); this method only does the work for one tick.
-
-        Args:
-            controllers: List of controllers to process.
-        """
-        # Run every controller's tick concurrently.
-        coroutines = [controller.process_communication() for controller in controllers]
-        await asyncio.gather(*coroutines, return_exceptions=True)
-
-    def _handle_disconnect(self, toy_id: str) -> None:
-        """
-        Handle unexpected toy disconnection and attempt reconnection
-
-        Reconnecting is retried for up to RECONNECT_WINDOW (see :func:`tikal._private.retry_within_window`), so one
-        Bluetooth hiccup does not cost the toy. If no attempt succeeds in time, the toy is disconnected for good. Each
-        attempt stops the toy and pauses its pattern once the connection is back, so nothing resumes on its own.
-
-        Args:
-            toy_id: Unique identifier of the disconnected toy.
-        """
-        self._log.warning(
-            f"Disconnected from {toy_id}. Will try to reconnect for up to {RECONNECT_WINDOW:.0f} s."
-        )
-        toy_controller = self._toy_controllers.get(toy_id)
-        if toy_controller is None:
-            self._log.debug(f"Ignoring disconnect for unknown toy {toy_id}")
-            return
-        self._unregister_controller(toy_id)
-        if self._disconnect_callback:
-            self._disconnect_callback(toy_id)
-
-        async def reconnect_task() -> bool:
-            async def attempt() -> None:
-                if not await toy_controller.toy.reconnect():
-                    raise ConnectionError(f"Reconnecting to {toy_id} failed.")
-                # Always stop the toy after connection loss. A failed stop fails the attempt, so it is retried.
-                await toy_controller.internal_stop_after_reconnect()
-
-            return await retry_within_window(attempt, toy_id, self._log)
-
-        def on_reconnect_complete(result: bool | BaseException) -> None:
-            if result is True:
-                self._log.info(f"Reconnection successful for {toy_id}")
-                self._register_controller(toy_controller)
-                if self._reconnection_success_callback:
-                    self._reconnection_success_callback(toy_id)
-                return
-            if isinstance(result, BaseException):
-                self._log.error(
-                    f"Unable to recover connection to toy at address {toy_id} due to {result!r}"
-                )
-            # The toy is gone for good, so its queued commands will never be sent: report them as failed, as a
-            # successful reconnect does, before telling the caller that the toy is lost.
-            toy_controller.internal_drop_queued_commands()
-            if self._reconnection_failure_callback:
-                self._reconnection_failure_callback(toy_id)
-            # We are on the runner's loop thread here, so block-waiting with run_async() would deadlock the loop.
-            # Schedule the cleanup disconnect on the loop instead, without waiting for it.
-            self._runner.run_callback(
-                toy_controller.toy.disconnect(), lambda _: None, 4.0
-            )
-
-        # No extra timeout: retry_within_window already bounds the whole task by RECONNECT_WINDOW.
-        self._runner.run_callback(reconnect_task(), on_reconnect_complete, None)
-
-    def _handle_power_off(self, toy_id: str) -> None:
-        """
-        Handle toy power-off event and disconnect cleanly (internal).
-
-        Args:
-            toy_id: Unique identifier of the toy that powered off (Bluetooth address for BLE toys)
-
-        Note:
-            This is an internal callback. Do not call directly.
-        """
-        self._log.warning(f"Powered off toy at {toy_id}")
-        controller = self._toy_controllers.get(toy_id)
-        if controller is None:
-            self._log.debug(f"Ignoring power-off for unknown toy {toy_id}")
-            return
-        self._unregister_controller(toy_id)
-        if self._power_off_callback:
-            self._power_off_callback(toy_id)
-
-        def on_disconnect_complete(_: Any) -> None:
-            pass  # We don't care about the result, the toy is gone either way
-
-        try:
-            self._runner.run_callback(
-                controller.toy.disconnect(), on_disconnect_complete, timeout=5.0
-            )
-        except RuntimeError:
-            pass
 
     # ------------------------------------------------------------------------------------------------------------------
     # Shutdown
@@ -874,11 +571,12 @@ class ToyHub:
 
     def shutdown(self) -> None:
         """
-        Stop the communication loop, disconnect all toys, and clean up resources.
+        Stop scanning, disconnect all toys, and stop the background thread.
 
         This method should always be called before the program exits to ensure:
-        - All toys are properly disconnected
-        - The communication loop is stopped, and the async runner is shut down cleanly
+
+        - All toys are stopped and properly disconnected
+        - The background thread is shut down cleanly
 
         Example:
             ::
@@ -905,21 +603,187 @@ class ToyHub:
             atexit.unregister(self._atexit_hook)
             self._atexit_hook = None
 
-        self._log.info("Shutting down CommunicationHandler...")
-        # Stop communication loop
-        if self._cancel_communication_loop is not None:
-            self._cancel_communication_loop()
-
-        # Disconnect all toys
-        controller_ids = list(self._toy_controllers.keys())
-        if controller_ids:
-            result = self.disconnect_toys_blocking(controller_ids)
-            exceptions = [e for e in result if isinstance(e, BaseException)]
-            for e in exceptions:
-                self._log.error(f"Error while trying to disconnect a toy: {e}")
-
-        # Stop Connection Builder scans
-        self._runner.run_async(self._connection_builder.stop_continuous())
-
+        self._log.info("Shutting down ToyHub...")
+        try:
+            self._runner.run_async(self._core.shutdown())
+        except Exception as e:
+            self._log.error(f"Error while shutting down the toys: {e!r}")
         self._runner.shutdown()
-        self._log.info("CommunicationHandler shutdown complete")
+        self._log.info("ToyHub shutdown complete")
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Private: coroutines run on the event loop
+    # ------------------------------------------------------------------------------------------------------------------
+
+    async def _connect(
+        self, to_connect: list[ToyData]
+    ) -> list[ToyController | BaseException]:
+        """Connect every toy concurrently and hand out a controller for each one that connected."""
+        results = await asyncio.gather(
+            *(self._core.add_toy_data(data) for data in to_connect),
+            return_exceptions=True,
+        )
+        connected: list[ToyController | BaseException] = []
+        for data, result in zip(to_connect, results):
+            if isinstance(result, BaseException):
+                self._log.warning(f"Could not connect to {data.toy_id}: {result!r}")
+                connected.append(result)
+                continue
+            controller = self._controller_for(data.toy_id, fresh=True)
+            connected.append(controller if controller else UnknownToyError(data.toy_id))
+        self._log.info("Connection process finished")
+        if any(isinstance(c, ToyController) for c in connected):
+            await self._report_batteries()
+        return connected
+
+    async def _disconnect(self, toy_ids: list[str]) -> list[BaseException | None]:
+        """Remove every toy concurrently. Each result is None, or the exception its removal raised."""
+        results = await asyncio.gather(
+            *(self._core.remove(toy_id) for toy_id in toy_ids),
+            return_exceptions=True,
+        )
+        return [
+            result if isinstance(result, BaseException) else None for result in results
+        ]
+
+    async def _on_status_change(self, toy_id: str, status: ToyStatus) -> None:
+        """Translate the core's connection status into the matching user callback."""
+        if status == ToyStatus.RECONNECTING:
+            self._log.warning(
+                f"Lost the connection to {toy_id}. Will try to reconnect for up to {RECONNECT_WINDOW:.0f} s."
+            )
+            callback = self._disconnect_callback
+        elif status == ToyStatus.CONNECTED:
+            self._log.info(f"Reconnection successful for {toy_id}")
+            callback = self._reconnection_success_callback
+        elif status == ToyStatus.LOST:
+            self._log.error(f"Unable to recover the connection to {toy_id}.")
+            callback = self._reconnection_failure_callback
+        else:
+            self._log.warning(f"Powered off toy at {toy_id}")
+            callback = self._power_off_callback
+        self._run_callback(callback, toy_id, f"{status.value} callback")
+        if status == ToyStatus.CONNECTED:
+            await self._report_batteries()
+
+    async def _on_battery_change(self, _changed: dict[str, int | None]) -> None:
+        """A toy's battery level changed: report every toy's level (see ``on_battery_update``)."""
+        await self._report_batteries()
+
+    async def _report_batteries(self) -> None:
+        """Hand the last known battery level of every connected toy to the battery callback."""
+        if self._battery_update_callback is None:
+            return
+        levels: dict[str, int | None] = {}
+        for toy_id in await self._core.get_toy_ids():
+            toy = self._core.get_controller(toy_id)
+            if toy is not None:
+                levels[toy_id] = toy.battery
+        self._run_callback(self._battery_update_callback, levels, "battery update")
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Private: running work on the event loop, and callbacks
+    # ------------------------------------------------------------------------------------------------------------------
+
+    def _controller_for(self, toy_id: str, fresh: bool = False) -> ToyController | None:
+        """
+        The ToyController for a toy the core knows, or None.
+
+        Args:
+            toy_id: Identifier of the toy.
+            fresh: Hand out a new controller even if there is one already (the toy was just connected again).
+        """
+        toy = self._core.get_controller(toy_id)
+        if toy is None:
+            return None
+        controller = self._controllers.get(toy_id)
+        if controller is None or fresh:
+            controller = ToyController(self, toy)
+            self._controllers[toy_id] = controller
+        return controller
+
+    def _on_loop(self, fn: Callable[[], T]) -> T:
+        """
+        Run a quick function that does no I/O on the event loop's thread and return its result.
+
+        State changes go through here, so they never race a command or playback tick. From the loop's own thread
+        (a callback) the function simply runs; once the hub is shut down there is no loop left, and it runs here too.
+        """
+        if self._runner.in_loop_thread() or not self._runner.is_running:
+            return fn()
+
+        async def call() -> T:
+            return fn()
+
+        return self._runner.run_async(call(), _APPLY_TIMEOUT)
+
+    def _submit(
+        self,
+        run: Callable[[], Awaitable[T]],
+        callback: Optional[Callable[[T | None], Any]],
+        command: str,
+    ) -> None:
+        """
+        Run a toy command in the background and hand its result to *callback*, or None if it failed.
+
+        Commands start in the order they are submitted, so those for one toy reach it in that order.
+        """
+
+        async def execute() -> None:
+            result: T | None = None
+            try:
+                result = await run()
+            except (ToyNotConnectedError, UnknownToyError) as e:
+                self._log.info(f"'{command}' was not sent: {e!r}")
+            except ToyConnectionError as e:
+                self._log.warning(f"'{command}' failed: {e!r}")
+            except Exception as e:
+                self._log.error(f"'{command}' failed unexpectedly: {e!r}", exc_info=e)
+            self._run_callback(callback, result, command)
+
+        self._runner.submit(execute())
+
+    def _submit_with_result(
+        self,
+        run: Callable[[], Awaitable[T]],
+        callback: Callable[[T | BaseException], Any],
+        timeout: float | None,
+    ) -> None:
+        """Run a hub operation in the background and hand *callback* its result, or the exception it raised."""
+
+        async def execute() -> None:
+            result: T | BaseException
+            try:
+                result = await asyncio.wait_for(run(), timeout)
+            except Exception as e:
+                e.add_note(traceback.format_exc())
+                result = e
+            self._run_callback(callback, result, "result")
+
+        self._runner.submit(execute())
+
+    def _run_callback(
+        self, callback: Optional[Callable[[Any], Any]], result: Any, context: str
+    ) -> None:
+        """Invoke a user callback. An exception it raises goes to the error callback (or the log)."""
+        if callback is None:
+            return
+        try:
+            callback(result)
+        except Exception as e:
+            self._report_error(e, f"Your callback for {context} raised an exception")
+
+    def _report_error(self, error: Exception, context: str) -> None:
+        """Hand an error to the error callback, or log it if there is none."""
+        tb = (
+            error.tb
+            if isinstance(error, DiscoveryError)
+            else "".join(traceback.format_exception(error))
+        )
+        if self._error_callback is None:
+            self._log.error(f"{context}: {error!r}\n{tb}")
+            return
+        try:
+            self._error_callback(error, context, tb)
+        except Exception:
+            self._log.exception("The error callback raised an exception")

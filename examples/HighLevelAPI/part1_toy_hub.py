@@ -70,9 +70,12 @@ def main():
             default_model = False
     print(f"All toys have the default model name: {default_model}")
 
-    # When we connect to a toy, ToyCache is updated to remember the model name. Connecting comes later, so for now I
-    # manually adjust ToyCache.
-    toy_hub._toy_cache._cache = {"LVS-Gush": "Gush"}
+    # When we connect to a toy, ToyCache remembers its model name. Connecting is explained below; here we briefly
+    # connect the Gush (with its model name set) and disconnect it again.
+    gush_data = next(t for t in toy_data_list if t.name == "LVS-Gush")
+    gush_data.model_name = "Gush"
+    toy_hub.connect_toys_blocking([gush_data])
+    toy_hub.disconnect_toys_blocking([gush_data.toy_id])
 
     # Let's scan again. This time we should see the correct model name for the Gush
     toy_data_list = toy_hub.discover_toys_blocking()
@@ -91,8 +94,8 @@ def main():
     nora_data = toy_data_list[2]
 
     # for toys that come with the default model name, you'll need to manually set the model name
-    # valid model names can be found in LOVENSE_TOY_NAMES.keys(). Invalid model names will raise a
-    # ValidationError, which is caught by the connect method and returned as an unsuccessful result
+    # valid model names can be found in LOVENSE_TOY_NAMES.keys(). For an invalid model name, the connect method
+    # returns an InvalidModelError (from tikal.high_level) in place of the controller
     print("valid model names:\n", LOVENSE_TOY_NAMES.keys())
     solace_data.model_name = "Sex Machine"  # valid but incorrect model
     nora_data.model_name = "Nora"
@@ -101,8 +104,8 @@ def main():
     toys = toy_hub.connect_toys_blocking([solace_data, gush_data, nora_data])
 
     # Because we use a mock and because all model names are valid, we can assume that the all connections are successful
-    # This means each of the following is of type LovenseController. If exceptions occur, then instead of
-    # LovenseController we would find the Exception at the same index in the list
+    # This means each of the following is of type ToyController. If exceptions occur, then instead of
+    # ToyController we would find the Exception at the same index in the list
     solace = toys[0]
     gush = toys[1]
     nora = toys[2]
@@ -141,12 +144,13 @@ def main():
 
     def on_disconnect(toy_id: str):
         """
-        This function is invoked when a toy disconnects unexpectedly
+        This function is invoked when a toy disconnects unexpectedly, or a command to it failed twice
         (Meaning that the disconnection was not initiated by you, and the toy did not send a POWEROFF message)
         ToyHub automatically tries to reconnect to the toy, repeatedly for up to a minute. If this fails, then reconnect_failure_callback is invoked,
         otherwise reconnect_success_callback is invoked. All methods of the associated toy_controller are still safe to
         call. However, methods that send commands to the toy don't send anything while it is disconnected: their
-        callbacks receive None right away, so nothing reaches the toy up to a minute late.
+        callbacks receive None right away, so nothing reaches the toy up to a minute late. State changes (like pausing
+        or blocking) still take effect.
         """
         print(f"Callback triggered: Disconnected {toy_id}")
 
@@ -183,11 +187,11 @@ def main():
 
     def on_error(exception: Exception, context: str, traceback: str):
         """
-        This function is invoked when an unhandled error occurs in the Toy Communication. Ideally, this is never invoked.
-        Unideally, if invoked, it will get the exception, a context message, and a traceback. The traceback is unlikely
-        to be helpful to you, however, it might be very useful to me. If you encounter an on_error function call, please
-        send me the exception, context, and traceback. Thank you. If this callback is not provided, then ToyHub will
-        write the information in the log instead.
+        This function is invoked when an unexpected error occurs: a toy discovery that fails, or an exception raised by
+        one of your own callbacks (which ToyHub catches, so it cannot break the toy communication). It gets the
+        exception, a context message, and a traceback. If an error you did not cause shows up here, please send me the
+        exception, context, and traceback. Thank you. If this callback is not provided, then ToyHub will write the
+        information in the log instead.
         """
         print(
             f"Callback triggered: The exception {exception} occurred with context {context} and traceback {traceback}"
@@ -195,8 +199,9 @@ def main():
 
     def on_battery_update(batteries: dict[str, int | None]):
         """
-        This function is invoked periodically to update the battery level of all connected toys. The dictionary maps
-        toy_id to battery level or None if the battery level could not be retrieved.
+        This function is invoked with the battery levels of all connected toys whenever one of them changes (checked
+        every 2 minutes), and right after toys were connected or reconnected. The dictionary maps toy_id to the battery
+        level, or None if the toy has no battery.
         """
         print(f"Callback triggered: Batteries are {batteries}")
 
@@ -216,7 +221,7 @@ def main():
     )
     # Setting/Updating a callback can be done like this:
     new_toy_hub.battery_update_callback(on_battery_update)
-    print("The battery callback will be called every 120 seconds")
+    print("The battery callback will be called whenever a battery level changes")
 
     # Connecting new toys will trigger the battery update callback immediately.
     MockBleakScanner.reset()  # you obviously don't need to do this with the real BleakScanner

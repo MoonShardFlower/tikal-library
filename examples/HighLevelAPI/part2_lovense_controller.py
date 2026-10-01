@@ -44,7 +44,7 @@ def prepare_logger():
 def main():
     """
     This is the main function, containing the actual example code.
-    Here we look at the usage of the LovenseController class.
+    Here we look at the usage of the ToyController class.
     This is the second example you should look at (The first one containing information about the ToyHub)
     """
     prepare_logger()
@@ -111,8 +111,8 @@ def main():
     nora.get_battery_level(on_battery_available)
     time.sleep(1)
 
-    # You can retrieve some device information
-    def _on_information_available(info: dict[str, str]):
+    # You can retrieve some device information (a dict of names to values, e.g. "model_name", "battery", "status")
+    def _on_information_available(info: dict):
         print(f"Callback triggered: Information about Nora is {info}")
 
     nora.get_information(_on_information_available)
@@ -134,10 +134,9 @@ def main():
     # You can also access the model name. To change it, you need to call toy_hub.update_model_name(toy_id, new_model_name)
     print(f"Solace has the toy_id {solace.toy_id} and is of model {solace.model_name}")
 
-    # Internally, all functions that send commands to the toy do not send directly but schedule the command in a
-    # queue instead. The toy hub regularly (every 50ms) polls this queue and sends the command if the toy is connected.
-    # If it isn't, the command will just remain in the queue until the connection is re-established. You can view the
-    # connection status here
+    # All methods return right away. Commands are sent to the toy in the background, in the order you call them; a
+    # callback tells you how each one went. While a toy is not connected (e.g., while the hub reconnects to it),
+    # nothing is sent: callbacks receive None right away. You can view the connection status here
     print(f"Gush is currently connected {gush.is_connected}")
 
     # The names of the toys' capabilities and the maximal intensity level can be accessed as well
@@ -202,6 +201,19 @@ def main():
 
     # You can access the intensity levels of a pattern at a specified time. If no pattern is set, this will be (0, 0)
     print(f"Nora's pattern intensities at 400ms are {nora.get_pattern_values(400)}")
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Intensity limits
+    # ------------------------------------------------------------------------------------------------------------------
+
+    # A limit caps every intensity command and every pattern value. A toy already running above a new limit is brought
+    # down to it right away. None removes the limit again.
+    nora.set_intensity1_limit(3)
+    time.sleep(0.5)
+    print(
+        f"Nora's limits are {nora.intensity_limits}, its intensities {nora.current_intensities}"
+    )
+    nora.set_intensity1_limit(None)
 
     # ------------------------------------------------------------------------------------------------------------------
     # Shutting down

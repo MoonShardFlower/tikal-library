@@ -32,6 +32,31 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     - High-Level API: Commands for a toy that is not connected (reconnecting, given up, powered off, or disconnected) are no longer
         queued: their callbacks receive None right away, as for a failed command. Previously they were sent up to a minute late
         after a reconnect, or never, with a callback that never fired.
+    - High-Level API: `ToyHub` and `ToyController` are now a synchronous wrapper over the async core the WebSocket server runs on,
+        so both APIs behave the same. What changes for High-Level users:
+        - Commands are sent right away in the background, in the order they are called, instead of from a queue polled every 50 ms.
+          State changes (pause, block, pattern, limits, and the pause a manual intensity causes) are visible as soon as the method returns.
+        - A command that fails twice starts a reconnect (`on_disconnect` fires), like a lost connection. Pattern playback retries a
+          send that failed; previously a failed stop when pausing or blocking was never retried.
+        - A command that could not be delivered reports None to its callback (previously False for intensity and stop commands).
+          `intensity2` on a toy without a secondary capability and `change_rotation_direction` on a toy without rotation report
+          False (previously True).
+        - `get_information` reports the same dictionary as the WebSocket `get_info` with `full=true`, plus `battery` (e.g., keys
+          `model_name`, `intensity_names`, `status`), instead of human-readable keys such as "Battery level".
+        - The battery callback receives every connected toy's last known level whenever one of them changes (checked every 2
+          minutes) and after toys were connected or reconnected.
+        - Connecting a toy requires a first battery query to succeed, as in the WebSocket API (`AddConnectionError` otherwise).
+        - Errors are the core's exception classes, now exported from `tikal.high_level` (`InvalidModelError`, `BadModelError`,
+          `AddConnectionError`, `ToyAlreadyAddedError`, `ToyConnectionError`, `ToyNotConnectedError`, `UnknownToyError`,
+          `DiscoveryStartError`, `DiscoveryError`). `disconnect_toys_*` reports an unknown toy as `UnknownToyError` in its place in
+          the result list (previously skipped, so the results no longer lined up with the input).
+        - The ToyCache is updated only when a model change succeeds (`update_model_name` used to store an invalid model name too),
+          and `ToyController.set_model_name` now updates it as well.
+        - `on_error` also receives exceptions raised by your callbacks. They are caught, so they cannot break the toy communication..
+    - Web API: Nothing is sent to a toy that is not connected (e.g., reconnecting). A command that needs the toy fails right away
+        with a Connection Error whose message says the toy is not connected, instead of being tried twice (and, between two
+        reconnect attempts, possibly getting through). A command that also changes the toy's state (block, pause, stop, pattern,
+        intensity limits) still records that state; the reconnect stops the toy before it is used again.
     - Web API: Disconnecting the last client now stops every toy and pauses its pattern, regardless of the `--timeout` setting.
         Previously `--timeout 0` (auto-shutdown disabled) left a running pattern driving the toy with nobody connected.
     - Web API: The CLI now handles SIGINT/SIGTERM (where the platform supports it) by shutting the server down gracefully,
@@ -57,11 +82,26 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     - High-Level API: `ToyHub` now registers `shutdown()` as an `atexit` safety net. A program that never calls it (including one ending in an
         uncaught exception or a KeyboardInterrupt) no longer leaves its toys running. The hook holds only a weak reference and is
         unregistered by an explicit `shutdown()`. It cannot help if the process is killed outright (SIGKILL, `os._exit`).
+    - High-Level API: Intensity limits, as in the WebSocket API: `ToyController.set_intensity1_limit`, `set_intensity2_limit` and
+        `intensity_limits`. A limit caps every command and pattern value, and brings a toy already running above it down right away.
+
+### Removed
+    - High-Level API: The module path `tikal.high_level.toy_cache` no longer exists. Import `ToyCache` from `tikal.high_level` instead
+        (unchanged). ToyCache moved into the private async core that both APIs are built on.
+    - High-Level API: `LovenseController` and `MockEstimController`. Every toy gets a `ToyController`, whatever its brand.
+    - High-Level API: `ToyHub.is_running` (the background loop now runs from the hub's creation until `shutdown()`), and the
+        internal `ToyController.toy`, `is_connected` setter, `process_communication` and `internal_*` methods.
 
 ### Fixed
+    - Web API: `--log-level` accepts lower-case level names (e.g., `debug`). Previously they crashed the CLI at startup.
+    - High-Level API: A disconnected toy's `ToyController` no longer reports `is_blocked` as True.
     - Web API: `set_blocked`, `set_paused`, `toggle_block` and `toggle_pause` no longer undo themselves when the first attempt hits a
         connection error. The automatic retry used to flip the state back, so e.g. a block that hit a transient Bluetooth error left
         the toy unblocked while the command reported success.
+    - Web API: A state change (block, pause, stop, pattern, limit) now takes full effect before the command it requires is sent.
+        Previously, pausing a blocked toy whose stop failed left it paused and blocked at the same time.
+    - High-Level API + Web API: A manual intensity command while a pattern plays is no longer undone right away. It pauses the pattern,
+        and the next playback tick used to send the stop that pausing a pattern calls for, dropping the toy back to 0.
     - Web API: Stopping the server with Ctrl+C no longer leaves toys connected and running. `serve()` now tears the toy hub down in a
         `finally`, so cancellation still stops and disconnects every toy.
     - High-Level API + Web API: The toy cache file is now treated as untrusted input. Entries that are not `str -> str` are logged and

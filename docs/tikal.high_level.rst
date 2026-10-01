@@ -20,6 +20,7 @@ tikal.high\_level.toy\_hub module
    :members:
    :show-inheritance:
    :undoc-members:
+   :no-index:
 
 Module contents
 ---------------

@@ -1,366 +1,287 @@
 """
-Tests for the High-Level :class:`ToyController` state machine: block/pause mutual exclusion,
-the command queue, and pattern playback in ``process_communication``.
+Tests for the High-Level :class:`ToyController`: a synchronous handle over the async core.
+
+State changes must be visible as soon as a method returns, commands must reach the toy in call order, and callbacks
+must report None whenever a command could not be delivered. Driven end to end through a ToyHub with MockEstimToys.
 """
 
+import asyncio
+import threading
 from unittest.mock import AsyncMock
 
-import pytest
+from tikal._core import ToyStatus
 
-from tikal.high_level.toy_controller import LovenseController, MockEstimController
-from tikal.low_level import LovenseToy, Toy
-
-
-@pytest.fixture
-def mock_toy():
-    toy = AsyncMock(spec=Toy)
-    toy.toy_id = "toy-1"
-    toy.intensity1.return_value = True
-    toy.intensity2.return_value = True
-    toy.stop.return_value = True
-    return toy
+from .conftest import connect_mock_toy, wait_until
 
 
-@pytest.fixture
-def controller(mock_toy):
-    c = MockEstimController(mock_toy, "test")
-    c.is_connected = True
-    return c
+def _core_toy(hub, toy_id="Thunder_ID"):
+    return hub._core.get_controller(toy_id)
+
+
+def _record_sends(hub, sent: list, toy_id="Thunder_ID"):
+    """
+    Record every intensity1 (once the toy took it) and stop (when it starts) that reaches the toy, in order.
+
+    A higher level takes less time to send, so if commands could run side by side, later ones would overtake earlier
+    ones and show up out of order.
+    """
+    toy = _core_toy(hub, toy_id)._toy
+    original_intensity1, original_stop = toy.strict_intensity1, toy.strict_stop
+    in_stop = False  # the mock toy stops by sending intensity 0 on each channel
+
+    async def intensity1(level):
+        if in_stop:
+            return await original_intensity1(level)
+        await asyncio.sleep(max(0.0, 0.03 - 0.001 * level))
+        result = await original_intensity1(level)
+        sent.append(level)
+        return result
+
+    async def stop():
+        nonlocal in_stop
+        sent.append("stop")
+        in_stop = True
+        try:
+            return await original_stop()
+        finally:
+            in_stop = False
+
+    toy.strict_intensity1 = intensity1
+    toy.strict_stop = stop
 
 
 # ---------------------------------------------------------------------------
-# Blocking / pausing state machine (synchronous)
+# State changes
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_stop_after_reconnect_drops_queued_commands(controller, mock_toy):
-    # Commands still queued when the connection was lost are reported as failed (None), even when an earlier callback
-    # raises, and none is sent.
-    results = []
+def test_state_changes_show_at_once_and_pause_and_block_exclude_each_other(mock_hub):
+    toy = connect_mock_toy(mock_hub())
 
-    def raising_callback(_):
-        raise RuntimeError("user callback bug")
+    assert toy.toggle_pause() is True
+    assert toy.is_paused is True and toy.is_blocked is False
 
-    controller.intensity1(5, raising_callback)  # queued while connected ...
-    controller.intensity2(6, results.append)
-    controller.is_connected = (
-        False  # ... then the connection drops before they are sent
-    )
-    mock_toy.reset_mock()
+    assert toy.toggle_block() is True
+    assert toy.is_blocked is True and toy.is_paused is False
 
-    await controller.internal_stop_after_reconnect()
+    toy.set_paused(True)
+    assert toy.is_paused is True and toy.is_blocked is False
 
+    assert toy.toggle_pause() is False
+    toy.set_blocked(True)
+    toy.set_blocked(False)
+    assert toy.is_blocked is False and toy.is_paused is False
+
+
+def test_quick_toggles_do_not_undo_each_other(mock_hub):
+    # Each toggle reads the state the previous one left, so an odd number of toggles ends paused.
+    toy = connect_mock_toy(mock_hub())
+    for _ in range(9):
+        toy.toggle_pause()
+    assert toy.is_paused is True
+
+
+def test_set_pattern_is_visible_at_once_and_clearing_stops_the_toy(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+
+    toy.set_pattern([(60_000, 30, 0)])
+    assert toy.get_pattern_data()[0] == [(60_000, 30, 0)]
+    assert wait_until(lambda: toy.current_intensities == (30, 0))
+
+    toy.set_pattern([])
+    assert toy.get_pattern_data()[0] == [] and toy.is_paused is True
+    assert wait_until(lambda: toy.current_intensities == (0, 0))
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+def test_commands_reach_the_toy_in_call_order(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+    sent: list = []
+    _record_sends(hub, sent)
+
+    for level in range(1, 21):
+        toy.intensity1(level)
+    toy.stop()
+    toy.intensity1(42)
+
+    assert wait_until(lambda: len(sent) == 22)
+    assert sent == list(range(1, 21)) + ["stop", 42]
+    assert wait_until(lambda: toy.current_intensities == (42, 0))
+
+
+def test_intensity_reports_the_result(mock_hub):
+    toy = connect_mock_toy(mock_hub(), "Lightning_ID", "Lightning")
+    results: list = []
+
+    toy.intensity1(150, results.append)  # clamped to max_intensity
+    toy.intensity2(20, results.append)
+    toy.stop(results.append)
+
+    assert wait_until(lambda: len(results) == 3)
+    assert results == [True, True, True]
+    assert toy.current_intensities == (0, 0)
+    assert toy.is_paused is True  # a stop pauses the pattern
+
+
+def test_blocked_intensity_reports_false_right_away_and_sends_nothing(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+    sent: list = []
+    _record_sends(hub, sent)
+    toy.set_blocked(True)
+
+    results: list = []
+    toy.intensity1(5, results.append)
+
+    assert results == [False]  # in the caller's thread, before the method returned
+    assert toy.is_paused is False  # a refused command changes nothing
+    assert wait_until(lambda: sent == ["stop"])  # only the block's stop reached the toy
+    assert not wait_until(lambda: len(sent) > 1, timeout=0.2)
+
+
+def test_manual_intensity_is_not_undone_by_the_pattern_it_pauses(mock_hub):
+    """Regression: the next playback tick used to send the stop for the paused pattern, dropping the manual level."""
+    toy = connect_mock_toy(mock_hub())
+    toy.set_pattern([(60_000, 30, 0)])
+    assert wait_until(lambda: toy.current_intensities == (30, 0))
+
+    toy.intensity1(70)
+    assert toy.is_paused is True
+    assert wait_until(lambda: toy.current_intensities == (70, 0))
+    assert not wait_until(lambda: toy.current_intensities != (70, 0), timeout=0.5)
+
+    toy.set_paused(False)  # the pattern takes over again
+    assert wait_until(lambda: toy.current_intensities == (30, 0))
+
+
+def test_intensity_limits_cap_commands_and_the_pattern(mock_hub):
+    toy = connect_mock_toy(mock_hub())
+    toy.intensity1(80)
+    assert wait_until(lambda: toy.current_intensities == (80, 0))
+
+    toy.set_intensity1_limit(25)
+    assert toy.intensity_limits == (25, 100)
+    assert wait_until(
+        lambda: toy.current_intensities == (25, 0)
+    )  # brought down right away
+
+    toy.set_pattern([(60_000, 90, 0)])
+    toy.set_paused(False)
+    assert not wait_until(lambda: toy.current_intensities[0] > 25, timeout=0.3)
+
+    toy.set_intensity1_limit(None)
+    assert wait_until(lambda: toy.current_intensities == (90, 0))
+
+
+def test_queries_report_through_their_callbacks(mock_hub):
+    toy = connect_mock_toy(mock_hub())
+    battery, info, response, rotation = [], [], [], []
+
+    toy.get_battery_level(battery.append)
+    toy.get_information(info.append)
+    toy.direct_command("DeviceType", response.append)
+    toy.change_rotation_direction(rotation.append)
+
+    assert wait_until(lambda: battery and info and response and rotation)
+    assert battery == [77]
+    assert info[0]["model_name"] == "Thunder" and info[0]["battery"] == 77
+    assert response == ["MockEstim"]
+    assert rotation == [False]  # Thunder cannot rotate
+
+
+# ---------------------------------------------------------------------------
+# Toys that are not connected
+# ---------------------------------------------------------------------------
+
+
+def test_commands_for_a_reconnecting_toy_report_none_right_away(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+    send = _core_toy(hub)._toy.strict_intensity1 = AsyncMock(return_value=True)
+    hub._core._toy_status["Thunder_ID"] = ToyStatus.RECONNECTING
+    assert toy.is_connected is False
+
+    results: list = []
+    toy.intensity1(5, results.append)
+    toy.get_battery_level(results.append)
+    toy.stop(results.append)
+    assert results == [None, None, None]  # right away, not once the reconnect ends
+    send.assert_not_called()
+
+    # State changes still take effect: the reconnect stops the toy, and from then on it follows them.
+    toy.set_blocked(True)
+    assert toy.is_blocked is True
+
+
+def test_a_disconnected_toy_keeps_its_state_readable(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+    toy.set_pattern([(1000, 5, 0)])
+    hub.disconnect_toys_blocking([toy.toy_id])
+
+    assert toy.is_connected is False
+    assert toy.model_name == "Thunder"
+    assert toy.get_pattern_data()[0] == [(1000, 5, 0)]
+    assert toy.is_blocked is False  # disconnecting does not change the state it reports
+    results: list = []
+    toy.intensity1(5, results.append)
     assert results == [None]
-    mock_toy.strict_stop.assert_awaited_once()
-    controller.is_connected = True
-    await controller.process_communication()
-    mock_toy.intensity1.assert_not_called()
-    mock_toy.intensity2.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_commands_while_disconnected_are_rejected_right_away(
-    controller, mock_toy
-):
-    # Nothing is queued for a toy that is not connected: the callback hears None at once, and nothing is ever sent.
-    results = []
-    controller.is_connected = False
-
-    controller.intensity1(5, results.append)
-    controller.get_battery_level(results.append)
-    assert results == [None, None]
-
-    controller.is_connected = True
-    await controller.process_communication()
-    mock_toy.intensity1.assert_not_called()
-    mock_toy.get_battery_level.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_blocked_rejects_intensity(controller, mock_toy):
-    controller.toggle_block()  # block on (queues a stop)
-    await controller.process_communication()  # drain that stop
-    mock_toy.reset_mock()
-
-    results = []
-    controller.intensity1(15, results.append)
-    assert results == [False]  # rejected synchronously, via callback
-
-    await controller.process_communication()
-    mock_toy.intensity1.assert_not_called()  # never reached the toy
-
-
-def test_pause_and_block_are_mutually_exclusive(controller):
-    assert controller.toggle_pause() is True
-    assert controller.is_paused is True
-    assert controller.is_blocked is False
-
-    assert controller.toggle_block() is True  # blocking clears pause
-    assert controller.is_blocked is True
-    assert controller.is_paused is False
-
-    assert controller.toggle_pause() is True  # pausing clears block
-    assert controller.is_paused is True
-    assert controller.is_blocked is False
-
-
-def test_set_paused_clears_block(controller):
-    controller.set_blocked(True)
-    assert controller.is_blocked is True
-
-    controller.set_paused(True)
-    assert controller.is_paused is True
-    assert controller.is_blocked is False
-
-
-def test_set_paused_is_idempotent_on_version(controller):
-    controller.set_paused(True)
-    version = controller.pattern_version
-    controller.set_paused(True)  # no-op
-    assert controller.pattern_version == version
+    assert toy.toggle_block() is True  # only changes what this controller reports
 
 
 # ---------------------------------------------------------------------------
-# Command queue
+# Callbacks
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_command_queue_runs_fifo_with_results(controller, mock_toy):
-    mock_toy.intensity1.return_value = True
-    mock_toy.intensity2.return_value = False
+def test_a_callback_can_use_the_controller(mock_hub):
+    # Callbacks run on the hub's event loop: state changes and commands from there must neither deadlock nor wait.
+    toy = connect_mock_toy(mock_hub())
+    toy.set_pattern([(60_000, 20, 0)])
+    results: list = []
+    done = threading.Event()
 
-    order = []
-    controller.intensity1(5, lambda r: order.append(("i1", r)))
-    controller.intensity2(3, lambda r: order.append(("i2", r)))
-    await controller.process_communication()
+    def after_first(ok):
+        results.append(ok)
+        toy.set_paused(False)
+        results.append(toy.is_paused)
+        toy.intensity1(9, lambda second: (results.append(second), done.set()))
 
-    assert order == [("i1", True), ("i2", False)]
-    mock_toy.intensity1.assert_awaited_once_with(5)
-    mock_toy.intensity2.assert_awaited_once_with(3)
+    toy.intensity1(3, after_first)
 
-
-@pytest.mark.asyncio
-async def test_command_error_delivers_none_to_callback(controller, mock_toy):
-    mock_toy.intensity1.side_effect = ConnectionError("boom")
-
-    results = []
-    controller.intensity1(5, results.append)
-    await controller.process_communication()  # must not raise
-
-    assert results == [None]
+    assert done.wait(3.0)
+    assert results == [True, False, True]
+    assert toy.is_paused is True  # the second manual command paused the pattern again
 
 
-# ---------------------------------------------------------------------------
-# Pattern playback
-# ---------------------------------------------------------------------------
+def test_a_blocking_hub_call_from_a_callback_is_refused(mock_hub):
+    errors: list = []
+    hub = mock_hub(on_error=lambda error, context, tb: errors.append(error))
+    toy = connect_mock_toy(hub)
+
+    toy.get_battery_level(lambda level: hub.discover_toys_blocking(0.1))
+
+    assert wait_until(lambda: errors)
+    assert isinstance(errors[0], RuntimeError)  # instead of deadlocking the hub
 
 
-def test_manual_intensity_pauses_pattern(controller):
-    controller.set_pattern([(1000, 5, 5)])
-    assert controller.is_paused is False
-    controller.intensity1(7)
-    assert controller.is_paused is True
+def test_a_callback_that_raises_goes_to_on_error(mock_hub):
+    errors: list = []
+    hub = mock_hub(on_error=lambda error, context, tb: errors.append((error, context)))
+    toy = connect_mock_toy(hub)
 
+    def broken(_):
+        raise ValueError("bug in the app")
 
-@pytest.mark.asyncio
-async def test_pattern_playback_sends_changed_values_once(controller, mock_toy):
-    # Single long segment -> constant (5, 3) for the whole test window, never paused.
-    controller.set_pattern([(10_000, 5, 3)])
+    toy.intensity1(5, broken)
+    toy.intensity1(6)  # the hub keeps working
 
-    await controller.process_communication()
-    mock_toy.intensity1.assert_awaited_once_with(5)
-    mock_toy.intensity2.assert_awaited_once_with(3)
-
-    mock_toy.reset_mock()
-    await controller.process_communication()  # unchanged values -> no resend
-    mock_toy.intensity1.assert_not_called()
-    mock_toy.intensity2.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_paused_pattern_does_not_resend_stop(controller, mock_toy):
-    controller.set_pattern([(10_000, 5, 3)])
-    controller.set_paused(True)  # queues a stop and will stop on pause
-    await controller.process_communication()  # drains queued + pause stop
-
-    mock_toy.reset_mock()
-    await controller.process_communication()  # latched -> no further stop
-    mock_toy.stop.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_clearing_pattern_stops_toy(controller, mock_toy):
-    controller.set_pattern([(1000, 5, 3)])
-    mock_toy.reset_mock()
-
-    controller.set_pattern([])  # clearing schedules a stop
-    await controller.process_communication()
-
-    mock_toy.stop.assert_awaited()
-    assert controller.get_pattern_data()[0] == []  # pattern cleared
-
-
-@pytest.mark.asyncio
-async def test_resume_after_pause_redrives_pattern(controller, mock_toy):
-    # Drive -> pause (latches a stop, forgets last-sent values) -> resume must re-send the values.
-    controller.set_pattern([(10_000, 5, 3)])
-    await controller.process_communication()
-
-    controller.set_paused(True)
-    await controller.process_communication()  # pause latch: stop + last_values reset
-
-    mock_toy.reset_mock()
-    controller.set_paused(False)
-    await controller.process_communication()  # resume: re-drive from scratch
-    mock_toy.intensity1.assert_awaited_once_with(5)
-    mock_toy.intensity2.assert_awaited_once_with(3)
-
-
-@pytest.mark.asyncio
-async def test_blocked_pattern_latches_single_stop(controller, mock_toy):
-    # While blocked, playback sends exactly one stop and then holds (no repeated stops).
-    controller.set_pattern([(10_000, 5, 3)])
-    await controller.process_communication()  # drive
-    controller.toggle_block()  # queues a stop + blocks
-    await controller.process_communication()  # drain queued + playback stop, latch
-
-    mock_toy.reset_mock()
-    await controller.process_communication()  # latched -> no further stop
-    mock_toy.stop.assert_not_called()
-    mock_toy.intensity1.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Command surface (queued -> executed in process_communication)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_change_rotation_direction_queues_and_reports(controller, mock_toy):
-    mock_toy.change_rotation_direction.return_value = True
-    results = []
-    controller.change_rotation_direction(results.append)
-    await controller.process_communication()
-    assert results == [True]
-    mock_toy.change_rotation_direction.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_get_battery_level_queues_and_reports(controller, mock_toy):
-    mock_toy.get_battery_level.return_value = 77
-    results = []
-    controller.get_battery_level(results.append)
-    await controller.process_communication()
-    assert results == [77]
-
-
-@pytest.mark.asyncio
-async def test_direct_command_queues_and_reports(controller, mock_toy):
-    mock_toy.direct_command.return_value = "PONG"
-    results = []
-    controller.direct_command("DeviceType", results.append)
-    await controller.process_communication()
-    assert results == ["PONG"]
-    mock_toy.direct_command.assert_awaited_once_with("DeviceType")
-
-
-@pytest.mark.asyncio
-async def test_intensity2_rejected_when_blocked(controller, mock_toy):
-    controller.toggle_block()  # block on (queues a stop)
-    await controller.process_communication()  # drain that stop
-    mock_toy.reset_mock()
-
-    results = []
-    controller.intensity2(5, results.append)
-    assert results == [False]  # rejected synchronously, via callback
-
-    await controller.process_communication()
-    mock_toy.intensity2.assert_not_called()  # never reached the toy
-
-
-@pytest.mark.asyncio
-async def test_process_communication_noop_when_disconnected(controller, mock_toy):
-    controller.set_pattern([(10_000, 5, 3)])
-    controller.is_connected = False
-    await controller.process_communication()  # early return: nothing sent
-    mock_toy.intensity1.assert_not_called()
-    mock_toy.stop.assert_not_called()
-
-
-def test_toggle_pause_second_toggle_unpauses(controller):
-    assert controller.toggle_pause() is True
-    assert controller.toggle_pause() is False  # second toggle unpauses
-    assert controller.is_paused is False
-
-
-def test_toggle_block_second_toggle_unblocks(controller):
-    assert controller.toggle_block() is True
-    assert controller.toggle_block() is False  # second toggle unblocks
-    assert controller.is_blocked is False
-
-
-def test_set_blocked_noop_when_unchanged(controller):
-    # Already unblocked -> setting False again hits the early-return guard.
-    controller.set_blocked(False)
-    assert controller.is_blocked is False
-
-
-def test_is_connected_and_rotation_available_passthrough(controller, mock_toy):
-    assert controller.is_connected is True  # reads the getter
-    mock_toy.change_rotation_direction_available = True
-    assert controller.change_rotation_direction_available is True
-
-
-# ---------------------------------------------------------------------------
-# LovenseController.get_information
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_lovense_controller_get_information():
-    toy = AsyncMock(spec=LovenseToy)
-    toy.toy_id = "toy-1"
-    toy.name = "LVS-Z36D"
-    toy.get_battery_level.return_value = 88
-    toy.get_status.return_value = 2
-    toy.get_batch_number.return_value = "240815"
-    toy.get_device_type.return_value = "C:11:AAAA"
-
-    controller = LovenseController(toy, "test")
-    controller.is_connected = True
-
-    results = []
-    controller.get_information(results.append)
-    await controller.process_communication()
-
-    assert len(results) == 1
-    info = results[0]
-    assert info["Battery level"] == "88%"
-    assert info["Status"] == "2"
-    assert info["Batch number"] == "240815"
-    assert info["Bluetooth Name"] == "LVS-Z36D"
-    assert info["Device type"] == "C:11:AAAA"
-
-
-@pytest.mark.asyncio
-async def test_lovense_controller_get_information_handles_missing_battery():
-    toy = AsyncMock(spec=LovenseToy)
-    toy.toy_id = "toy-1"
-    toy.name = "LVS-Z36D"
-    toy.get_battery_level.return_value = None
-    toy.get_status.return_value = None
-    toy.get_batch_number.return_value = None
-    toy.get_device_type.return_value = None
-
-    controller = LovenseController(toy, "test")
-    controller.is_connected = True
-
-    results = []
-    controller.get_information(results.append)
-    await controller.process_communication()
-
-    info = results[0]
-    assert info["Battery level"] == "Unknown"
-    assert info["Status"] == "Unknown"
+    assert wait_until(lambda: errors)
+    assert isinstance(errors[0][0], ValueError) and "intensity1" in errors[0][1]
+    assert wait_until(lambda: toy.current_intensities == (6, 0))

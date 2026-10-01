@@ -1,43 +1,47 @@
 """
 Part of the High-level API: Provides representations of toys.
 
-This module wraps the low-level Toy in synchronous methods and adds advanced features:
-- **Synchronous API**: All methods are synchronous (non-async), making them easy to use from regular Python code. Commands are queued and executed asynchronously by ToyHub.
+This module provides :class:`ToyController`, the synchronous handle for one connected toy:
+
+- **Synchronous API**: All methods are synchronous, making them easy to use. State changes
+  (pause, block, pattern, limits) take effect at once. Commands to the toy are sent in the background.
 - **Pattern Playback**: Set time-based patterns that automatically control toy intensities.
 - **Pause/Block States**: Temporarily halt toy actions while maintaining the pattern state.
+- **Intensity Limits**: Cap what any command or pattern can make the toy do.
 - **Callback Support**: Optional callbacks provide feedback when a command completes.
 
-This module provides:
-
-- :class:`ToyController`: Abstract base class defining the controller interface
-- :class:`LovenseController`: Concrete implementation for Lovense brand toys
-
 Note:
-    You should not instantiate controllers. They are created for you by :class: ToyHub
-    The ToyHub manages the background communication loop that processes queued commands and handles pattern playback.
+    You should not instantiate controllers. They are created for you by :class:`ToyHub`, which runs the toys and the
+    pattern playback in the background.
 """
 
-import traceback
-from abc import abstractmethod
-from collections import deque
-from logging import getLogger
-from typing import Any, Callable, Optional
+from __future__ import annotations
 
-from .._private import BaseToyController
-from ..low_level import LovenseToy, MockEstimToy, Toy
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypeVar
+
+from .._core import UnknownToyError, _ToyController
+
+if TYPE_CHECKING:
+    from .toy_hub import ToyHub
+
+T = TypeVar("T")
 
 
-class ToyController(BaseToyController):
+class ToyController:
     """
-    Abstract base class for high-level toy control.
+    Synchronous control of one connected toy.
 
-    Extends the low-level Toy interface with synchronous methods, command queueing, and pattern playback capabilities.
-    The read-only passthroughs to the toy and the pattern-playback engine are inherited from
-    :class:`tikal._private.BaseToyController`; this class adds the synchronous, queue-based control surface.
+    State changes (:meth:`set_paused`, :meth:`set_blocked`, :meth:`set_pattern`, the limits) take effect at once, so
+    reading the state right afterward reflects them. Commands needing the toy are sent in the background. Commands
+    that take a callback report their result there: None means the command could not be delivered (e.g., the toy is not
+    connected, or the connection failed).
+
+    Callbacks run on the hub's background thread. Keep them short. From a callback, you can call every method of a
+    ToyController, but not the blocking methods of :class:`ToyHub` (they raise ``RuntimeError`` there).
 
     Example::
 
-            # Get controller from ToyHub (see :class: ToyHub for that)
+            # Get controller from ToyHub (see :class:`ToyHub` for that)
             controllers = hub.connect_toys_blocking(discovered_toys)
             toy = controllers[0]
 
@@ -54,67 +58,56 @@ class ToyController(BaseToyController):
             toy.set_pattern(pattern, wraparound=True)
 
             # Pause/resume pattern
-            toy.toggle_pause()  # Pauses pattern, sets toys intensity levels to  0
+            toy.toggle_pause()  # Pauses pattern, sets the toy's intensity levels to 0
             toy.toggle_pause()  # Resumes pattern
 
     Args:
-        toy: Low-level toy object (Toy instance) for BLE communication.
-        logger_name: Name of the logger to use. Use empty string for root logger.
+        hub: The ToyHub that manages the toy.
+        toy: The toy's controller in the hub's core.
 
     Note:
         This class should not be instantiated directly. Use ToyHub's connection methods to get controller instances.
     """
 
-    def __init__(self, toy: Toy, logger_name: str):
-        super().__init__(toy)
-        self._log = getLogger(logger_name)
+    def __init__(self, hub: "ToyHub", toy: _ToyController):
+        self._hub = hub
+        self._core = hub._core
+        self._toy_id = toy.toy_id
+        self._last_known = toy
 
-        self._command_queue: deque[
-            tuple[Callable[[], Any], Optional[Callable[[Any], None]]]
-        ] = deque()
-        self._connected = False
-
-        self._log.info(f"ToyController initialized for {toy.toy_id}")
-
-    @property
-    def is_connected(self) -> bool:
-        """
-        Check if the toy is currently connected.
-
-        While disconnected, commands are not sent: their callbacks receive None right away, as for a failed command.
-        Upon reconnection, the toy is stopped and its pattern paused (it does not resume on its own).
-
-        Returns:
-            bool: True if connected, False otherwise.
-        """
-        return self._connected
-
-    @is_connected.setter
-    def is_connected(self, value: bool) -> None:
-        """
-        Set the connection state (internal use only).
-
-        This setter is called by ToyHub when the connection state changes. You should not call this
-
-        Args:
-            value: New connection state.
-        """
-        self._connected = value
+    # ------------------------------------------------------------------------------------------------------------------
+    # State (read)
+    # ------------------------------------------------------------------------------------------------------------------
 
     @property
-    def change_rotation_direction_available(self) -> bool:
-        """
-        Check if the toy supports changing the rotation direction.
+    def toy_id(self) -> str:
+        """Unique identifier for the toy (typically its Bluetooth address)."""
+        return self._toy_id
 
-        Returns:
-            bool: True if the rotation direction can be changed, False otherwise.
+    @property
+    def model_name(self) -> str:
+        """Model name of the toy (e.g., "Nora", "Lush"). Change it with :meth:`set_model_name`."""
+        return self._toy().model_name
 
-        Example::
+    @property
+    def name(self) -> str:
+        """Human-readable identifier of the toy (e.g., its Bluetooth name)."""
+        return self._toy().name
 
-                if toy.change_rotate_direction_available:
-                    toy.change_rotate_direction()
-        """
-        return self._toy.change_rotation_direction_available
+    @property
+    def brand(self) -> str:
+        """Human-readable identifier of the toy brand (e.g., 'Lovense')."""
+        return self._toy().brand
+
+    @property
+    def max_intensity(self) -> int:
+        """Maximum intensity value for this toy (e.g., 20 for Lovense toys)."""
+        return self._toy().max_intensity
+
+    @property
+    def current_intensities(self) -> tuple[int, int]:
+        """Current (primary, secondary) intensity values. Secondary is always 0 for single-capability toys."""
+        return self._toy().current_intensities
 
     @property
     def intensity_names(self) -> tuple[str, str | None]:
@@ -131,115 +124,116 @@ class ToyController(BaseToyController):
                 if names[1]:
                     print(f"Secondary: {names[1]}")  # example: Rotation
         """
-        return self._toy.intensity_names
+        return self._toy().intensity_names
 
-    def set_model_name(
-        self,
-        model_name: str,
-        callback: Optional[Callable[[Optional[str]], None]] = None,
-    ) -> None:
+    @property
+    def change_rotation_direction_available(self) -> bool:
         """
-        Set the model name of the toy.
-
-        The model name determines which commands are available and how they're interpreted. Like every other controller
-        command, this is queued and executed asynchronously by ToyHub (validating the model against the toy involves
-        sending commands), so the result is delivered via the optional callback rather than raised.
-
-        Args:
-            model_name: New model name. Must be a valid model for this toy's brand.
-            callback: Optional callback is invoked when the command completes. Receives the toy's new model name on
-                success, or None if the update failed (e.g., an invalid model name).
+        Check if the toy supports changing the rotation direction.
 
         Example::
 
-                # Correct a model that was set incorrectly while connecting
-                toy.set_model_name("Nora", callback=lambda name: print(f"Model is now {name}"))
-
-        Note:
-            For a blocking call that surfaces validation errors directly, use :meth:`ToyHub.update_model_name` instead.
+                if toy.change_rotation_direction_available:
+                    toy.change_rotation_direction()
         """
+        return self._toy().change_rotation_direction_available
 
-        async def _execute() -> Any:
-            await self._toy.set_model_name(model_name)
-            # The switch stopped the toy, so what playback last sent no longer holds.
-            self._invalidate_last_values()
-            return self._toy.model_name
+    @property
+    def is_connected(self) -> bool:
+        """
+        Check if the toy is currently connected.
 
-        self._schedule_command(_execute, callback)
+        While it is not (e.g., while the hub reconnects to it), nothing is sent to the toy: commands with a callback
+        report None right away. State changes such as a pause or block still take effect. Upon reconnection, the toy is
+        stopped and its pattern paused (it does not resume on its own).
+        """
+        return self._core.is_connected(self._toy_id)
+
+    @property
+    def is_paused(self) -> bool:
+        """Whether pattern playback is currently paused (the pattern timer stops advancing)."""
+        return self._toy().is_paused
+
+    @property
+    def is_blocked(self) -> bool:
+        """Whether the toy is currently blocked (all intensities forced to zero)."""
+        return self._toy().is_blocked
+
+    @property
+    def intensity_limits(self) -> tuple[int, int]:
+        """The current (intensity1, intensity2) limits. See :meth:`set_intensity1_limit`."""
+        return self._toy().intensity_limits
+
+    @property
+    def pattern_version(self) -> int:
+        """Incremented each time the pattern state changes."""
+        return self._toy().pattern_version
+
+    def get_pattern_time(self) -> float:
+        """Elapsed time in the current pattern in milliseconds (paused time does not count). 0.0 if no pattern."""
+        return self._toy().get_pattern_time()
+
+    def get_pattern_values(self, pattern_time: float) -> tuple[int, int]:
+        """The ``(intensity1, intensity2)`` values at ``pattern_time`` (milliseconds) in the current pattern."""
+        return self._toy().get_pattern_values(pattern_time)
+
+    def get_pattern_data(self) -> tuple[list[tuple[int, int, int]], bool, bool, float]:
+        """The full pattern state: ``(pattern, wraparound, is_paused, elapsed_ms)``."""
+        return self._toy().get_pattern_data()
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # State changes
+    # ------------------------------------------------------------------------------------------------------------------
 
     def toggle_pause(self) -> bool:
         """
-        Toggle pattern playback pause state.
-
-        When paused:
-        - If a pattern is active, it stops advancing.
-        - Toy intensities are set to zero, but manual commands can override this.
-        - Block state is cleared if active (toy cannot be paused and blocked at the same time)
+        Toggle pattern playback pause state. See :meth:`set_paused`.
 
         Returns:
             bool: True if now paused, False if now unpaused.
 
         Example::
 
-                # Pause pattern playback
-                is_paused = toy.toggle_pause()
-                print(f"Paused: {is_paused}")
-
-                # Resume
-                is_paused = toy.toggle_pause()
-                print(f"Paused: {is_paused}")
+                is_paused = toy.toggle_pause()  # Pause pattern playback
+                is_paused = toy.toggle_pause()  # Resume
         """
-        self._log.info(f"ToyController toggle pause: {self.toy_id}")
-        if not self._pattern_handler.is_paused:
-            self._pattern_handler.set_paused(True)
-            self.stop()
-            self._is_blocked = False  # I don't want to pause and block at the same time
-            return True
-        else:
-            self._pattern_handler.set_paused(False)
-            return False
+
+        def toggle(toy: _ToyController) -> bool:
+            return toy.apply_paused(not toy.is_paused)
+
+        paused = self._apply(toggle)
+        if paused:
+            self._send_stop("toggle_pause")
+        return paused
 
     def toggle_block(self) -> bool:
         """
-        Toggle block state.
-
-        When blocked:
-        - All intensity commands are rejected (return False via callback)
-        - Toy intensities are forced to zero
-        - Pattern continues advancing but doesn't control the toy
-        - Pause state is cleared if active (toy cannot be paused and blocked at the same time)
+        Toggle block state. See :meth:`set_blocked`.
 
         Returns:
             bool: True if now blocked, False if now unblocked.
 
         Example::
 
-                # Block all toy commands
-                is_blocked = toy.toggle_block()
-
-                # Try to control (will fail)
+                is_blocked = toy.toggle_block()  # Block all toy commands
                 toy.intensity1(10, callback=lambda success: print(success))  # False
-
-                # Unblock
-                is_blocked = toy.toggle_block()
+                is_blocked = toy.toggle_block()  # Unblock
         """
-        self._log.info(f"ToyController toggle block: {self.toy_id}")
-        if not self._is_blocked:
-            self._is_blocked = True
-            self.stop()
-            self._pattern_handler.set_paused(
-                False
-            )  # I don't want to pause and block at the same time'
-            return True
-        else:
-            self._is_blocked = False
-            return False
+
+        def toggle(toy: _ToyController) -> bool:
+            return toy.apply_blocked(not toy.is_blocked)
+
+        blocked = self._apply(toggle)
+        if blocked:
+            self._send_stop("toggle_block")
+        return blocked
 
     def set_paused(self, pause: bool) -> None:
         """
         Set the pattern playback pause state.
 
         When paused:
+
         - If a pattern is active, it stops advancing.
         - Toy intensities are set to zero, but manual commands can override this.
         - Block state is cleared if active (toy cannot be paused and blocked at the same time)
@@ -247,36 +241,37 @@ class ToyController(BaseToyController):
         Args:
             pause: If true will be paused, if false will be unpaused.
         """
-        if pause == self._pattern_handler.is_paused:
-            return
-        self._log.info(f"ToyController set paused: {self.toy_id} to {pause}")
-        self._pattern_handler.set_paused(pause)
-        if pause:
-            self.stop()
-            self._is_blocked = False  # I don't want to pause and block at the same time
+
+        def change(toy: _ToyController) -> bool:
+            if toy.is_paused == pause:
+                return False
+            return toy.apply_paused(pause)
+
+        if self._apply(change):
+            self._send_stop("set_paused")
 
     def set_blocked(self, block: bool) -> None:
         """
         Set the block state.
 
         When blocked:
-            - All intensity commands are rejected (return False via callback)
-            - Toy intensities are forced to zero
-            - Pattern continues advancing but doesn't control the toy
-            - Pause state is cleared if active (toy cannot be paused and blocked at the same time)
+
+        - All intensity commands are rejected (return False via callback)
+        - Toy intensities are forced to zero
+        - Pattern continues advancing but doesn't control the toy
+        - Pause state is cleared if active (toy cannot be paused and blocked at the same time)
 
         Args:
             block: If true will be blocked, if false will be unblocked.
         """
-        if block == self._is_blocked:
-            return
-        self._log.info(f"ToyController set blocked: {self.toy_id} to {block}")
-        self._is_blocked = block
-        if block:
-            self.stop()
-            self._pattern_handler.set_paused(
-                False
-            )  # I don't want to pause and block at the same time
+
+        def change(toy: _ToyController) -> bool:
+            if toy.is_blocked == block:
+                return False
+            return toy.apply_blocked(block)
+
+        if self._apply(change):
+            self._send_stop("set_blocked")
 
     def set_pattern(
         self,
@@ -288,10 +283,13 @@ class ToyController(BaseToyController):
         Set a time-based pattern for automatic toy control.
 
         Patterns are lists of segments. Each segment is a tuple of (duration_ms, intensity1, intensity2) where:
+
         - duration_ms: How long this segment lasts (milliseconds)
         - intensity1: Primary capability intensity (0-max)
         - intensity2: Secondary capability intensity (0-max)
-        The maximum possible intensity can be looked up via :meth:`intensity_max_value`. An empty list clears the pattern.
+
+        The maximum possible intensity can be looked up via :attr:`max_intensity`. An empty list clears the pattern and
+        stops the toy.
 
         Args:
             pattern: List of (duration_ms, intensity1, intensity2) tuples
@@ -312,25 +310,54 @@ class ToyController(BaseToyController):
 
         Note:
             Manual intensity commands automatically pause pattern playback to avoid conflicts.
-            Call ``toggle_pause()`` to resume the pattern.
+            Call ``set_paused(False)`` to resume the pattern.
         """
-        self._log.info(f"ToyController sets pattern for {self.toy_id}: {pattern}")
-        self._pattern_handler.set_pattern(pattern, wraparound, reset_time)
-        if not pattern:  # ensure that intensities are 0 if pattern is cleared
-            self.stop()
+        if self._apply(lambda toy: toy.apply_pattern(pattern, wraparound, reset_time)):
+            self._send_stop("set_pattern")
+
+    def set_intensity1_limit(self, level: int | None) -> None:
+        """
+        Set the upper limit for the primary intensity. Every intensity1 command and pattern value is clamped to it.
+
+        A toy already running above the new limit is brought down to it right away.
+
+        Args:
+            level: Maximum allowed intensity1 value (0 – max_intensity). Clamped to that range. None removes the limit.
+        """
+        if self._apply(lambda toy: toy.apply_intensity1_limit(level)):
+            self._send(
+                "set_intensity1_limit", lambda toy: toy.enforce_intensity1_limit()
+            )
+
+    def set_intensity2_limit(self, level: int | None) -> None:
+        """
+        Set the upper limit for the secondary intensity. Behaves like :meth:`set_intensity1_limit`.
+
+        Args:
+            level: Maximum allowed intensity2 value (0 – max_intensity). Clamped to that range. None removes the limit.
+        """
+        if self._apply(lambda toy: toy.apply_intensity2_limit(level)):
+            self._send(
+                "set_intensity2_limit", lambda toy: toy.enforce_intensity2_limit()
+            )
+
+    # ------------------------------------------------------------------------------------------------------------------
+    # Commands
+    # ------------------------------------------------------------------------------------------------------------------
 
     def intensity1(
-        self, level: int, callback: Optional[Callable[[bool], None]] = None
+        self, level: int, callback: Optional[Callable[[bool | None], Any]] = None
     ) -> None:
         """
         Set the intensity of the primary capability.
 
-        Commands are queued and executed asynchronously by ToyHub (every 50ms).
         If a pattern is active and not paused, calling this method pauses the pattern to avoid conflicts.
 
         Args:
-            level: Intensity level. The Valid range is [0, self.max_intensity]. Values outside the range are clamped.
-            callback: Optional callback is invoked when the command completes. Receives True if successful, False if blocked or failed.
+            level: Intensity level. The valid range is [0, self.max_intensity]. Values outside the range are clamped.
+                The intensity1 limit applies as well.
+            callback: Optional callback, invoked when the command completes. Receives True if the toy took it, False if
+                the toy is blocked (right away), None if it could not be delivered.
 
         Example::
 
@@ -340,108 +367,79 @@ class ToyController(BaseToyController):
                     print("Succeeded:", success)
 
                 toy.intensity1(toy.max_intensity, callback=on_complete)  # With callback
-
-        Note:
-            If the toy is blocked, the callback receives False immediately and no command is sent.
-            If disconnected, the command is not sent and the callback receives None right away.
         """
-
-        async def _execute() -> Any:
-            return await self._toy.intensity1(level)
-
-        if self._is_blocked:
-            if callback:
-                callback(False)
-            return
-
-        # avoid the pattern overriding the command
-        self._pattern_handler.set_paused(True)
-        self._schedule_command(_execute, callback)
+        self._manual_intensity("intensity1", level, callback)
 
     def intensity2(
-        self, level: int, callback: Optional[Callable[[bool], None]] = None
+        self, level: int, callback: Optional[Callable[[bool | None], Any]] = None
     ) -> None:
         """
         Set the intensity of the secondary capability.
 
-        Behavior is identical to :meth:`intensity1` but controls the secondary capability (e.g., rotation, air pump)
-        Safe to call on toys without a secondary capability (will return true but do nothing).
+        Behavior is identical to :meth:`intensity1` but controls the secondary capability (e.g., rotation, air pump).
+        Safe to call on toys without a secondary capability: nothing happens, and the callback receives False.
 
         Args:
             level: Intensity level. The valid range is [0, self.max_intensity]. Values outside the range are clamped.
-            callback: Optional callback is invoked when the command completes. Receives True if successful, False if blocked or failed.
+            callback: Optional callback, see :meth:`intensity1`.
 
         Example::
 
                 toy.intensity2(toy.max_intensity // 2)  # Set secondary capability intensity to medium
         """
+        self._manual_intensity("intensity2", level, callback)
 
-        async def _execute() -> Any:
-            return await self._toy.intensity2(level)
-
-        if self._is_blocked:
-            if callback:
-                callback(False)
-            return
-
-        # avoid the pattern overriding the command
-        self._pattern_handler.set_paused(True)
-        self._schedule_command(_execute, callback)
-
-    def change_rotation_direction(
-        self, callback: Optional[Callable[[bool], None]] = None
-    ) -> None:
-        """
-        Change rotation direction (if supported).
-
-        This method toggles the rotation direction for toys with rotation capability.
-        Safe to call on all toys. Does nothing and returns True via callback if rotation is not supported.
-
-        Args:
-            callback: Optional callback invoked when command completes. Receives True if successful or not supported, False if failed.
-
-        Example::
-
-                toy.change_rotation_direction(callback=lambda ok: print("Direction changed" if ok else "Failed"))
-
-        Note:
-            You can use property:`change_rotation_direction_available` to check support before calling.
-        """
-
-        async def _execute() -> Any:
-            return await self._toy.change_rotation_direction()
-
-        self._schedule_command(_execute, callback)
-
-    def stop(self, callback: Optional[Callable[[bool], None]] = None) -> None:
+    def stop(self, callback: Optional[Callable[[bool | None], Any]] = None) -> None:
         """
         Stop all toy actions (set all intensities to zero).
 
         If a pattern is active and not paused, this method pauses the pattern.
 
         Args:
-            callback: Optional callback invoked when command completes. Receives True if successful, False otherwise.
+            callback: Optional callback invoked when the command completes. Receives True if the toy stopped, None if
+                the stop could not be delivered.
 
         Example::
 
                 toy.stop()
-                # With confirmation
                 toy.stop(callback=lambda ok: print("Stopped" if ok else "Failed"))
         """
+        self._apply(lambda toy: toy.apply_stop())
+        self._send_stop("stop", callback)
 
-        async def _execute() -> Any:
-            return await self._toy.stop()
-
-        # avoid the pattern overriding the command
-        self._pattern_handler.set_paused(True)
-        self._schedule_command(_execute, callback)
-
-    def get_battery_level(self, callback: Callable[[Optional[int]], None]) -> None:
+    def change_rotation_direction(
+        self, callback: Optional[Callable[[bool | None], Any]] = None
+    ) -> None:
         """
-        Retrieve the toy's battery level.
+        Change rotation direction (if supported).
+
+        This method toggles the rotation direction for toys with rotation capability.
+        Safe to call on all toys: nothing happens if rotation is not supported.
 
         Args:
-            callback: Callback invoked with battery level (0-100%) or None if unavailable. Unlike most methods, here providing a callback is required (not optional).
+            callback: Optional callback invoked when the command completes. Receives True if the direction changed,
+                False if the toy does not support rotation, None if the command could not be delivered.
+
+        Example::
+
+                toy.change_rotation_direction(callback=lambda ok: print("Direction changed" if ok else "Failed"))
+
+        Note:
+            You can use :attr:`change_rotation_direction_available` to check support before calling.
+        """
+        self._command(
+            "change_rotation_direction",
+            lambda: self._core.change_rotation_direction(self._toy_id),
+            callback,
+        )
+
+    def get_battery_level(self, callback: Callable[[Optional[int]], Any]) -> None:
+        """
+        Ask the toy for its battery level.
+
+        Args:
+            callback: Callback invoked with the battery level (0-100%), or None if the toy has no battery or the query
+                could not be delivered. Unlike most methods, here providing a callback is required (not optional).
 
         Example::
 
@@ -453,41 +451,50 @@ class ToyController(BaseToyController):
                 toy.get_battery_level(show_battery)
 
         Note:
-            You can provide a callback to ToyHub as well. If you do so, ToyHub queries battery levels regularly and
-            invokes the hub's battery callback. This method serves as an alternative to querying the battery level
+            ToyHub also reports the battery levels of all toys to its battery callback whenever one changes.
         """
+        self._command(
+            "get_battery_level",
+            lambda: self._core.fetch_battery(self._toy_id),
+            callback,
+        )
 
-        async def _execute() -> Any:
-            return await self._toy.get_battery_level()
-
-        self._schedule_command(_execute, callback)
-
-    @abstractmethod
-    def get_information(self, callback: Callable[[dict[str, str]], None]) -> None:
+    def get_information(self, callback: Callable[[dict[str, Any] | None], Any]) -> None:
         """
         Gather detailed information about the toy.
 
-        The Information gathered depends on the toy, but might include the following dictionary keys:
-            - 'Battery Level': Battery percentage (e.g., "75%")
-            - 'Status': Status code(e.g., "2" for normal)
-            - 'Batch number': Manufacturing batch (e.g., "241015")
-            - 'Bluetooth Name': BLE device name (e.g., "LVS-Z36D")
-            - 'Device type': Device info (e.g., "C:11:ADDRESS")
+        The dictionary always contains:
+
+        - ``toy_id`` (str), ``name`` (str, e.g., the Bluetooth name), ``model_name`` (str), ``brand`` (str)
+        - ``intensity_names`` (list of two str; the second is empty for single-capability toys)
+        - ``supports_rotation`` (bool), ``max_intensity`` (int)
+        - ``recommended_min_interval`` (int): recommended minimum interval between intensity commands, in ms
+        - ``battery`` (int or None): battery level (0-100), None if the toy has no battery
+
+        Depending on the brand, there is more. Lovense toys add ``status`` (e.g., "2" for normal), ``batch_number``
+        (e.g., "241015") and ``device_type`` (e.g., "C:11:ADDRESS").
 
         Args:
-            callback: Callback invoked with a dictionary containing toy information. Keys describe the Information type, values contain the information.
+            callback: Callback invoked with the dictionary, or None if the toy could not be queried.
 
         Example::
 
                 def show_info(info):
-                    print("Toy Information:")
                     for key, value in info.items():
-                        print(f"{key}:{value}")
+                        print(f"{key}: {value}")
                 toy.get_information(show_info)
         """
-        raise NotImplementedError
 
-    def direct_command(self, command: str, callback: Callable[[str], None]) -> None:
+        async def gather() -> dict[str, Any]:
+            info = await self._core.get_info(self._toy_id, full=True)
+            info["battery"] = await self._core.fetch_battery(self._toy_id)
+            return info
+
+        self._command("get_information", gather, callback)
+
+    def direct_command(
+        self, command: str, callback: Callable[[str | None], Any]
+    ) -> None:
         """
         Send a raw command directly to the toy.
 
@@ -495,7 +502,8 @@ class ToyController(BaseToyController):
 
         Args:
             command: Command string in the toy's protocol format (e.g., "DeviceType").
-            callback: Callback invoked with the toy's response string. This callback is required (not optional).
+            callback: Callback invoked with the toy's response string, or None if the command could not be delivered.
+                This callback is required (not optional).
 
         Example::
 
@@ -504,316 +512,128 @@ class ToyController(BaseToyController):
                     # Example: "C:11:0082059AD3BD"
                 toy.direct_command("DeviceType", callback=handle_response)
         """
+        self._command(
+            "direct_command",
+            lambda: self._core.direct_command(self._toy_id, command),
+            callback,
+        )
 
-        async def _execute() -> Any:
-            return await self._toy.direct_command(command)
+    def set_model_name(
+        self,
+        model_name: str,
+        callback: Optional[Callable[[Optional[str]], Any]] = None,
+    ) -> None:
+        """
+        Set the model name of the toy.
 
-        self._schedule_command(_execute, callback)
+        The model name determines which commands are available and how they're interpreted. Validating the model
+        involves sending commands to the toy, so the result is delivered via the optional callback rather than raised.
+        On success, the ToyCache remembers the new model for this toy.
+
+        Args:
+            model_name: New model name. Must be a valid model for this toy's brand.
+            callback: Optional callback is invoked when the command completes. Receives the toy's new model name on
+                success, or None if the update failed (e.g., an invalid model name).
+
+        Example::
+
+                # Correct a model that was set incorrectly while connecting
+                toy.set_model_name("Nora", callback=lambda name: print(f"Model is now {name}"))
+
+        Note:
+            For a blocking call that returns the error, use :meth:`ToyHub.update_model_name` instead.
+        """
+
+        async def change() -> str:
+            await self._core.set_model(self._toy_id, model_name)
+            return self.model_name
+
+        self._command("set_model_name", change, callback)
 
     # ------------------------------------------------------------------------------------------------------------------
     # Private Methods
     # ------------------------------------------------------------------------------------------------------------------
 
-    @property
-    def toy(self) -> Toy:
+    def _toy(self) -> _ToyController:
         """
-        Get the underlying low-level toy object (internal use only)
+        The toy's controller in the core, for reading its state.
 
-        Returns:
-            Toy: The low-level toy object.
-
-        Warning:
-            This is an internal method used by ToyHub and not meant to be used by you.
+        Once the toy is no longer part of the hub (disconnected, lost, powered off), this stays the last controller it
+        had, so reading its state keeps working.
         """
-        return self._toy
+        current = self._core.get_controller(self._toy_id)
+        if current is not None:
+            self._last_known = current
+        return self._last_known
 
-    async def internal_set_model_name(self, model_name: str) -> str:
+    def _apply(self, transition: Callable[[_ToyController], T]) -> T:
         """
-        Set the model name directly, bypassing the command queue (internal use only).
+        Apply a state transition right away, on the hub's event loop (see :meth:`ToyHub._on_loop`).
 
-        Used by :meth:`ToyHub.update_model_name`, which surfaces validation errors to its caller instead of delivering
-        them to a callback. Resets the playback tracking just like the queued :meth:`set_model_name` does.
-
-        Args:
-            model_name: New model name. Must be a valid model for this toy's brand.
-
-        Raises:
-            InvalidModelError: If model_name is not valid for this toy brand.
-            BadModelError: If the model_name is valid, but commands still fail.
-            ConnectionError: The toy could not be stopped on its old commands, so the model was left unchanged.
-
-        Returns:
-            The toy's model name after the update.
-
-        Warning:
-            This is an internal method used by ToyHub and not meant to be used by you.
+        A toy no longer part of the hub only changes the state this controller reports.
         """
-        await self._toy.set_model_name(model_name)
-        self._invalidate_last_values()
-        return self._toy.model_name
 
-    async def internal_stop_after_reconnect(self) -> None:
-        """
-        Stop the toy and pause its pattern once its connection is back, bypassing the command queue (internal use only).
-
-        Whatever the toy was last told no longer holds after a connection loss, and after up to a minute away nothing
-        should start it again on its own: the pattern is paused, and a command still queued from just before the
-        connection was lost is dropped (its callback receives None, as for a failed command) instead of being sent up to
-        a minute late. Commands issued during the outage were already rejected (see :meth:`_schedule_command`). Unlike
-        :meth:`set_paused`, this leaves the block state alone.
-
-        Raises:
-            ConnectionError: The stop could not be delivered. ToyHub then retries the reconnect.
-
-        Warning:
-            This is an internal method used by ToyHub and not meant to be used by you.
-        """
-        self._pattern_handler.set_paused(True)
-        self.internal_drop_queued_commands()
-        await self._toy.strict_stop()
-        # The toy is at zero now, so a pattern resumed later has to re-send its values.
-        self._invalidate_last_values()
-
-    async def process_communication(self) -> None:
-        """
-        Process queued commands and pattern playback (internal use only)
-
-        This method is called periodically by the ToyHub to execute queued commands and maintain pattern playback.
-
-        Warning:
-            This is an internal method used by ToyHub and not meant to be used by you.
-        """
-        if not self._toy or not self._connected:
-            return
-
-        # Process queued commands first
-        await self._process_command_queue()
-
-        # Then handle pattern playback (shared engine on BaseToyController)
-        await self._run_pattern_playback()
-
-    async def _send_stop(self) -> None:
-        """Playback primitive: stop via the non-strict toy method (errors swallowed to a bool)."""
-        await self._toy.stop()
-
-    async def _send_intensity1(self, level: int) -> None:
-        """Playback primitive: set the primary capability via the non-strict toy method."""
-        await self._toy.intensity1(level)
-
-    async def _send_intensity2(self, level: int) -> None:
-        """Playback primitive: set the secondary capability via the non-strict toy method."""
-        await self._toy.intensity2(level)
-
-    async def _process_command_queue(self) -> None:
-        """
-        Execute all queued commands in order.
-
-        Commands are executed sequentially, with callbacks invoked after each command completes.
-        """
-        while self._command_queue:
-            command, callback = self._command_queue.popleft()
+        def apply() -> T:
             try:
-                result = await command()
-                if callback:
-                    callback(result)
-            except Exception as e:
-                self._log.error(
-                    f"Error executing command {command}: {e} with details {traceback.format_exc()}"
-                )
-                if callback:
-                    callback(None)
+                return self._core.apply_state(self._toy_id, transition)
+            except UnknownToyError:
+                return transition(self._last_known)
 
-    def internal_drop_queued_commands(self) -> None:
-        """
-        Discard every queued command without sending it, reporting each one to its callback as failed (None) (internal use only).
+        return self._hub._on_loop(apply)
 
-        Used when a reconnect ends, either way: commands from before it are never sent. A callback that raises is
-        logged and skipped, so it cannot keep the others from being told, nor fail the reconnect this is part of.
+    def _manual_intensity(
+        self, command: str, level: int, callback: Optional[Callable[[Any], Any]]
+    ) -> None:
+        """Accept a manual intensity command (pausing the pattern), then send it. See :meth:`intensity1`."""
+        level = max(0, min(level, self.max_intensity))
 
-        Warning:
-            This is an internal method used by ToyHub and not meant to be used by you.
-        """
-        dropped = 0
-        while self._command_queue:
-            _, callback = self._command_queue.popleft()
-            dropped += 1
-            if callback:
-                try:
-                    callback(None)
-                except Exception:
-                    self._log.exception(
-                        f"Callback of a dropped command for {self.toy_id} raised."
-                    )
-        if dropped:
-            self._log.info(
-                f"Dropped {dropped} command(s) still queued for {self.toy_id} when its connection was lost."
-            )
+        def accept(toy: _ToyController) -> bool | None:
+            if not self._core.is_connected(self._toy_id):
+                return None  # nothing is sent, and nothing changes
+            return toy.accept_manual_intensity()
 
-    def _schedule_command(
+        accepted = self._apply(accept)
+        if not accepted:
+            self._hub._run_callback(callback, accepted, command)
+            return
+        if command == "intensity1":
+            self._send(command, lambda toy: toy.send_intensity1(level), callback)
+        else:
+            self._send(command, lambda toy: toy.send_intensity2(level), callback)
+
+    def _send_stop(
+        self, command: str, callback: Optional[Callable[[Any], Any]] = None
+    ) -> None:
+        """Send the stop a state change requires. See :meth:`_send`."""
+        self._send(command, lambda toy: toy.stop_output(), callback)
+
+    def _send(
         self,
-        command: Callable[[], Any],
-        callback: Optional[Callable[[Any], None]] = None,
+        command: str,
+        send: Callable[[_ToyController], Awaitable[Any]],
+        callback: Optional[Callable[[Any], Any]] = None,
+    ) -> None:
+        """Send what a state change requires, in order with every other command to the toy. See :meth:`_command`."""
+        self._command(
+            command, lambda: self._core.send(self._toy_id, command, send), callback
+        )
+
+    def _command(
+        self,
+        command: str,
+        run: Callable[[], Awaitable[Any]],
+        callback: Optional[Callable[[Any], Any]],
     ) -> None:
         """
-        Add a command to the execution queue, or reject it right away while the toy is not connected.
+        Run a command in the background and report its result to *callback* (None if it could not be delivered).
 
-        A command issued while disconnected would never be sent: a reconnect drops whatever was queued in the meantime,
-        and a toy that was given up, powered off or disconnected does not come back. So its callback is told at once
-        (None, as for a failed command) instead of after up to a minute, or never. Like the rejection of a blocked
-        intensity command, the callback runs synchronously in the caller's thread.
-
-        Args:
-            command: Async callable that executes the command.
-            callback: Optional callback to invoke with the result.
+        A toy that is not connected is not sent anything: the callback receives None right away, in the caller's
+        thread. Commands start in the order they are called, and the core sends the ones for one toy in that order.
         """
-        if not self._connected:
-            self._log.info(f"Rejected a command for {self.toy_id}: not connected.")
-            if callback:
-                callback(None)
+        if not self.is_connected:
+            self._hub._log.info(
+                f"Did not send '{command}' to {self._toy_id}: not connected."
+            )
+            self._hub._run_callback(callback, None, command)
             return
-        self._command_queue.append((command, callback))
-
-
-class LovenseController(ToyController):
-    """
-    High-level controller for Lovense toys.
-
-    Extends the low-level Lovense class with synchronous methods, command queueing, and pattern playback capabilities.
-
-    Args:
-        toy: Low-level Lovense instance.
-        logger_name: Name of the logger to use. Use empty string for root logger.
-
-    Example::
-
-            # Connection (see :class ToyHub)
-            controllers = hub.connect_toys_blocking(discovered_toys)
-            toy = controllers[0]  # LovenseController instance
-
-            # Manual control
-            toy.intensity1(15)  # Primary capability
-            toy.intensity2(10)  # Secondary capability
-
-            # Pattern control
-            pattern = [
-                (1000, 10, 5),
-                (500, 0, 0),
-                (1000, 20, 10),
-            ]
-            toy.set_pattern(pattern, wraparound=True)
-
-            # Pause/resume
-            toy.toggle_pause()
-
-            # Get battery level
-            toy.get_battery_level(lambda lvl: print(f"Battery: {lvl}%"))
-
-            # Advanced features
-            if toy.change_rotate_direction_available():
-                toy.change_rotate_direction()
-
-    Note:
-        This class should not be instantiated directly. Use ToyHub's connection methods to get controller instances.
-    """
-
-    def __init__(self, toy: LovenseToy, logger_name: str):
-        self._toy: LovenseToy = toy
-        super().__init__(toy, logger_name)
-
-    def get_information(self, callback: Callable[[dict[str, str]], None]) -> None:
-        """
-        Gather detailed information about the toy.
-
-        The following information is gathered (Key, Value pairs of the dictionary):
-            - 'Battery Level': Battery percentage (e.g., "75%")
-            - 'Status': Status code ("2" for normal)
-            - 'Batch number': Manufacturing batch (e.g., "241015")
-            - 'Bluetooth Name': BLE device name (e.g., "LVS-Z36D")
-            - 'Device type': Device info (e.g., "C:11:ADDRESS")
-
-        Args:
-            callback: Callback invoked with a dictionary containing toy information.
-                Keys describe the Information type, values contain the information.
-
-        Example::
-
-                def show_info(info):
-                    print("Toy Information:")
-                    for key, value in info.items():
-                        print(f"{key}:{value}")
-                toy.get_information(show_info)
-        """
-
-        async def _execute() -> Any:
-            info = dict()
-            battery = await self._toy.get_battery_level()
-            status = await self._toy.get_status()
-            batch = await self._toy.get_batch_number()
-            device_type = await self._toy.get_device_type()
-            bluetooth_name = self._toy.name
-
-            info["Battery level"] = f"{battery}%" if battery is not None else "Unknown"
-            for name, value in [
-                ("Status", status),
-                ("Batch number", batch),
-                ("Bluetooth Name", bluetooth_name),
-                ("Device type", device_type),
-            ]:
-                info[name] = str(value) if value is not None else "Unknown"
-            return info
-
-        self._schedule_command(_execute, callback)
-
-
-class MockEstimController(ToyController):
-    """
-    High-level controller for the fictional MockEstimToys brand.
-
-    Wraps a :class:`MockEstimToy` with the same synchronous, queued, pattern-capable interface as every other
-    controller. Used to explore the High-Level API without real hardware.
-
-    Args:
-        toy: Low-level ``MockEstimToy`` instance.
-        logger_name: Name of the logger to use. Use empty string for root logger.
-
-    Note:
-        This class should not be instantiated directly. Use ToyHub's connection methods to get controller instances.
-    """
-
-    def __init__(self, toy: MockEstimToy, logger_name: str):
-        self._toy: MockEstimToy = toy
-        super().__init__(toy, logger_name)
-
-    def get_information(self, callback: Callable[[dict[str, str]], None]) -> None:
-        """
-        Gather information about the toy.
-
-        The following information is gathered (Key, Value pairs of the dictionary):
-            - 'Battery level': Battery percentage (e.g., "77%")
-            - 'Name': Human-readable device name (e.g., "Thunder1")
-            - 'Brand': Brand name ("MockEstimToys")
-            - 'Model': Model name (e.g., "Thunder")
-
-        Args:
-            callback: Callback invoked with a dictionary containing toy information.
-                Keys describe the Information type, values contain the information.
-        """
-
-        async def _execute() -> Any:
-            battery = await self._toy.get_battery_level()
-            return {
-                "Battery level": f"{battery}%" if battery is not None else "Unknown",
-                "Name": self._toy.name,
-                "Brand": self._toy.brand,
-                "Model": self._toy.model_name,
-            }
-
-        self._schedule_command(_execute, callback)
-
-
-#: Maps a toy's brand (``toy.brand``) to its high-level controller class.
-#: Register a brand's controller here when adding support for a new brand.
-CONTROLLER_BY_BRAND: dict[str, type[ToyController]] = {
-    "Lovense": LovenseController,
-    "MockEstimToys": MockEstimController,
-}
+        self._hub._submit(run, callback, command)

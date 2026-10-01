@@ -1,5 +1,6 @@
 """
-Characterization tests for the WebSocket :class:`_ToyHub` driven directly (no websocket layer).
+Characterization tests for the core :class:`_ToyHub`, driven directly (without the WebSocket server or the High-Level
+wrapper built on it).
 
 ``_ToyHub(mock_toys=True)`` gives a fully in-memory backend (the fictional MockEstimToys brand), so the command
 surface can be exercised deterministically. Failure/reconnect paths that the mock backend never hits on its own are
@@ -331,6 +332,8 @@ async def test_apply_discovery_error_delivers_discovery_error(bare_hub):
     delivered = []
     await bare_hub._apply_discovery(RuntimeError("scan died"), delivered.append)
     assert len(delivered) == 1 and isinstance(delivered[0], DiscoveryError)
+    # A readable traceback, not the repr of a list of lines.
+    assert delivered[0].tb.startswith("RuntimeError: scan died")
 
 
 async def test_set_toy_status_only_fires_on_change(hub):
@@ -666,10 +669,9 @@ async def test_apply_state_does_not_wait_for_a_command_in_flight(hub):
     controller._toy.strict_stop = AsyncMock(return_value=True)
 
     async with cmd_lock:  # a command is in flight on the toy
-        needs_stop = await asyncio.wait_for(
-            hub.apply_state("Thunder_ID", lambda toy: toy.apply_paused(True)), 1
-        )
-        assert needs_stop is True and controller.is_paused is True  # visible at once
+        # Synchronous: it cannot wait for the lock, so it applies at once.
+        needs_stop = hub.apply_state("Thunder_ID", lambda toy: toy.apply_paused(True))
+        assert needs_stop is True and controller.is_paused is True
 
         sending = asyncio.create_task(
             hub.send("Thunder_ID", "stop", lambda toy: toy.stop_output())
@@ -685,7 +687,7 @@ async def test_apply_state_does_not_wait_for_a_command_in_flight(hub):
 async def test_apply_state_works_while_the_toy_reconnects_and_send_is_refused(hub):
     controller = await _reconnecting_thunder(hub)
 
-    assert await hub.apply_state("Thunder_ID", lambda toy: toy.apply_blocked(True))
+    assert hub.apply_state("Thunder_ID", lambda toy: toy.apply_blocked(True))
     assert controller.is_blocked is True
     with pytest.raises(ToyNotConnectedError):
         await hub.send("Thunder_ID", "stop", lambda toy: toy.stop_output())
@@ -703,3 +705,29 @@ async def test_send_retries_and_reconnects_like_every_command(
 
     assert controller._toy.strict_stop.await_count >= 2  # retried once
     assert hub._toy_status["Thunder_ID"] == ToyStatus.RECONNECTING
+
+
+async def test_apply_state_reports_the_new_state(hub):
+    states = []
+    hub._on_toy_state_change = states.append
+    await _add_thunder(hub)
+
+    hub.apply_state("Thunder_ID", lambda toy: toy.apply_blocked(True))
+
+    assert await _wait_until(lambda: states and states[-1]["is_blocked"] is True)
+    with pytest.raises(UnknownToyError):
+        hub.apply_state("ghost", lambda toy: toy.apply_blocked(True))
+
+
+async def test_a_manual_intensity_is_not_undone_by_the_pattern_it_pauses(hub):
+    """Regression: the next playback tick used to send the stop for the paused pattern, dropping the manual level."""
+    controller = await _add_thunder(hub)
+    await hub.set_pattern("Thunder_ID", [(60_000, 10, 0)], True, True)
+    assert await _wait_until(lambda: controller.current_intensities == (10, 0))
+
+    await hub.intensity1("Thunder_ID", 50)
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 4)  # a few playback ticks
+
+    assert controller.current_intensities == (50, 0)
+    await hub.set_paused("Thunder_ID", False)  # the pattern takes over again
+    assert await _wait_until(lambda: controller.current_intensities == (10, 0))

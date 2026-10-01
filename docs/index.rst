@@ -24,8 +24,8 @@ There are three different APIs:
 The 'High Level' API uses a ToyHub to scan for toys, establish connections, and disconnecting toys.
 The ToyHub also handles the synchronization of async operations (Either blocking code execution until the operation is
 complete or executing the operation in a different thread and delivering the results via callbacks).
-For each connected Toy the ToyHub produces and hands over an Implementation of the abstract ToyController (currently
-just LovenseController) to control the toy.
+For each connected Toy the ToyHub hands over a ToyController to control the toy, whatever its brand. Under the hood the
+ToyHub runs the same engine as the WebSocket server, so both APIs behave the same way.
 
 The 'Low Level' API provides BLEConnectionBuilder to scan and connect to toys. BLEConnectionBuilder produces and hands over an Implementation of
 the abstract Toy (currently just LovenseToy) class to control the toy. Both classes are mostly async.
