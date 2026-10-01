@@ -8,6 +8,7 @@ class PatternHandler:
     Helper class responsible for toy pattern playback logic.
 
     Manages:
+
     - Pattern list and wraparound behavior
     - Pause state and timing (elapsed time freezes during pause)
     - Pattern version tracking
@@ -22,7 +23,6 @@ class PatternHandler:
         self._is_paused = False
         self._pattern_elapsed_time: float = 0.0
         self._segment_start_time: float | None = None
-        self._pause_segment_elapsed: float = 0.0
         self._pattern_version = 0
 
     @property
@@ -61,7 +61,6 @@ class PatternHandler:
         if reset_time:
             # Reset elapsed time to zero, but don't start the segment timer if paused
             self._pattern_elapsed_time = 0.0
-            self._pause_segment_elapsed = 0.0
             if not self._is_paused and self.has_active_pattern:
                 self._segment_start_time = time() * 1000
             else:
@@ -95,7 +94,6 @@ class PatternHandler:
                 current_time = time() * 1000
                 segment_elapsed = current_time - self._segment_start_time
                 self._pattern_elapsed_time += segment_elapsed
-                self._pause_segment_elapsed = segment_elapsed
                 self._segment_start_time = None
             # If no pattern, there is nothing to freeze, just store the paused state
         else:
@@ -167,6 +165,7 @@ class PatternHandler:
         Gets the complete pattern state for visualization.
 
         Pattern state consists of:
+
         - pattern: List of tuples (duration_ms, intensity1, intensity2) defining the pattern segments.
         - wraparound: Whether the pattern repeats from the beginning after completing the last segment.
         - is_paused: Whether the pattern is currently paused.
