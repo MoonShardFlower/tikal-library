@@ -3,6 +3,7 @@ WebSocket JSON-based server that exposes _ToyHub to connected clients.
 Offers an alternative to the Low-Level / High-Level API defined by the tikal library.
 Here information is exchanged via a websocket. Significantly harder to use than the Low-Level / High-Level APIs but
 offers some advantages:
+
 - Process separation
 - Service can be used in applications written in other programming languages (assuming websockets are supported)
 - Multiple clients can modify the same state (experimental, untested)
@@ -128,8 +129,7 @@ def main() -> None:
 
     parser.add_argument(
         "--toy-cache-path",
-        type=Path,
-        default=Path("./data/toy_cache.json"),
+        default="./data/toy_cache.json",
         help="Path to toy cache file (default: ./data/toy_cache.json). If the string 'None' is passed uses in-memory cache only.",
     )
     parser.add_argument(
@@ -164,10 +164,11 @@ def main() -> None:
     if args.log_path != "None":
         log_path = Path(args.log_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(Path(args.log_path), "w", "utf-8")
-        file_handler.setLevel(args.log_level)
+        log_level = args.log_level.upper()
+        file_handler = logging.FileHandler(log_path, "w", "utf-8")
+        file_handler.setLevel(log_level)
         file_handler.setFormatter(formatting)
-        logger.setLevel(args.log_level.upper())
+        logger.setLevel(log_level)
         logger.addHandler(file_handler)
 
     logger.info("Starting ToyServer")
