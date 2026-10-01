@@ -324,10 +324,7 @@ class ToyController:
         Args:
             level: Maximum allowed intensity1 value (0 – max_intensity). Clamped to that range. None removes the limit.
         """
-        if self._apply(lambda toy: toy.apply_intensity1_limit(level)):
-            self._send(
-                "set_intensity1_limit", lambda toy: toy.enforce_intensity1_limit()
-            )
+        self._set_limit(0, level)
 
     def set_intensity2_limit(self, level: int | None) -> None:
         """
@@ -336,10 +333,7 @@ class ToyController:
         Args:
             level: Maximum allowed intensity2 value (0 – max_intensity). Clamped to that range. None removes the limit.
         """
-        if self._apply(lambda toy: toy.apply_intensity2_limit(level)):
-            self._send(
-                "set_intensity2_limit", lambda toy: toy.enforce_intensity2_limit()
-            )
+        self._set_limit(1, level)
 
     # ------------------------------------------------------------------------------------------------------------------
     # Commands
@@ -368,7 +362,7 @@ class ToyController:
 
                 toy.intensity1(toy.max_intensity, callback=on_complete)  # With callback
         """
-        self._manual_intensity("intensity1", level, callback)
+        self._manual_intensity(0, level, callback)
 
     def intensity2(
         self, level: int, callback: Optional[Callable[[bool | None], Any]] = None
@@ -387,7 +381,7 @@ class ToyController:
 
                 toy.intensity2(toy.max_intensity // 2)  # Set secondary capability intensity to medium
         """
-        self._manual_intensity("intensity2", level, callback)
+        self._manual_intensity(1, level, callback)
 
     def stop(self, callback: Optional[Callable[[bool | None], Any]] = None) -> None:
         """
@@ -582,9 +576,10 @@ class ToyController:
         return self._hub._on_loop(apply)
 
     def _manual_intensity(
-        self, command: str, level: int, callback: Optional[Callable[[Any], Any]]
+        self, channel: int, level: int, callback: Optional[Callable[[Any], Any]]
     ) -> None:
         """Accept a manual intensity command (pausing the pattern), then send it. See :meth:`intensity1`."""
+        command = f"intensity{channel + 1}"
         level = max(0, min(level, self.max_intensity))
 
         def accept(toy: _ToyController) -> bool | None:
@@ -596,10 +591,15 @@ class ToyController:
         if not accepted:
             self._hub._run_callback(callback, accepted, command)
             return
-        if command == "intensity1":
-            self._send(command, lambda toy: toy.send_intensity1(level), callback)
-        else:
-            self._send(command, lambda toy: toy.send_intensity2(level), callback)
+        self._send(command, lambda toy: toy.send_intensity(channel, level), callback)
+
+    def _set_limit(self, channel: int, level: int | None) -> None:
+        """Record a limit, then bring the toy down to it if it runs above. See :meth:`set_intensity1_limit`."""
+        if self._apply(lambda toy: toy.apply_limit(channel, level)):
+            self._send(
+                f"set_intensity{channel + 1}_limit",
+                lambda toy: toy.enforce_limit(channel),
+            )
 
     def _send_stop(
         self, command: str, callback: Optional[Callable[[Any], Any]] = None

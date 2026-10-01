@@ -25,11 +25,8 @@ class _ToyController:
     def __init__(self, toy: Toy, initial_battery: int | None = None):
         self._toy = toy
         self._pattern_handler = PatternHandler()
-        # What playback last sent, so it only sends a value when it changes.
-        self._last_values: dict[str, int | None] = {
-            "intensity1": None,
-            "intensity2": None,
-        }
+        # What playback last sent on each channel, so it only sends a value when it changes.
+        self._last_values: list[int | None] = [None, None]
         # Set once the toy is at rest (or under a manual command) for the current pause/block, so playback sends no
         # further stops. See process_communication.
         self._accepted_pause = False
@@ -192,10 +189,6 @@ class _ToyController:
         # Switching models stops the toy on the old command set, so whatever playback last sent no longer holds.
         self._invalidate_last_values()
 
-    # ------------------------------------------------------------------
-    # State transitions
-    # ------------------------------------------------------------------
-
     def apply_paused(self, pause: bool) -> bool:
         """
         Pause or resume pattern playback.
@@ -301,7 +294,7 @@ class _ToyController:
         it sends when a pattern gets paused, undoing the manual level right after it was set.
 
         Returns:
-            True if the command may be sent (see :meth:`send_intensity1`), False if the toy is blocked or held.
+            True if the command may be sent (see :meth:`send_intensity`), False if the toy is blocked or held.
         """
         if self._is_blocked or self._held:
             return False
@@ -311,44 +304,32 @@ class _ToyController:
         self._invalidate_last_values()
         return True
 
-    def _limit_intensity1(self, level: int) -> int:
-        """Clamp a primary-capability level to the currently configured intensity1 limit."""
-        return min(level, self._intensity_limits[0])
+    def _limited(self, channel: int, level: int) -> int:
+        """Clamp a level to the limit currently configured for *channel*."""
+        return min(level, self._intensity_limits[channel])
 
-    def _limit_intensity2(self, level: int) -> int:
-        """Clamp a secondary-capability level to the currently configured intensity2 limit."""
-        return min(level, self._intensity_limits[1])
+    async def _strict_intensity(self, channel: int, level: int) -> bool:
+        """Send a level to one capability of the toy via the strict toy method (raises on failure)."""
+        if channel == 0:
+            return await self._toy.strict_intensity1(level)
+        return await self._toy.strict_intensity2(level)
 
-    def apply_intensity1_limit(self, level: int | None) -> bool:
+    def apply_limit(self, channel: int, level: int | None) -> bool:
         """
-        Set the upper limit for the primary intensity. All intensity1 commands and pattern values are clamped to it.
+        Set the upper limit for one intensity. All commands and pattern values for that channel are clamped to it.
 
         A limit is a safety ceiling, so a toy already running above it has to come down right away rather than only
-        being clamped from the next command onwards: see :meth:`enforce_intensity1_limit`.
+        being clamped from the next command onwards: see :meth:`enforce_limit`.
 
         Args:
-            level: Maximum allowed intensity1 value (0 – max_intensity). Clamped to that range. None removes the limit.
+            channel: 0 for the primary intensity, 1 for the secondary one.
+            level: Maximum allowed value (0 – max_intensity). Clamped to that range. None removes the limit.
 
         Returns:
-            True if the toy runs above the new limit and has to be brought down now (see :meth:`enforce_intensity1_limit`).
+            True if the toy runs above the new limit and has to be brought down now (see :meth:`enforce_limit`).
         """
-        self._intensity_limits[0] = self._normalize_limit(level)
-        return self._toy.current_intensities[0] > self._intensity_limits[0]
-
-    def apply_intensity2_limit(self, level: int | None) -> bool:
-        """
-        Set the upper limit for the secondary intensity. All intensity2 commands and pattern values are clamped to it.
-
-        Behaves like :meth:`apply_intensity1_limit`.
-
-        Args:
-            level: Maximum allowed intensity2 value (0 – max_intensity). Clamped to that range. None removes the limit.
-
-        Returns:
-            True if the toy runs above the new limit and has to be brought down now (see :meth:`enforce_intensity2_limit`).
-        """
-        self._intensity_limits[1] = self._normalize_limit(level)
-        return self._toy.current_intensities[1] > self._intensity_limits[1]
+        self._intensity_limits[channel] = self._normalize_limit(level)
+        return self._toy.current_intensities[channel] > self._intensity_limits[channel]
 
     def _normalize_limit(self, level: int | None) -> int:
         """Turn a requested limit into a usable ceiling: ``None`` means "no limit", anything else is clamped to range."""
@@ -356,41 +337,38 @@ class _ToyController:
             return self._toy.max_intensity
         return max(0, min(level, self._toy.max_intensity))
 
-    async def enforce_intensity1_limit(self) -> None:
+    async def enforce_limit(self, channel: int) -> None:
         """
-        Bring the toy down now if its primary capability is running above the current intensity1 limit.
+        Bring the toy down now if one of its capabilities is running above its current limit.
 
         Pattern playback would pick the change up on its own next tick; this also covers the cases where nothing else
         is about to send an intensity (no active pattern, or a segment that lasts minutes). Does nothing if the toy is
         not above the limit, so it is safe to retry.
+
+        Args:
+            channel: 0 for the primary intensity, 1 for the secondary one.
 
         Raises:
             ConnectionError: The corrective intensity command could not be delivered. The limit itself stays in force,
                 so every later command and playback tick respects it.
             UnexpectedToyResponse: (subclass of ConnectionError) The toy replied unexpectedly to the corrective command.
         """
-        limit = self._intensity_limits[0]
-        if self._toy.current_intensities[0] <= limit:
+        limit = self._intensity_limits[channel]
+        if self._toy.current_intensities[channel] <= limit:
             return
-        await self._toy.strict_intensity1(limit)
+        await self._strict_intensity(channel, limit)
         # The toy now sits at the ceiling. Record it so the next playback tick does not repeat the command.
-        self._last_values["intensity1"] = limit
+        self._last_values[channel] = limit
 
-    async def enforce_intensity2_limit(self) -> None:
-        """Bring the toy down now if its secondary capability is above the intensity2 limit. See :meth:`enforce_intensity1_limit`."""
-        limit = self._intensity_limits[1]
-        if self._toy.current_intensities[1] <= limit:
-            return
-        await self._toy.strict_intensity2(limit)
-        self._last_values["intensity2"] = limit
-
-    async def intensity1(self, level: int) -> bool:
+    async def intensity(self, channel: int, level: int) -> bool:
         """
-        Set the intensity of the primary capability: :meth:`accept_manual_intensity`, then :meth:`send_intensity1`.
+        Set the intensity of one capability: :meth:`accept_manual_intensity`, then :meth:`send_intensity`.
 
         If a pattern is active and not paused, calling this method pauses the pattern to avoid conflicts.
+        Safe to call for the secondary capability of a toy that has none (will return false and do nothing).
 
         Args:
+            channel: 0 for the primary capability, 1 for the secondary one (e.g., rotation, air pump).
             level: Intensity level. The Valid range depends on the toy type. Values outside the range are clamped.
 
         Raises:
@@ -398,41 +376,21 @@ class _ToyController:
             UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
 
         Returns:
-            True if the command was accepted, False if the toy is blocked or held. See :meth:`apply_blocked` and :meth:`set_held`
+            True if the command was accepted, False if the toy has no such capability or is blocked or held. See :meth:`apply_blocked` and :meth:`set_held`
         """
         if not self.accept_manual_intensity():
             return False
-        return await self.send_intensity1(level)
+        return await self.send_intensity(channel, level)
 
-    async def intensity2(self, level: int) -> bool:
+    async def send_intensity(self, channel: int, level: int) -> bool:
         """
-        Set the intensity of the secondary capability
-
-        Behavior is identical to :meth:`intensity1` but controls the secondary capability (e.g., rotation, air pump)
-        Safe to call on toys without a secondary capability (will return false and do nothing).
-
-        Args:
-            level: Intensity level. The valid range depends on the toy type. Values outside the range are clamped.
-
-        Raises:
-            ConnectionError: The command could not be sent to the toy.
-            UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
-
-        Returns:
-            True if the command was accepted, False if the toy has no second capability or is blocked or held. See :meth:`apply_blocked` and :meth:`set_held`
-        """
-        if not self.accept_manual_intensity():
-            return False
-        return await self.send_intensity2(level)
-
-    async def send_intensity1(self, level: int) -> bool:
-        """
-        Send a primary-capability level, clamped to the intensity1 limit, without touching the pattern.
+        Send a level to one capability, clamped to its limit, without touching the pattern.
 
         The second half of a manual intensity command (see :meth:`accept_manual_intensity`). Blocked and held are
         checked again, because either can have come in between the two halves.
 
         Args:
+            channel: 0 for the primary capability, 1 for the secondary one.
             level: Intensity level. Values outside the valid range are clamped.
 
         Raises:
@@ -440,26 +398,11 @@ class _ToyController:
             UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
 
         Returns:
-            True if the toy took the command, False if it is blocked or held (nothing is sent).
+            True if the toy took the command, False if it is blocked or held (nothing is sent) or has no such capability.
         """
         if self._output_suppressed():
             return False
-        return await self._toy.strict_intensity1(self._limit_intensity1(level))
-
-    async def send_intensity2(self, level: int) -> bool:
-        """
-        Send a secondary-capability level, clamped to the intensity2 limit. See :meth:`send_intensity1`.
-
-        Raises:
-            ConnectionError: The command could not be sent to the toy.
-            UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
-
-        Returns:
-            True if the toy took the command, False if it is blocked or held (nothing is sent) or has no second capability.
-        """
-        if self._output_suppressed():
-            return False
-        return await self._toy.strict_intensity2(self._limit_intensity2(level))
+        return await self._strict_intensity(channel, self._limited(channel, level))
 
     async def change_rotation_direction(self) -> bool:
         """
@@ -634,20 +577,13 @@ class _ToyController:
 
         self._accepted_pause = False
         pattern_time = self._pattern_handler.get_pattern_time()
-        raw_intensity1, raw_intensity2 = self._pattern_handler.get_pattern_values(
-            pattern_time
-        )
-        # A limit lowered/increased mid-playback has to take effect on an already running pattern.
-        intensity1_value = self._limit_intensity1(raw_intensity1)
-        intensity2_value = self._limit_intensity2(raw_intensity2)
-
-        if intensity1_value != self._last_values["intensity1"]:
-            await self._toy.strict_intensity1(intensity1_value)
-            self._last_values["intensity1"] = intensity1_value
-
-        if intensity2_value != self._last_values["intensity2"]:
-            await self._toy.strict_intensity2(intensity2_value)
-            self._last_values["intensity2"] = intensity2_value
+        levels = self._pattern_handler.get_pattern_values(pattern_time)
+        for channel, level in enumerate(levels):
+            # A limit lowered/increased mid-playback has to take effect on an already running pattern.
+            level = self._limited(channel, level)
+            if level != self._last_values[channel]:
+                await self._strict_intensity(channel, level)
+                self._last_values[channel] = level
 
     def _invalidate_last_values(self) -> None:
         """
@@ -656,8 +592,7 @@ class _ToyController:
         Call this after anything that changes the toy's actual level behind the playback engine's back
         (e.g., a model switch stops the toy, a manual command sets its own level).
         """
-        self._last_values["intensity1"] = None
-        self._last_values["intensity2"] = None
+        self._last_values = [None, None]
 
     async def fetch_and_update_battery(self) -> int | None:
         """

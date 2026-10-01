@@ -435,12 +435,7 @@ class _ToyHub:
         if old_status == new_status:
             return
         self._toy_status[toy_id] = new_status
-        try:
-            task = self._on_status_change(toy_id, new_status)
-            if asyncio.iscoroutine(task):
-                await task
-        except Exception:
-            self._log.exception("on_status_change callback raised")
+        await self._fire_callback(self._on_status_change, toy_id, new_status)
 
     async def _on_disconnect(self, toy_id: str) -> None:
         """
@@ -454,8 +449,7 @@ class _ToyHub:
         toy = self._toys.get(toy_id)
         if toy is None:
             return
-        self._ensure_reconnect_task(toy)
-        await self._set_toy_status(toy_id, ToyStatus.RECONNECTING)
+        await self._start_reconnecting(toy, "Connection lost")
 
     async def _on_power_off(self, toy_id: str) -> None:
         """
@@ -490,10 +484,7 @@ class _ToyHub:
             ]
             if toys_and_locks:
                 await asyncio.gather(
-                    *(
-                        self._process_one_locked(toy, lock)
-                        for toy, lock in toys_and_locks
-                    ),
+                    *(self._process_one(toy, lock) for toy, lock in toys_and_locks),
                     return_exceptions=True,
                 )
             # Sleep only the time left in this interval
@@ -501,34 +492,20 @@ class _ToyHub:
                 max(0.0, COMMUNICATION_INTERVAL - (loop.time() - start))
             )
 
-    async def _process_one_locked(
-        self, toy: _ToyController, cmd_lock: asyncio.Lock
-    ) -> None:
+    async def _process_one(self, toy: _ToyController, cmd_lock: asyncio.Lock) -> None:
         """
-        Acquire the per‑toy command lock and run one `process_communication` tick.
+        Run one `process_communication` tick for a single toy, with one automatic retry.
 
-        Holding the lock prevents interleaving with concurrent user commands on the same toy.
+        The per-toy command lock is held for the tick, which prevents interleaving with concurrent user commands on
+        the same toy. Errors after the retry are logged but not re-raised so the loop stays alive.
 
-        Args:
-            toy: The toy controller to process.
-            cmd_lock: The toy's command lock.
-        """
-        async with cmd_lock:
-            await self._process_one(toy)
-
-    async def _process_one(self, toy: _ToyController) -> None:
-        """
-        Run process_communication for a single toy with one automatic retry.
-        Errors after the retry are logged but not re-raised so the loop stays alive.
         Args:
             toy: The toy controller whose process_communication method will be called.
+            cmd_lock: The toy's command lock.
         """
         try:
-            try:
-                await toy.process_communication()
-            except ConnectionError:
-                await asyncio.sleep(_RETRY_DELAY)
-                await toy.process_communication()
+            async with cmd_lock:
+                await _retry(toy.process_communication)
         except ConnectionError as e:
             self._log.warning(
                 "process_communication failed for toy %s after retry: %s",
@@ -543,17 +520,18 @@ class _ToyHub:
                 exc_info=True,
             )
 
-    async def _handle_command_failure(self, toy: _ToyController) -> None:
+    async def _start_reconnecting(self, toy: _ToyController, reason: str) -> None:
         """
-        Handle a command failure after the built‑in retry.
+        Set the ToyStatus to RECONNECTING and start a background reconnection attempt (if none is running).
 
-        Set the ToyState to RECONNECTING and start a background reconnection attempt.
-        The background task marks the toy as CONNECTED on success or LOST on failure.
+        Called when the connection dropped, and when a command failed even after the built-in retry. The background
+        task marks the toy as CONNECTED on success or LOST on failure.
 
         Args:
-            toy: The toy controller that failed.
+            toy: The toy controller whose connection failed.
+            reason: Short phrase for the log line, e.g. "Command failed".
         """
-        self._log.warning("Command failed for toy %s. Reconnecting...", toy.toy_id)
+        self._log.warning("%s for toy %s. Reconnecting...", reason, toy.toy_id)
         self._ensure_reconnect_task(toy)
         await self._set_toy_status(toy.toy_id, ToyStatus.RECONNECTING)
 
@@ -591,10 +569,8 @@ class _ToyHub:
         Win back a toy whose connection failed, or give it up. Sets its ToyStatus to CONNECTED on success; else sets it
         to LOST and removes the toy.
 
-        Each attempt reconnects (a no-op if the link is still up) and then stops the toy, which also pauses its pattern:
-        whatever the toy was last told no longer holds, and this stop is how a command that failed (e.g. the safety
-        hold's stop) finally gets through. Attempts are repeated for up to RECONNECT_WINDOW (see
-        :func:`tikal._private.retry_within_window`).
+        Each attempt reconnects (no-op if the link is still up) and then stops the toy, bringing the it into a safe state
+        (also pauses its pattern).  Attempts are repeated for up to RECONNECT_WINDOW (see :func:`tikal._private.retry_within_window`).
 
         Args:
             toy: The toy controller to reconnect.
@@ -605,7 +581,7 @@ class _ToyHub:
             await toy.stop()  # Always stop the toy after connection loss
 
         if await retry_within_window(attempt, toy.toy_id, self._log):
-            await self._fire_callback(self._on_toy_state_change, toy.get_state())
+            await self._report_state(toy)
             await self._set_toy_status(toy.toy_id, ToyStatus.CONNECTED)
             return
 
@@ -648,22 +624,19 @@ class _ToyHub:
         Returns:
             A tuple (toy_controller, lock).
         """
-        toy = self._toys.get(toy_id)
-        if toy is None:
-            raise UnknownToyError(toy_id)
-        return toy, self._toy_cmd_locks[toy_id]
+        return self._get_toy(toy_id), self._toy_cmd_locks[toy_id]
 
-    async def _fire_callback(self, callback: Callable[..., Any], payload: Any) -> None:
+    async def _fire_callback(self, callback: Callable[..., Any], *args: Any) -> None:
         """
-        Invoke a callback with the given payload, supporting both sync and async callables.
+        Invoke a callback with the given arguments, supporting both sync and async callables.
         Exceptions are logged but not raised, so a misbehaving callback cannot affect command execution.
 
         Args:
             callback: The callback to invoke.
-            payload: The argument(s) to pass to the callback.
+            *args: The argument(s) to pass to the callback.
         """
         try:
-            result = callback(payload)
+            result = callback(*args)
             if asyncio.iscoroutine(result):
                 await result
         except Exception as e:
@@ -679,7 +652,7 @@ class _ToyHub:
         *args: Any,
     ) -> T:
         """
-        Execute a toy command with one automatic retry on ConnectionError. If the command fails after retry, triggers reconnection and raises ToyConnectionError.
+        Execute a toy command with one automatic retry on ConnectionError. If the command fails after retry, it triggers reconnection and raises ToyConnectionError.
 
         Every command the hub sends to a toy goes through here, so this is also where a toy that is not connected is
         refused (see :meth:`_require_connected`).
@@ -701,8 +674,60 @@ class _ToyHub:
         try:
             return await _retry(command, *args)
         except Exception as e:
-            await self._handle_command_failure(toy)
+            await self._start_reconnecting(toy, "Command failed")
             raise ToyConnectionError(toy.toy_id, toy.model_name, command_name) from e
+
+    async def _report_state(self, toy: _ToyController) -> None:
+        """Hand the toy's current state to the on_toy_state_change callback."""
+        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+
+    async def _change_state(
+        self,
+        toy_id: str,
+        command_name: str,
+        transition: Callable[[_ToyController], bool | None],
+        follow_up: Callable[
+            [_ToyController], Awaitable[Any]
+        ] = _ToyController.stop_output,
+        report_failure: bool = False,
+    ) -> None:
+        """
+        Run a command that changes a toy's state: apply the transition, send what it calls for, report the new state.
+
+        The transition is one of the controller's ``apply_*`` methods. Checking and changing the state is atomic wrt.
+        other commands on this toy (e.g., a concurrent set_paused from a second client). The new state holds even if
+        the send fails. Return Value:
+
+        - True: the toy has to be brought in line with the new state. *follow_up* is sent (retried, like every command).
+        - False: the state changed, and there is nothing to send.
+        - None: nothing changed. Nothing is sent, and nothing is reported.
+
+        Args:
+            toy_id: Identifier of the toy.
+            command_name: Name of the command, for errors and logs.
+            transition: Called with the toy's controller. Must not do any I/O.
+            follow_up: Called with the toy's controller, returns the awaitable that sends. A stop unless given.
+            report_failure: Report the new state when *follow_up* could not be sent. By default, the state is only
+                reported once the command succeeded.
+
+        Raises:
+            UnknownToyError: The toy was not added before.
+            ToyNotConnectedError: The toy is not connected, so *follow_up* was not sent. The new state is recorded all the same.
+            ToyConnectionError: *follow_up* failed after retry. Reconnecting is attempted automatically.
+        """
+        toy, cmd_lock = self._get_toy_cmd(toy_id)
+        try:
+            async with cmd_lock:
+                needs_follow_up = transition(toy)
+                if needs_follow_up is None:
+                    return
+                if needs_follow_up:
+                    await self._run_toy_command(toy, command_name, follow_up, toy)
+        except ToyConnectionError:
+            if report_failure:
+                await self._report_state(toy)
+            raise
+        await self._report_state(toy)
 
     def _require_connected(self, toy: _ToyController, command_name: str) -> None:
         """
@@ -944,7 +969,7 @@ class _ToyHub:
             except ConnectionError as e:
                 # A model switch stops the toy on its old commands first. That stop could not be delivered, so the
                 # model was left as-is and the toy may still be running.
-                await self._handle_command_failure(toy)
+                await self._start_reconnecting(toy, "Command failed")
                 raise ToyConnectionError(toy_id, model_name, "set_model") from e
             self._toy_cache.update({toy.name: model_name})
         change = await toy.get_info(full=False)
@@ -963,63 +988,36 @@ class _ToyHub:
             UnknownToyError: The toy was not added before.
         """
         self._log.info(f"Stopping toy at {toy_id}")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
-            toy.apply_stop()
-            await self._run_toy_command(toy, "stop", toy.stop_output)
-        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+        await self._change_state(toy_id, "stop", _ToyController.apply_stop)
 
-    async def intensity1(self, toy_id: str, intensity: int) -> bool:
+    async def intensity(self, toy_id: str, channel: int, intensity: int) -> bool:
         """
-        Set the intensity of the primary capability.
+        Set the intensity of one capability of a toy.
 
         If a pattern is active and not paused, calling this method pauses the pattern to avoid conflicts.
         Will do nothing if the toy is blocked or under the safety hold.
+        Safe to call for the secondary capability of a toy that has none (will do nothing on it).
 
         Args:
             toy_id: Identifier of the toy on which to set the intensity.
+            channel: 0 for the primary capability (intensity1), 1 for the secondary one (intensity2, e.g., rotation, air pump).
             intensity: Intensity level. The valid range depends on the toy type. Values outside the range are clamped.
 
         Raises:
             ToyNotConnectedError: The toy is not connected. Nothing was sent, and the pattern keeps playing.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
+
+        Returns:
+            True if the toy took the command, False if it is blocked, held, or has no such capability.
         """
-        self._log.info(f"Setting intensity1 of {toy_id} to {intensity}")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
-            level = max(0, min(intensity, toy.max_intensity))
-            result = await self._run_toy_command(
-                toy, "intensity1", toy.intensity1, level
-            )
-        await self._fire_callback(self._on_toy_state_change, toy.get_state())
-        return result
+        name = f"intensity{channel + 1}"
+        self._log.info(f"Setting {name} of {toy_id} to {intensity}")
 
-    async def intensity2(self, toy_id: str, intensity: int) -> bool:
-        """
-        Set the intensity of the secondary capability.
+        def command(toy: _ToyController) -> Awaitable[bool]:
+            return toy.intensity(channel, max(0, min(intensity, toy.max_intensity)))
 
-        Behavior is identical to intensity1 but controls the secondary capability (e.g., rotation, air pump).
-        Safe to call on toys without a secondary capability (will do nothing on them).
-
-        Args:
-            toy_id: Identifier of the toy on which to set the intensity.
-            intensity: Intensity level. The valid range depends on the toy type. Values outside the range are clamped.
-
-        Raises:
-            ToyNotConnectedError: The toy is not connected. Nothing was sent, and the pattern keeps playing.
-            ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
-            UnknownToyError: The toy was not added before.
-        """
-        self._log.info(f"Setting intensity2 of {toy_id} to {intensity}")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
-            level = max(0, min(intensity, toy.max_intensity))
-            result = await self._run_toy_command(
-                toy, "intensity2", toy.intensity2, level
-            )
-        await self._fire_callback(self._on_toy_state_change, toy.get_state())
-        return result
+        return await self.send(toy_id, name, command)
 
     async def toggle_pause(self, toy_id: str) -> None:
         """
@@ -1039,12 +1037,10 @@ class _ToyHub:
             UnknownToyError: The toy was not added before.
         """
         self._log.info(f"Toggling pause of {toy_id}")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
-            # The toggle is resolved to a target state once, and only the stop is retried: a retry cannot flip it back.
-            if toy.apply_paused(not toy.is_paused):
-                await self._run_toy_command(toy, "toggle_pause", toy.stop_output)
-        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+        # The toggle is resolved to a target state once, and only the stop is retried: a retry cannot flip it back.
+        await self._change_state(
+            toy_id, "toggle_pause", lambda toy: toy.apply_paused(not toy.is_paused)
+        )
 
     async def toggle_block(self, toy_id: str) -> None:
         """
@@ -1063,12 +1059,10 @@ class _ToyHub:
             UnknownToyError: The toy was not added before.
         """
         self._log.info(f"Toggling block of {toy_id}")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
-            # Same as toggle_pause: resolve the toggle once so the retry cannot undo it.
-            if toy.apply_blocked(not toy.is_blocked):
-                await self._run_toy_command(toy, "toggle_block", toy.stop_output)
-        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+        # Same as toggle_pause: resolve the toggle once so the retry cannot undo it.
+        await self._change_state(
+            toy_id, "toggle_block", lambda toy: toy.apply_blocked(not toy.is_blocked)
+        )
 
     async def set_paused(self, toy_id: str, pause: bool) -> None:
         """
@@ -1089,14 +1083,12 @@ class _ToyHub:
             UnknownToyError: The toy was not added before.
         """
         self._log.info(f"Setting pause of {toy_id} to {pause}")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
-            # Check and act inside the same lock section, making this atomic wrt. other commands on this toy (e.g., a concurrent set_paused from a second client).
-            if toy.is_paused == pause:
-                return
-            if toy.apply_paused(pause):
-                await self._run_toy_command(toy, "set_paused", toy.stop_output)
-        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+        # None when the toy already is in that state: then nothing is sent or reported.
+        await self._change_state(
+            toy_id,
+            "set_paused",
+            lambda toy: None if toy.is_paused == pause else toy.apply_paused(pause),
+        )
 
     async def set_blocked(self, toy_id: str, block: bool) -> None:
         """
@@ -1116,14 +1108,12 @@ class _ToyHub:
             UnknownToyError: The toy was not added before.
         """
         self._log.info(f"Setting block of {toy_id} to {block}")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
-            # Same check-then-act guard as set_paused above.
-            if toy.is_blocked == block:
-                return
-            if toy.apply_blocked(block):
-                await self._run_toy_command(toy, "set_blocked", toy.stop_output)
-        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+        # Same check-then-act guard as set_paused above.
+        await self._change_state(
+            toy_id,
+            "set_blocked",
+            lambda toy: None if toy.is_blocked == block else toy.apply_blocked(block),
+        )
 
     async def set_safety_hold(self, held: bool) -> list[str]:
         """
@@ -1165,22 +1155,25 @@ class _ToyHub:
                 except ToyConnectionError:
                     self._log.warning(f"Could not stop {toy_id} for the safety hold.")
                     stopped = False
-            await self._fire_callback(self._on_toy_state_change, toy.get_state())
+            await self._report_state(toy)
             return stopped
 
         results = await asyncio.gather(*(apply(toy_id) for toy_id in toy_ids))
         return [toy_id for toy_id, ok in zip(toy_ids, results) if not ok]
 
-    async def set_intensity1_limit(self, toy_id: str, level: int | None) -> None:
+    async def set_intensity_limit(
+        self, toy_id: str, channel: int, level: int | None
+    ) -> None:
         """
-        Set the upper limit for the primary intensity of a toy. All intensity1 commands and pattern values are clamped to it.
+        Set the upper limit for one intensity of a toy. All commands and pattern values for that channel are clamped to it.
 
         A toy already running above the new limit is brought down to it immediately, so the command is sent under the
         per-toy command lock like any other toy-facing command.
 
         Args:
-            toy_id: Identifier of the toy to set the intensity1 limit for.
-            level: Maximum allowed intensity1 value (0 – max_intensity). Clamped to max_intensity. None is equal to max_intensity.
+            toy_id: Identifier of the toy to set the limit for.
+            channel: 0 for the primary intensity (intensity1), 1 for the secondary one (intensity2).
+            level: Maximum allowed value (0 – max_intensity). Clamped to max_intensity. None is equal to max_intensity.
 
         Raises:
             UnknownToyError: The toy was not added before.
@@ -1189,46 +1182,16 @@ class _ToyHub:
             ToyConnectionError: The limit was recorded, but the toy could not be brought down to it. Reconnecting is
                 attempted automatically; the limit stays in force for every later command and playback tick.
         """
-        self._log.info(f"Setting intensity1 limit of {toy_id} to {level}")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        try:
-            async with cmd_lock:
-                if toy.apply_intensity1_limit(level):
-                    await self._run_toy_command(
-                        toy, "set_intensity1_limit", toy.enforce_intensity1_limit
-                    )
-        finally:
+        name = f"set_intensity{channel + 1}_limit"
+        self._log.info(f"Setting intensity{channel + 1} limit of {toy_id} to {level}")
+        await self._change_state(
+            toy_id,
+            name,
+            lambda toy: toy.apply_limit(channel, level),
+            lambda toy: toy.enforce_limit(channel),
             # Report the new ceiling even when enforcing it failed: it *is* in force from here on.
-            await self._fire_callback(self._on_toy_state_change, toy.get_state())
-
-    async def set_intensity2_limit(self, toy_id: str, level: int | None) -> None:
-        """
-        Set the upper limit for the secondary intensity of a toy. All intensity2 commands and pattern values are clamped to it.
-
-        Behaves like :meth:`set_intensity1_limit`, including bringing an already-running toy down to the new limit.
-
-        Args:
-            toy_id: Identifier of the toy to set the intensity2 limit for.
-            level: Maximum allowed intensity2 value (0 – max_intensity). Clamped to max_intensity. None is equal to max_intensity.
-
-        Raises:
-            UnknownToyError: The toy was not added before.
-            ToyNotConnectedError: The limit was recorded, but the toy runs above it and is not connected, so it could
-                not be brought down. The reconnect stops it before it is used again.
-            ToyConnectionError: The limit was recorded, but the toy could not be brought down to it. Reconnecting is
-                attempted automatically; the limit stays in force for every later command and playback tick.
-        """
-        self._log.info(f"Setting intensity2 limit of {toy_id} to {level}")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        try:
-            async with cmd_lock:
-                if toy.apply_intensity2_limit(level):
-                    await self._run_toy_command(
-                        toy, "set_intensity2_limit", toy.enforce_intensity2_limit
-                    )
-        finally:
-            # Report the new ceiling even when enforcing it failed: it *is* in force from here on.
-            await self._fire_callback(self._on_toy_state_change, toy.get_state())
+            report_failure=True,
+        )
 
     async def set_pattern(
         self,
@@ -1264,11 +1227,11 @@ class _ToyHub:
             Any manual intensity command will automatically pause pattern playback. Use `toggle_pause()` or `set_paused()` to resume.
         """
         self._log.info(f"Setting pattern of {toy_id} to {pattern}")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
-            if toy.apply_pattern(pattern, wraparound, reset_time):
-                await self._run_toy_command(toy, "set_pattern", toy.stop_output)
-        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+        await self._change_state(
+            toy_id,
+            "set_pattern",
+            lambda toy: toy.apply_pattern(pattern, wraparound, reset_time),
+        )
 
     def apply_state(self, toy_id: str, transition: Callable[[_ToyController], T]) -> T:
         """
@@ -1292,9 +1255,7 @@ class _ToyHub:
         """
         toy = self._get_toy(toy_id)
         result = transition(toy)
-        self._schedule_on_loop(
-            self._fire_callback(self._on_toy_state_change, toy.get_state())
-        )
+        self._schedule_on_loop(self._report_state(toy))
         return result
 
     def get_controller(self, toy_id: str) -> _ToyController | None:
@@ -1316,18 +1277,21 @@ class _ToyHub:
         toy_id: str,
         command_name: str,
         command: Callable[[_ToyController], Awaitable[T]],
+        report_state: bool = True,
     ) -> T:
         """
         Send a command to a toy the way every command method does.
 
         That is: under the toy's command lock (so in order with every other command on it), refused while the toy is
         not connected, retried once after a ConnectionError, and followed by a reconnect if it fails again. Meant for
-        the command that has to follow a transition from :meth:`apply_state`.
+        the command that has to follow a transition from :meth:`apply_state`, and used by the command methods that
+        change no state on the hub's side.
 
         Args:
             toy_id: Identifier of the toy.
             command_name: Name of the command, for errors and logs.
             command: Called with the toy's controller, returns the awaitable that sends (e.g., ``stop_output()``).
+            report_state: Report the toy's state afterward. Pass False for a command that cannot change it (a query).
 
         Raises:
             UnknownToyError: The toy was not added before.
@@ -1340,7 +1304,8 @@ class _ToyHub:
         toy, cmd_lock = self._get_toy_cmd(toy_id)
         async with cmd_lock:
             result = await self._run_toy_command(toy, command_name, command, toy)
-        await self._fire_callback(self._on_toy_state_change, toy.get_state())
+        if report_state:
+            await self._report_state(toy)
         return result
 
     async def fetch_battery(self, toy_id: str) -> int | None:
@@ -1466,11 +1431,11 @@ class _ToyHub:
         Returns:
             dict: dictionary containing the gathered info. Empty dict if the command could not be delivered.
         """
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
         if not full:
-            return await toy.get_info(full=False)
-        async with cmd_lock:
-            return await self._run_toy_command(toy, "get_info", toy.get_info, True)
+            return await self._get_toy(toy_id).get_info(full=False)
+        return await self.send(
+            toy_id, "get_info", lambda toy: toy.get_info(True), report_state=False
+        )
 
     async def get_all(self, toy_id: str, full: bool) -> dict[str, Any]:
         """
@@ -1487,12 +1452,13 @@ class _ToyHub:
         Returns:
             dict: Merged info and state. Empty dict if the retrieval fails.
         """
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
+        toy = self._get_toy(toy_id)
         status = self._toy_status[toy_id]
         info = await toy.get_info(full=False)
         if full:
-            async with cmd_lock:
-                info = await self._run_toy_command(toy, "get_all", toy.get_info, True)
+            info = await self.send(
+                toy_id, "get_all", lambda toy: toy.get_info(True), report_state=False
+            )
         state = toy.get_state()
         merged = {**state, **info, "connection_status": status, "battery": toy.battery}
         return merged
@@ -1564,8 +1530,9 @@ class _ToyHub:
             The toy does not provide a way to find out its current rotation direction.
             -> This does not modify the internal state, because I can't get any initial state.
         """
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
-            return await self._run_toy_command(
-                toy, "change_rotation_direction", toy.change_rotation_direction
-            )
+        return await self.send(
+            toy_id,
+            "change_rotation_direction",
+            _ToyController.change_rotation_direction,
+            report_state=False,
+        )

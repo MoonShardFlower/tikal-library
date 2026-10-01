@@ -492,7 +492,7 @@ async def test_websocket_hub_adds_mock_estim_toy():
         assert info["brand"] == "MockEstimToys"
         assert info["model_name"] == "Thunder"
 
-        await hub.intensity1("Thunder_ID", 50)
+        await hub.intensity("Thunder_ID", 0, 50)
         state = await hub.get_state("Thunder_ID")
         assert state["current_intensities"] == [50, 0]
     finally:
@@ -572,7 +572,7 @@ async def test_ws_hub_set_model_to_unsupported_model_keeps_the_working_one(
         await asyncio.sleep(0.05)
         # Thunder only drives Channel1, so it is supported by this device.
         await hub.add("Lightning_ID", "Thunder")
-        await hub.intensity1("Lightning_ID", 40)
+        await hub.intensity("Lightning_ID", 0, 40)
 
         with pytest.raises(WsBadModelError):
             await hub.set_model("Lightning_ID", "Lightning")

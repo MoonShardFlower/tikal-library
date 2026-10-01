@@ -102,7 +102,7 @@ async def test_add_then_toy_ids_and_status(hub):
 
 async def test_intensity_then_stop(hub):
     await _add_thunder(hub)
-    await hub.intensity1("Thunder_ID", 50)
+    await hub.intensity("Thunder_ID", 0, 50)
     assert (await hub.get_state("Thunder_ID"))["current_intensities"] == [50, 0]
 
     await hub.stop("Thunder_ID")
@@ -111,14 +111,14 @@ async def test_intensity_then_stop(hub):
 
 async def test_intensity2_on_dual_channel(hub):
     await hub.add("Lightning_ID", "Lightning")
-    assert await hub.intensity2("Lightning_ID", 30) is True
+    assert await hub.intensity("Lightning_ID", 1, 30) is True
     assert (await hub.get_state("Lightning_ID"))["current_intensities"] == [0, 30]
 
 
 async def test_intensity2_on_single_channel_is_noop(hub):
     await _add_thunder(hub)
     # Thunder has a single channel: the command is accepted-but-does-nothing (returns False).
-    assert await hub.intensity2("Thunder_ID", 30) is False
+    assert await hub.intensity("Thunder_ID", 1, 30) is False
 
 
 async def test_toggle_pause_and_block(hub):
@@ -134,7 +134,11 @@ async def test_toggle_pause_and_block(hub):
 
 
 async def test_set_paused_and_blocked_idempotent(hub):
-    await _add_thunder(hub)
+    reports = []
+    hub._on_toy_state_change = reports.append
+    controller = await _add_thunder(hub)
+    controller._toy.strict_stop = AsyncMock(return_value=True)
+
     await hub.set_paused("Thunder_ID", True)
     await hub.set_paused("Thunder_ID", True)  # no-op second call
     assert (await hub.get_state("Thunder_ID"))["is_paused"] is True
@@ -142,6 +146,24 @@ async def test_set_paused_and_blocked_idempotent(hub):
     await hub.set_blocked("Thunder_ID", True)
     await hub.set_blocked("Thunder_ID", True)  # no-op second call
     assert (await hub.get_state("Thunder_ID"))["is_blocked"] is True
+
+    # A call that changes nothing sends nothing and reports nothing.
+    assert controller._toy.strict_stop.await_count == 2
+    assert len(reports) == 2
+
+
+async def test_a_limit_that_cannot_be_enforced_is_still_reported(hub):
+    """The ceiling is in force from the moment it is set, so its new state is reported even when bringing the toy down fails."""
+    reports = []
+    controller = await _add_thunder(hub)
+    await hub.intensity("Thunder_ID", 0, 50)
+    hub._on_toy_state_change = reports.append
+    controller._toy.strict_intensity1 = AsyncMock(side_effect=ConnectionError("gone"))
+
+    with pytest.raises(ToyConnectionError):
+        await hub.set_intensity_limit("Thunder_ID", 0, 10)
+
+    assert reports and reports[-1]["intensity_limits"][0] == 10
 
 
 @pytest.mark.parametrize(
@@ -181,7 +203,7 @@ async def test_safety_hold_mutes_toys_and_leaves_their_state(hub):
     state = await hub.get_state("Thunder_ID")
     assert state["is_held"] is True and state["current_intensities"] == [0, 0]
     assert state["is_paused"] is False and state["is_blocked"] is False
-    assert await hub.intensity1("Thunder_ID", 5) is False
+    assert await hub.intensity("Thunder_ID", 0, 5) is False
     with pytest.raises(SafetyHoldError):
         await hub.direct_command("Thunder_ID", "DeviceType")
     await asyncio.sleep(COMMUNICATION_INTERVAL * 4)  # playback cannot drive a held toy
@@ -213,11 +235,11 @@ async def test_safety_hold_reports_a_toy_it_could_not_stop(hub):
 
 async def test_intensity_limits_clamp(hub):
     await hub.add("Lightning_ID", "Lightning")
-    await hub.set_intensity1_limit("Lightning_ID", 10)
-    await hub.set_intensity2_limit("Lightning_ID", 5)
+    await hub.set_intensity_limit("Lightning_ID", 0, 10)
+    await hub.set_intensity_limit("Lightning_ID", 1, 5)
 
-    await hub.intensity1("Lightning_ID", 99)
-    await hub.intensity2("Lightning_ID", 99)
+    await hub.intensity("Lightning_ID", 0, 99)
+    await hub.intensity("Lightning_ID", 1, 99)
     assert (await hub.get_state("Lightning_ID"))["current_intensities"] == [10, 5]
 
 
@@ -307,7 +329,7 @@ async def test_commands_on_unknown_toy_raise(hub):
     for coro in (
         hub.get_state("nope"),
         hub.get_battery("nope"),
-        hub.intensity1("nope", 1),
+        hub.intensity("nope", 0, 1),
         hub.stop("nope"),
         hub.get_status("nope"),
     ):
@@ -356,10 +378,10 @@ async def test_set_toy_status_only_fires_on_change(hub):
 async def test_command_failure_triggers_reconnect(hub):
     controller = await _add_thunder(hub)
     # The intensity command fails, but reconnect() and stop() (used by recovery) still work.
-    controller.intensity1 = AsyncMock(side_effect=ConnectionError("dropped"))
+    controller.intensity = AsyncMock(side_effect=ConnectionError("dropped"))
 
     with pytest.raises(ToyConnectionError):
-        await hub.intensity1("Thunder_ID", 5)
+        await hub.intensity("Thunder_ID", 0, 5)
 
     # Recovery reconnects and returns the toy to CONNECTED without removing it.
     assert await _wait_until(
@@ -570,8 +592,8 @@ def _nothing_sent(controller) -> bool:
 @pytest.mark.parametrize(
     "command, args",
     [
-        ("intensity1", (5,)),
-        ("intensity2", (5,)),
+        ("intensity", (0, 5)),
+        ("intensity", (1, 5)),
         ("direct_command", ("DeviceType",)),
         ("change_rotation_direction", ()),
         ("get_info", (True,)),
@@ -606,7 +628,7 @@ async def test_commands_that_need_the_toy_are_refused_while_it_reconnects(
         ("toggle_pause", (), lambda s: s["is_paused"]),
         ("stop", (), lambda s: s["is_paused"]),
         ("set_pattern", ([], True, True), lambda s: s["pattern"] == []),
-        ("set_intensity1_limit", (5,), lambda s: s["intensity_limits"][0] == 5),
+        ("set_intensity_limit", (0, 5), lambda s: s["intensity_limits"][0] == 5),
     ],
 )
 async def test_state_changes_are_recorded_while_the_toy_reconnects(
@@ -628,7 +650,7 @@ async def test_state_changes_that_need_no_command_succeed_while_the_toy_reconnec
     controller = await _reconnecting_thunder(hub)
 
     await hub.set_pattern("Thunder_ID", [(500, 3, 0)], True, True)
-    await hub.set_intensity1_limit("Thunder_ID", 50)  # the toy runs below it
+    await hub.set_intensity_limit("Thunder_ID", 0, 50)  # the toy runs below it
     await hub.set_blocked("Thunder_ID", False)  # already unblocked
 
     state = await hub.get_state("Thunder_ID")
@@ -725,7 +747,7 @@ async def test_a_manual_intensity_is_not_undone_by_the_pattern_it_pauses(hub):
     await hub.set_pattern("Thunder_ID", [(60_000, 10, 0)], True, True)
     assert await _wait_until(lambda: controller.current_intensities == (10, 0))
 
-    await hub.intensity1("Thunder_ID", 50)
+    await hub.intensity("Thunder_ID", 0, 50)
     await asyncio.sleep(COMMUNICATION_INTERVAL * 4)  # a few playback ticks
 
     assert controller.current_intensities == (50, 0)

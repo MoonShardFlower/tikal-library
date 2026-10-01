@@ -23,6 +23,7 @@ from tikal._core import (
     DiscoveryError,
     DiscoveryStartError,
     ToyConnectionError,
+    ToyNotConnectedError,
     ToyStatus,
     UnavailableToyError,
 )
@@ -252,6 +253,48 @@ async def test_add_invalid_model(ws_server):
     reply = await client.request("add", {"toy_id": "Thunder_ID", "model_name": "Bogus"})
     assert reply["success"] is False
     assert reply["data"]["error"] == "Invalid Model"
+    # The reply names the toy, the rejected model and the brand whose models are valid.
+    assert reply["data"]["toy_id"] == "Thunder_ID"
+    assert reply["data"]["model_name"] == "Bogus"
+    assert reply["data"]["brand"] == "MockEstimToys"
+
+
+@pytest.mark.parametrize(
+    "command, data, expected",
+    [
+        ("get_toy_ids", None, {"toy_ids": ["Thunder_ID"]}),
+        ("get_battery", {}, {"battery": 77, "toy_id": "Thunder_ID"}),
+        (
+            "get_connection_status",
+            {},
+            {"connection_status": "connected", "toy_id": "Thunder_ID"},
+        ),
+        (
+            "direct_command",
+            {"command": "DeviceType"},
+            {"response": "MockEstim", "toy_id": "Thunder_ID"},
+        ),
+        ("stop", {}, {"ack": True, "toy_id": "Thunder_ID"}),
+        ("intensity1", {"intensity": 5}, {"ack": True, "toy_id": "Thunder_ID"}),
+        # The hub reports whether the command took effect: Thunder has no second channel and cannot rotate.
+        ("intensity2", {"intensity": 5}, {"ack": False, "toy_id": "Thunder_ID"}),
+        ("change_rotation_direction", {}, {"ack": False, "toy_id": "Thunder_ID"}),
+        ("start_scan", None, {"ack": True, "toy_id": None}),
+        ("heartbeat", None, {"ack": True, "toy_id": None}),
+        ("set_intensity1_limit", {"limit": 5}, {"ack": True, "toy_id": "Thunder_ID"}),
+    ],
+)
+async def test_reply_data(ws_server, command, data, expected):
+    """The exact data of the reply, for each way a command's result is shaped into it."""
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+
+    request_data = {} if data is None else {"toy_id": "Thunder_ID", **data}
+    reply = await client.request(command, request_data)
+
+    assert reply["success"] is True
+    assert reply["data"] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -612,6 +655,7 @@ async def test_direct_command_is_refused_during_a_hold(ws_server):
     assert reply["success"] is False
     assert reply["data"]["error"] == "Safety Hold"
     assert reply["data"]["toy_id"] == "Thunder_ID"
+    assert reply["data"]["traceback"] is None  # a refusal, not a failure
 
     await client.request("heartbeat")
     await client.wait_event("hold_released")
@@ -1154,6 +1198,18 @@ async def test_add_already_added_toy(ws_server):
     assert reply["data"]["error"] == "Toy Already Added"
 
 
+async def test_scan_updates_only_reach_subscribers(ws_server):
+    _, connect = ws_server
+    subscriber, bystander = await connect(), await connect()
+
+    await subscriber.request("start_scan")
+    await subscriber.wait_scan_update("Thunder_ID")
+
+    # The bystander's next reply arrives after any event sent to it earlier, so every such event is in its buffer now.
+    await bystander.request("get_toy_ids")
+    assert not [e for e in bystander.events if e["event"] == "scan_update"]
+
+
 async def test_stop_scan_unsubscribes(ws_server):
     """stop_scan acks and unsubscribes the client (covers the unsubscribe handler)."""
     _, connect = ws_server
@@ -1247,6 +1303,71 @@ async def test_command_for_a_reconnecting_toy_is_refused_as_a_connection_error(
     ]  # the intensity was never sent
 
 
+async def test_the_protocols_commands(ws_server):
+    """The commands of the protocol (docs/websocket/actions.md). Adding or dropping one is a protocol change."""
+    server, _ = ws_server
+    assert set(server._commands) == {
+        "get_brands",
+        "get_toy_ids",
+        "get_state",
+        "get_battery",
+        "get_connection_status",
+        "get_info",
+        "get_all",
+        "direct_command",
+        "add",
+        "remove",
+        "set_model",
+        "stop",
+        "intensity1",
+        "intensity2",
+        "change_rotation_direction",
+        "toggle_pause",
+        "toggle_block",
+        "set_paused",
+        "set_blocked",
+        "set_pattern",
+        "set_intensity1_limit",
+        "set_intensity2_limit",
+        "start_scan",
+        "stop_scan",
+        "enable_heartbeat",
+        "heartbeat",
+        "release_hold",
+        "shutdown",
+    }
+
+
+@pytest.mark.parametrize(
+    "error, expected",
+    [
+        (ToyConnectionError("T", "Thunder", "stop"), "Connection Error"),
+        (
+            ToyNotConnectedError("T", "Thunder", "stop", ToyStatus.LOST),
+            "Connection Error",
+        ),
+        (ConnectionError("not one of the hub's errors"), "Developer Error"),
+        (KeyError("bug"), "Developer Error"),
+    ],
+)
+async def test_error_replies_follow_the_class_hierarchy(ws_server, error, expected):
+    """
+    The most specific entry of the error table wins, and an exception without an entry is a Developer Error.
+
+    A ToyNotConnectedError is a ToyConnectionError, but has its own message; a plain ConnectionError is neither.
+    """
+    server, connect = ws_server
+    client = await connect()
+    with patch.object(server._hub, "stop", new=AsyncMock(side_effect=error)):
+        reply = await client.request("stop", {"toy_id": "T"})
+    assert reply["success"] is False
+    assert reply["data"]["error"] == expected
+    if isinstance(error, ToyNotConnectedError):
+        assert "not connected (lost)" in reply["data"]["message"]
+    elif isinstance(error, ToyConnectionError):
+        assert "Will attempt to reconnect" in reply["data"]["message"]
+
+
 async def test_unexpected_error_maps_to_developer_error(ws_server):
     server, connect = ws_server
     client = await connect()
@@ -1267,6 +1388,9 @@ async def test_start_scan_discovery_start_error(ws_server):
         reply = await client.request("start_scan")
     assert reply["success"] is False
     assert reply["data"]["error"] == "Discovery Start Error"
+    assert (
+        not server._scan_subscribers
+    )  # the client is not left subscribed to a scan that never started
 
 
 async def test_start_scan_unexpected_error(ws_server):
@@ -1324,7 +1448,7 @@ async def test_limit_rolls_back_on_hub_error(ws_server):
 
     with patch.object(
         server._hub,
-        "set_intensity1_limit",
+        "set_intensity_limit",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         reply = await client.request(
@@ -1333,6 +1457,35 @@ async def test_limit_rolls_back_on_hub_error(ws_server):
     assert reply["success"] is False
     # The failed limit was rolled back, not left dangling.
     assert all("Thunder_ID" not in toys for toys in server._client_limits.values())
+
+
+async def test_the_lowest_limit_of_all_clients_applies(ws_server):
+    """Each client sets its own limit; the toy is held to the lowest one, also after a client changes or leaves."""
+    _, connect = ws_server
+    first, second = await connect(), await connect()
+    await _scan_and_add(first, "Thunder_ID", "Thunder")
+
+    async def limit() -> int:
+        state = await second.request("get_state", {"toy_id": "Thunder_ID"})
+        return state["data"]["intensity_limits"][0]
+
+    await first.request("set_intensity1_limit", {"toy_id": "Thunder_ID", "limit": 5})
+    await second.request("set_intensity1_limit", {"toy_id": "Thunder_ID", "limit": 10})
+    assert await limit() == 5
+
+    await first.request("set_intensity1_limit", {"toy_id": "Thunder_ID", "limit": 15})
+    assert await limit() == 10
+
+    await first.raw.close()
+    await second.request(
+        "set_intensity1_limit", {"toy_id": "Thunder_ID", "limit": None}
+    )
+    # The first client's limit went with it, so nothing limits the toy any more (once the server noticed it left).
+    for _ in range(100):
+        if await limit() == 100:
+            break
+        await asyncio.sleep(0.02)
+    assert await limit() == 100
 
 
 async def test_removing_toy_cleans_up_client_limits(ws_server):
@@ -1386,17 +1539,22 @@ async def test_scan_update_maps_errors_and_success(ws_server):
     server, _ = ws_server
     calls = []
 
-    async def capture(event_name, payload, *, success=True):
+    async def capture(event_name, payload, *, success=True, to=None):
+        # Scan updates go to the scan subscribers only, never to every client.
+        assert to is server._scan_subscribers
         calls.append((event_name, payload, success))
 
-    with patch.object(server, "_broadcast_to_subscribers", new=capture):
+    with patch.object(server, "_broadcast", new=capture):
         await server._on_scan_update(DiscoveryError("trace"))
         await server._on_scan_update(RuntimeError("boom"))
         await server._on_scan_update([ToyData("T1", "T_ID", "Thunder", "Brand")])
 
     assert calls[0][0] == "scan_update"
     assert calls[0][1]["error"] == "Discovery Error" and calls[0][2] is False
-    assert calls[1][1]["error"] == "Developer Error"
+    # Regression: this error was sent with success=True and its traceback as a list of lines.
+    assert calls[1][1]["error"] == "Developer Error" and calls[1][2] is False
+    assert isinstance(calls[1][1]["traceback"], str)
+    assert "RuntimeError: boom" in calls[1][1]["traceback"]
     assert calls[2][1] == {
         "discovered": [
             {"toy_id": "T_ID", "name": "T1", "brand": "Brand", "model_name": "Thunder"}

@@ -32,16 +32,10 @@ def controller(mock_toy):
     return _ToyController(mock_toy, initial_battery=77)
 
 
-async def _set_limit1(controller, level):
-    """What _ToyHub.set_intensity1_limit does: record the limit, then bring the toy down if it runs above it."""
-    if controller.apply_intensity1_limit(level):
-        await controller.enforce_intensity1_limit()
-
-
-async def _set_limit2(controller, level):
-    """What _ToyHub.set_intensity2_limit does. See _set_limit1."""
-    if controller.apply_intensity2_limit(level):
-        await controller.enforce_intensity2_limit()
+async def _set_limit(controller, channel, level):
+    """What _ToyHub.set_intensity_limit does: record the limit, then bring the toy down if it runs above it."""
+    if controller.apply_limit(channel, level):
+        await controller.enforce_limit(channel)
 
 
 # ---------------------------------------------------------------------------
@@ -54,8 +48,8 @@ async def test_set_pattern_stores_pattern_unclamped_and_limits_on_playback(
     controller, mock_toy
 ):
     # The pattern is kept exactly as given; the limits are applied per tick instead.
-    await _set_limit1(controller, 10)
-    await _set_limit2(controller, 5)
+    await _set_limit(controller, 0, 10)
+    await _set_limit(controller, 1, 5)
 
     controller.apply_pattern([(100, 20, 20), (200, 3, 99)])
 
@@ -75,8 +69,8 @@ async def test_lowering_limit_reins_in_a_running_pattern(controller, mock_toy):
     mock_toy.current_intensities = (90, 90)
 
     mock_toy.reset_mock()
-    await _set_limit1(controller, 5)
-    await _set_limit2(controller, 7)
+    await _set_limit(controller, 0, 5)
+    await _set_limit(controller, 1, 7)
 
     # Brought down straight away, without waiting for a playback tick or the next segment.
     mock_toy.strict_intensity1.assert_awaited_once_with(5)
@@ -93,12 +87,12 @@ async def test_lowering_limit_reins_in_a_running_pattern(controller, mock_toy):
 @pytest.mark.asyncio
 async def test_raising_limit_restores_the_patterns_own_values(controller, mock_toy):
     controller.apply_pattern([(60_000, 90, 90)])
-    await _set_limit1(controller, 5)
+    await _set_limit(controller, 0, 5)
     await controller.process_communication()
     mock_toy.current_intensities = (5, 90)
 
     mock_toy.reset_mock()
-    await _set_limit1(controller, None)  # withdraw the limit
+    await _set_limit(controller, 0, None)  # withdraw the limit
     await controller.process_communication()
     mock_toy.strict_intensity1.assert_awaited_once_with(90)
 
@@ -106,11 +100,11 @@ async def test_raising_limit_restores_the_patterns_own_values(controller, mock_t
 @pytest.mark.asyncio
 async def test_lowering_limit_reins_in_a_manual_intensity(controller, mock_toy):
     # No pattern is running, so nothing else would ever send a corrective command.
-    await controller.intensity1(90)
+    await controller.intensity(0, 90)
     mock_toy.current_intensities = (90, 0)
 
     mock_toy.reset_mock()
-    await _set_limit1(controller, 4)
+    await _set_limit(controller, 0, 4)
     mock_toy.strict_intensity1.assert_awaited_once_with(4)
 
 
@@ -119,30 +113,30 @@ async def test_setting_limit_below_current_value_is_a_noop_when_already_lower(
     controller, mock_toy
 ):
     mock_toy.current_intensities = (2, 0)
-    await _set_limit1(controller, 50)
+    await _set_limit(controller, 0, 50)
     mock_toy.strict_intensity1.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_manual_intensity_clamped_to_limit(controller, mock_toy):
-    await _set_limit1(controller, 8)
-    await controller.intensity1(20)
+    await _set_limit(controller, 0, 8)
+    await controller.intensity(0, 20)
     mock_toy.strict_intensity1.assert_awaited_once_with(8)
 
 
 @pytest.mark.asyncio
 async def test_intensity_limit_none_resets_to_max(controller, mock_toy):
-    await _set_limit1(controller, 5)
-    await _set_limit1(controller, None)  # reset to max_intensity (100)
-    await controller.intensity1(20)
+    await _set_limit(controller, 0, 5)
+    await _set_limit(controller, 0, None)  # reset to max_intensity (100)
+    await controller.intensity(0, 20)
     mock_toy.strict_intensity1.assert_awaited_once_with(20)
 
 
 @pytest.mark.asyncio
 async def test_negative_limit_is_clamped_to_zero(controller, mock_toy):
-    await _set_limit1(controller, -5)
+    await _set_limit(controller, 0, -5)
     assert controller.get_state()["intensity_limits"][0] == 0
-    await controller.intensity1(20)
+    await controller.intensity(0, 20)
     mock_toy.strict_intensity1.assert_awaited_once_with(0)
 
 
@@ -171,8 +165,8 @@ async def test_set_model_name_invalidates_playback_tracking(controller, mock_toy
 async def test_blocked_intensity_returns_false_without_command(controller, mock_toy):
     controller.apply_blocked(True)
 
-    assert await controller.intensity1(10) is False
-    assert await controller.intensity2(10) is False
+    assert await controller.intensity(0, 10) is False
+    assert await controller.intensity(1, 10) is False
     mock_toy.strict_intensity1.assert_not_called()
     mock_toy.strict_intensity2.assert_not_called()
 
@@ -341,8 +335,8 @@ async def test_held_pattern_latches_single_stop_and_resumes(controller, mock_toy
     await controller.process_communication()  # playback stop, latch
     await controller.process_communication()  # latched -> no further stop
     mock_toy.strict_stop.assert_awaited_once()
-    assert await controller.intensity1(7) is False
-    assert await controller.intensity2(7) is False
+    assert await controller.intensity(0, 7) is False
+    assert await controller.intensity(1, 7) is False
     mock_toy.strict_intensity1.assert_not_called()
     assert controller.is_paused is False and controller.is_blocked is False
 
@@ -403,23 +397,23 @@ def test_manual_intensity_is_refused_while_blocked_or_held(controller):
 async def test_send_intensity_checks_block_and_limit_again(controller, mock_toy):
     # Between accepting a manual intensity and sending it, the toy can get blocked or a limit lowered.
     assert controller.accept_manual_intensity() is True
-    controller.apply_intensity1_limit(6)
-    assert await controller.send_intensity1(50) is True
+    controller.apply_limit(0, 6)
+    assert await controller.send_intensity(0, 50) is True
     mock_toy.strict_intensity1.assert_awaited_once_with(6)
 
     controller.apply_blocked(True)
-    assert await controller.send_intensity1(50) is False
-    assert await controller.send_intensity2(50) is False
+    assert await controller.send_intensity(0, 50) is False
+    assert await controller.send_intensity(1, 50) is False
     mock_toy.strict_intensity1.assert_awaited_once()  # nothing more was sent
     mock_toy.strict_intensity2.assert_not_called()
 
 
 def test_apply_limit_reports_whether_the_toy_runs_above_it(controller, mock_toy):
     mock_toy.current_intensities = (40, 10)
-    assert controller.apply_intensity1_limit(30) is True
-    assert controller.apply_intensity1_limit(40) is False  # at the limit is fine
-    assert controller.apply_intensity2_limit(5) is True
-    assert controller.apply_intensity2_limit(None) is False
+    assert controller.apply_limit(0, 30) is True
+    assert controller.apply_limit(0, 40) is False  # at the limit is fine
+    assert controller.apply_limit(1, 5) is True
+    assert controller.apply_limit(1, None) is False
     assert not mock_toy.strict_intensity1.called  # recording a limit sends nothing
 
 

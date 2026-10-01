@@ -121,8 +121,13 @@ def test_intensity_reports_the_result(mock_hub):
 
     toy.intensity1(150, results.append)  # clamped to max_intensity
     toy.intensity2(20, results.append)
-    toy.stop(results.append)
+    assert wait_until(lambda: len(results) == 2)
+    assert toy.current_intensities == (
+        100,
+        20,
+    )  # each command reached its own capability
 
+    toy.stop(results.append)
     assert wait_until(lambda: len(results) == 3)
     assert results == [True, True, True]
     assert toy.current_intensities == (0, 0)
