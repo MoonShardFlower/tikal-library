@@ -687,10 +687,9 @@ async def test_pausing_a_blocked_toy_unblocks_it_even_if_the_stop_fails(hub):
 async def test_apply_state_does_not_wait_for_a_command_in_flight(hub):
     # No pattern, so playback sends no stop of its own and every stop counted below is the one from send().
     controller = await _add_thunder(hub)
-    cmd_lock = hub._toy_cmd_locks["Thunder_ID"]
     controller._toy.strict_stop = AsyncMock(return_value=True)
 
-    async with cmd_lock:  # a command is in flight on the toy
+    async with controller.cmd_lock:  # a command is in flight on the toy
         # Synchronous: it cannot wait for the lock, so it applies at once.
         needs_stop = hub.apply_state("Thunder_ID", lambda toy: toy.apply_paused(True))
         assert needs_stop is True and controller.is_paused is True
@@ -753,3 +752,47 @@ async def test_a_manual_intensity_is_not_undone_by_the_pattern_it_pauses(hub):
     assert controller.current_intensities == (50, 0)
     await hub.set_paused("Thunder_ID", False)  # the pattern takes over again
     assert await _wait_until(lambda: controller.current_intensities == (10, 0))
+
+
+# ---------------------------------------------------------------------------
+# The command lock: one command at a time per toy
+# ---------------------------------------------------------------------------
+
+
+async def test_a_state_command_waits_for_a_command_in_flight(hub):
+    # No pattern, so playback sends no stop of its own and the stop counted below is the one from set_blocked().
+    controller = await _add_thunder(hub)
+    controller._toy.strict_stop = AsyncMock(return_value=True)
+
+    async with controller.cmd_lock:  # a command is in flight on the toy
+        blocking = asyncio.create_task(hub.set_blocked("Thunder_ID", True))
+        await asyncio.sleep(COMMUNICATION_INTERVAL * 2)
+        # Check and command belong together, so the state does not change before the toy is free either.
+        assert not blocking.done() and controller.is_blocked is False
+        controller._toy.strict_stop.assert_not_called()
+
+    await asyncio.wait_for(blocking, 1)
+    assert controller.is_blocked is True
+    controller._toy.strict_stop.assert_awaited_once()
+
+
+async def test_the_battery_poll_waits_for_a_command_in_flight(hub):
+    controller = await _add_thunder(hub)
+    controller.fetch_and_update_battery = AsyncMock(return_value=50)
+
+    async with controller.cmd_lock:
+        polling = asyncio.create_task(hub._poll_all_batteries())
+        await asyncio.sleep(COMMUNICATION_INTERVAL * 2)
+        assert not polling.done()
+        controller.fetch_and_update_battery.assert_not_called()
+
+    await asyncio.wait_for(polling, 1)
+    controller.fetch_and_update_battery.assert_awaited_once()
+
+
+async def test_a_command_in_flight_on_one_toy_does_not_delay_another(hub):
+    thunder = await _add_thunder(hub)
+    await hub.add("Lightning_ID", "Lightning")
+
+    async with thunder.cmd_lock:
+        assert await asyncio.wait_for(hub.intensity("Lightning_ID", 0, 30), 1) is True

@@ -205,9 +205,6 @@ class _ToyHub:
         # Toy state
         self._toy_cache = ToyCache(toy_cache_path, default_model, log_name)
         self._toys: dict[str, _ToyController] = {}
-        # Per-toy command lock: held for the full check-command-callback sequence of every mutating operation on a single toy.
-        # This prevents races (e.g., two clients racing on set_paused) and serializes concurrent BLE commands to the same toy.
-        self._toy_cmd_locks: dict[str, asyncio.Lock] = {}
         self._toy_data: dict[str, ToyData] = {}
         self._all_seen_toy_ids: set[str] = set()
         self._pending_toy_ids: set[str] = set()
@@ -299,7 +296,6 @@ class _ToyHub:
 
         snapshot = list(self._toys.values())
         self._toys.clear()
-        self._toy_cmd_locks.clear()
         self._pending_toy_ids.clear()
 
         results = await asyncio.gather(
@@ -477,14 +473,14 @@ class _ToyHub:
         loop = asyncio.get_running_loop()
         while True:
             start = loop.time()
-            toys_and_locks = [
-                (toy, self._toy_cmd_locks[toy_id])
+            connected = [
+                toy
                 for toy_id, toy in self._toys.items()
                 if self._toy_status.get(toy_id) == ToyStatus.CONNECTED
             ]
-            if toys_and_locks:
+            if connected:
                 await asyncio.gather(
-                    *(self._process_one(toy, lock) for toy, lock in toys_and_locks),
+                    *(self._process_one(toy) for toy in connected),
                     return_exceptions=True,
                 )
             # Sleep only the time left in this interval
@@ -492,19 +488,18 @@ class _ToyHub:
                 max(0.0, COMMUNICATION_INTERVAL - (loop.time() - start))
             )
 
-    async def _process_one(self, toy: _ToyController, cmd_lock: asyncio.Lock) -> None:
+    async def _process_one(self, toy: _ToyController) -> None:
         """
         Run one `process_communication` tick for a single toy, with one automatic retry.
 
-        The per-toy command lock is held for the tick, which prevents interleaving with concurrent user commands on
+        The toy's command lock is held for the tick, which prevents interleaving with concurrent user commands on
         the same toy. Errors after the retry are logged but not re-raised so the loop stays alive.
 
         Args:
             toy: The toy controller whose process_communication method will be called.
-            cmd_lock: The toy's command lock.
         """
         try:
-            async with cmd_lock:
+            async with toy.cmd_lock:
                 await _retry(toy.process_communication)
         except ConnectionError as e:
             self._log.warning(
@@ -609,23 +604,6 @@ class _ToyHub:
             raise UnknownToyError(toy_id)
         return toy
 
-    def _get_toy_cmd(self, toy_id: str) -> tuple[_ToyController, asyncio.Lock]:
-        """
-        Retrieve a toy controller and its per‑toy command lock.
-
-        Callers must hold the returned lock for the full duration of their check‑command‑callback sequence to prevent interleaving.
-
-        Args:
-            toy_id: Identifier of the toy.
-
-        Raises:
-            UnknownToyError: The toy has not been added.
-
-        Returns:
-            A tuple (toy_controller, lock).
-        """
-        return self._get_toy(toy_id), self._toy_cmd_locks[toy_id]
-
     async def _fire_callback(self, callback: Callable[..., Any], *args: Any) -> None:
         """
         Invoke a callback with the given arguments, supporting both sync and async callables.
@@ -715,9 +693,9 @@ class _ToyHub:
             ToyNotConnectedError: The toy is not connected, so *follow_up* was not sent. The new state is recorded all the same.
             ToyConnectionError: *follow_up* failed after retry. Reconnecting is attempted automatically.
         """
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
+        toy = self._get_toy(toy_id)
         try:
-            async with cmd_lock:
+            async with toy.cmd_lock:
                 needs_follow_up = transition(toy)
                 if needs_follow_up is None:
                     return
@@ -762,9 +740,8 @@ class _ToyHub:
         Poll battery levels for all toys with status CONNECTED.
         Collects changes and invokes the on_battery_change callback with a dict of toy_id -> new_battery_level (or None if no battery).
         """
-        # Snapshot of connected toys under lock
         toys_to_poll = [
-            (toy_id, toy, self._toy_cmd_locks[toy_id])
+            toy
             for toy_id, toy in self._toys.items()
             if self._toy_status.get(toy_id) == ToyStatus.CONNECTED
         ]
@@ -774,16 +751,14 @@ class _ToyHub:
         updates: dict[str, int | None] = {}
 
         # Poll each toy
-        async def poll_one(
-            toy_id: str, toy: _ToyController, lock: asyncio.Lock
-        ) -> None:
-            async with lock:
+        async def poll_one(toy: _ToyController) -> None:
+            async with toy.cmd_lock:
                 old_battery = toy.battery
                 new_battery = await toy.fetch_and_update_battery()
                 if new_battery is not None and old_battery != new_battery:
-                    updates[toy_id] = new_battery
+                    updates[toy.toy_id] = new_battery
 
-        await asyncio.gather(*(poll_one(tid, t, lk) for tid, t, lk in toys_to_poll))
+        await asyncio.gather(*(poll_one(toy) for toy in toys_to_poll))
 
         if updates:
             await self._fire_callback(self._on_battery_change, updates)
@@ -898,7 +873,6 @@ class _ToyHub:
         # A toy connected during a safety hold is held too. It is at rest after connecting, so no stop is needed.
         toy.set_held(self._held)
         self._toys[toy_id] = toy
-        self._toy_cmd_locks[toy_id] = asyncio.Lock()
         self._toy_status[toy_id] = ToyStatus.CONNECTED
         self._toy_cache.update({toy.name: toy.model_name})
         ids_snapshot = list(self._toys.keys())
@@ -924,7 +898,6 @@ class _ToyHub:
         if toy is None:
             raise UnknownToyError(toy_id)
         del self._toys[toy_id]
-        self._toy_cmd_locks.pop(toy_id, None)
         if remove_from_connection_status:
             self._toy_status.pop(toy_id, None)
         ids_snapshot = list(self._toys.keys())
@@ -956,8 +929,8 @@ class _ToyHub:
                 Reconnecting is attempted automatically.
         """
         self._log.info(f"Setting model of {toy_id} to {model_name})")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
+        toy = self._get_toy(toy_id)
+        async with toy.cmd_lock:
             # A model switch talks to the toy (stop, then validate), so it needs the toy like any other command.
             self._require_connected(toy, "set_model")
             try:
@@ -1144,13 +1117,13 @@ class _ToyHub:
         async def apply(toy_id: str) -> bool:
             """Stop one toy if the hold went on, and report its new state. False if the stop failed."""
             try:
-                toy, cmd_lock = self._get_toy_cmd(toy_id)
+                toy = self._get_toy(toy_id)
             except UnknownToyError:
                 return True  # removed in the meantime
             stopped = True
             if held:
                 try:
-                    async with cmd_lock:
+                    async with toy.cmd_lock:
                         await self._run_toy_command(toy, "stop", toy.stop_output)
                 except ToyConnectionError:
                     self._log.warning(f"Could not stop {toy_id} for the safety hold.")
@@ -1301,8 +1274,8 @@ class _ToyHub:
         Returns:
             Whatever the command returns.
         """
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
+        toy = self._get_toy(toy_id)
+        async with toy.cmd_lock:
             result = await self._run_toy_command(toy, command_name, command, toy)
         if report_state:
             await self._report_state(toy)
@@ -1325,8 +1298,8 @@ class _ToyHub:
         Returns:
             battery level (0-100) or None if the toy has no battery.
         """
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
+        toy = self._get_toy(toy_id)
+        async with toy.cmd_lock:
             old_battery = toy.battery
             battery = await self._run_toy_command(
                 toy, "fetch_battery", toy.refresh_battery
@@ -1502,8 +1475,8 @@ class _ToyHub:
             Do not use this method to change any tracked state (intensity1, intensity2, etc.) as this method bypasses the _ToyHub's state tracking.
         """
         self._log.info(f"Sending direct command to {toy_id}: {command}")
-        toy, cmd_lock = self._get_toy_cmd(toy_id)
-        async with cmd_lock:
+        toy = self._get_toy(toy_id)
+        async with toy.cmd_lock:
             # A raw command can drive the toy, and the hub cannot tell which ones would, so none pass the hold.
             if toy.is_held:
                 raise SafetyHoldError(toy_id)

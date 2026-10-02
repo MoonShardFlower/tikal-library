@@ -104,12 +104,11 @@ import datetime
 import http
 import ipaddress
 import logging
-import time
 import traceback
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable
 
 import websockets
 from pydantic import BaseModel, ValidationError
@@ -134,6 +133,7 @@ from .._core import (
     _ToyHub,
 )
 from ..low_level import ToyData
+from ._heartbeat_watchdog import _HeartbeatWatchdog
 from ._status_page import ToyServerStatusPage
 from .toy_server_models import (
     AckData,
@@ -268,10 +268,6 @@ _UNEXPECTED_ERROR = _ErrorReply(
     "Developer Error", _ErrMsg.DEVELOPER_ERROR, logging.ERROR
 )
 
-# WebSocket close code (from the 4000-4999 range reserved for applications) sent to a client that stayed overdue for
-# the whole heartbeat grace period.
-_CLOSE_HEARTBEAT_OVERDUE = 4000
-
 
 class InsecureBindError(ValueError):
     """
@@ -376,26 +372,6 @@ class ToyServer:
 
         self._shutdown_initiated = False
 
-        # Heartbeat watchdog: maps subscribed ws -> last heartbeat timestamp (time.monotonic)
-        self._heartbeat_clients: dict[ServerConnection, float] = {}
-        # Armed clients that are currently past their deadline. They stay in _heartbeat_clients (and so stay watched)
-        # until they disarm or disconnect; while any of them is overdue, the safety hold stays on.
-        self._heartbeat_timed_out: set[ServerConnection] = set()
-        # Set when an armed client disconnected. It can never prove it is back, so only release_hold clears this.
-        self._disconnect_hold = False
-        # Whether the safety hold is currently applied to the hub. Only changed under _hold_lock, which also keeps
-        # heartbeat_timeout / hold_released broadcasts in the order the hold actually changed.
-        self._hold_active = False
-        self._hold_lock = asyncio.Lock()
-        self._heartbeat_timeout = 3.0  # seconds
-        self._heartbeat_check_interval = 1.0  # seconds
-        # How long a client may stay overdue before it is treated as disconnected and its connection is closed.
-        self._heartbeat_grace_period = 30.0  # seconds
-        # Clients disconnected for staying overdue whose connection is still closing. Their messages are ignored.
-        self._heartbeat_kicked: set[ServerConnection] = set()
-        self._kick_tasks: set[asyncio.Task[None]] = set()
-        self._heartbeat_task: asyncio.Task[None] | None = None
-
         # Per-client intensity limits: ws -> toy_id -> [limit1_or_None, limit2_or_None]
         self._client_limits: dict[ServerConnection, dict[str, list[int | None]]] = {}
 
@@ -411,6 +387,12 @@ class ToyServer:
             mock_toys=mock_toys,
         )
         self._status_page = ToyServerStatusPage(self._hub, host, port)
+        # Dead-man's switch for clients that armed the heartbeat.
+        self._watchdog = _HeartbeatWatchdog(
+            lambda held: self._hub.set_safety_hold(held),
+            lambda event_name, payload: self._broadcast(event_name, payload),
+            self._log,
+        )
 
         self._commands = self._build_commands()
 
@@ -478,13 +460,7 @@ class ToyServer:
         if self._shutdown_initiated:
             return
         self._shutdown_initiated = True
-        self._heartbeat_clients.clear()
-        self._heartbeat_timed_out.clear()
-        self._heartbeat_kicked.clear()
-        self._disconnect_hold = False  # the hub has disconnected every toy, so there is nothing left to hold
-        if self._heartbeat_task is not None:
-            self._heartbeat_task.cancel()
-            self._heartbeat_task = None
+        self._watchdog.shutdown()
         if self._server is not None:
             self._server.close()
 
@@ -519,9 +495,9 @@ class ToyServer:
 
         try:
             async for raw in ws:
-                if ws in self._heartbeat_kicked:
-                    # The server gave up on this client (see _disconnect_overdue_client). Whatever it still sends
-                    # while its connection closes must not count, e.g., a release_hold for the hold it caused.
+                if self._watchdog.is_kicked(ws):
+                    # The watchdog gave up on this client. Whatever it still sends while its connection closes must
+                    # not count, e.g., a release_hold for the hold it caused.
                     continue
                 # Spawn a task per message so the receiver loop stays responsive.
                 message = raw if isinstance(raw, str) else raw.decode("utf-8")
@@ -532,22 +508,8 @@ class ToyServer:
             pass
         finally:
             self._clients.discard(ws)
-            self._heartbeat_kicked.discard(ws)
-            was_heartbeat_client = self._heartbeat_clients.pop(ws, None) is not None
-            if was_heartbeat_client:
-                # Set before it leaves _heartbeat_timed_out, so the hold never looks releasable in between.
-                self._disconnect_hold = True
-            self._heartbeat_timed_out.discard(ws)
-            if not self._heartbeat_clients and self._heartbeat_task is not None:
-                self._heartbeat_task.cancel()
-                self._heartbeat_task = None
-            if was_heartbeat_client:
-                # Dead-man's switch: a client that armed the heartbeat vanished (crash or abrupt close). It can never
-                # send the heartbeat that would end the hold, so the hold stays on until a client sends release_hold.
-                await self._trip_watchdog(
-                    "disconnect",
-                    "Heartbeat client disconnected. All toys held until a client sends release_hold.",
-                )
+            # An armed heartbeat client vanishing puts on the safety hold until a client sends release_hold.
+            await self._watchdog.client_disconnected(ws)
             if not self._clients:
                 # Nobody is watching anymore, so a running pattern would keep driving the toy indefinitely: idle
                 # shutdown may be disabled (idle_shutdown_delay <= 0) or still seconds away. This has to happen
@@ -864,16 +826,8 @@ class ToyServer:
     async def _cmd_release_hold(
         self, _ws: ServerConnection, _data: Any
     ) -> dict[str, Any]:
-        """
-        End a hold caused by a disconnected client.
-
-        A client that is still overdue keeps the hold on until it is back (or gone, which turns it into a disconnect
-        hold that this command then releases).
-        """
-        if self._disconnect_hold:
-            self._log.info("release_hold received; clearing the disconnect hold.")
-        self._disconnect_hold = False
-        await self._release_hold_if_clear()
+        """End a hold caused by a disconnected client (see _HeartbeatWatchdog.release)."""
+        await self._watchdog.release()
         return {"ack": True}
 
     async def _cmd_enable_heartbeat(
@@ -881,45 +835,15 @@ class ToyServer:
     ) -> dict[str, Any]:
         """Arm or disarm the heartbeat watchdog for *ws*."""
         if data.enable:
-            self._heartbeat_clients[ws] = time.monotonic()
-            if self._heartbeat_task is None or self._heartbeat_task.done():
-                self._heartbeat_task = asyncio.get_running_loop().create_task(
-                    self._heartbeat_check_loop(), name="heartbeat-check"
-                )
-            # Re-arming is proof of life just like a heartbeat is.
-            await self._clear_heartbeat_timeout(ws)
+            await self._watchdog.arm(ws)
         else:
-            self._heartbeat_clients.pop(ws, None)
-            await self._clear_heartbeat_timeout(ws)
-            if not self._heartbeat_clients and self._heartbeat_task is not None:
-                self._heartbeat_task.cancel()
-                self._heartbeat_task = None
+            await self._watchdog.disarm(ws)
         return {"ack": True}
 
     async def _cmd_heartbeat(self, ws: ServerConnection, _data: Any) -> dict[str, Any]:
         """Record that the armed client *ws* is still there."""
-        if ws in self._heartbeat_clients:
-            self._heartbeat_clients[ws] = time.monotonic()
-            await self._clear_heartbeat_timeout(ws)
-        else:
-            self._log.debug("Heartbeat received from non-subscribed client.")
+        await self._watchdog.beat(ws)
         return {"ack": True}
-
-    async def _clear_heartbeat_timeout(self, ws: ServerConnection) -> None:
-        """
-        Mark a previously overdue client as alive again, and end the safety hold if nothing else calls for it.
-
-        Called from every path where an armed client proves it is still there (a ``heartbeat``, a re-arm, or a
-        deliberate opt-out). A client that simply vanished never reaches this; it leaves a disconnect hold instead.
-        """
-        if ws not in self._heartbeat_timed_out:
-            return
-        self._heartbeat_timed_out.discard(ws)
-        self._log.info(
-            "Heartbeat client recovered; %d still overdue.",
-            len(self._heartbeat_timed_out),
-        )
-        await self._release_hold_if_clear()
 
     async def _cmd_set_limit(
         self, axis: int, ws: ServerConnection, data: Any
@@ -965,88 +889,6 @@ class ToyServer:
         effective = min((value for value in values if value is not None), default=None)
         await self._hub.set_intensity_limit(toy_id, axis, effective)
 
-    async def _heartbeat_check_loop(self) -> None:
-        """
-        Background loop that checks heartbeat deadlines and puts on the safety hold on timeout.
-
-        An overdue client stays in ``_heartbeat_clients``, so it stays watched and this loop keeps running: the
-        watchdog never disarms itself just because it fired. It is tracked in ``_heartbeat_timed_out`` instead, which
-        keeps the hold on (and stops this loop from firing again for it every interval) until that client proves it
-        is alive again or disconnects. A client still overdue after the grace period is treated as disconnected (see
-        :meth:`_disconnect_overdue_client`).
-        """
-        while self._heartbeat_clients:
-            await asyncio.sleep(self._heartbeat_check_interval)
-            now = time.monotonic()
-            newly_timed_out = [
-                ws
-                for ws, last in self._heartbeat_clients.items()
-                if (now - last) > self._heartbeat_timeout
-                and ws not in self._heartbeat_timed_out
-            ]
-            if newly_timed_out:
-                self._log.warning(
-                    "Heartbeat timeout for %d client(s). Holding all toys.",
-                    len(newly_timed_out),
-                )
-                self._heartbeat_timed_out.update(newly_timed_out)
-                # Shielded: this loop is cancelled when the last armed client leaves, which is often right after it
-                # went overdue (a frozen app gets killed). Cancelling mid-trip could leave toys that were never
-                # stopped while the hold already counts as on.
-                await asyncio.shield(
-                    self._trip_watchdog(
-                        "timeout",
-                        "Heartbeat timeout. All toys held until a heartbeat is received again.",
-                    )
-                )
-
-            # Measured again: the trip above awaited toy commands, and a heartbeat may have arrived meanwhile.
-            now = time.monotonic()
-            limit = self._heartbeat_timeout + self._heartbeat_grace_period
-            given_up = [
-                ws
-                for ws, last in self._heartbeat_clients.items()
-                if (now - last) > limit
-            ]
-            for ws in given_up:
-                # Shielded for the same reason as the trip above.
-                await asyncio.shield(self._disconnect_overdue_client(ws))
-
-    async def _disconnect_overdue_client(self, ws: ServerConnection) -> None:
-        """
-        Give up on a client that stayed overdue for the whole grace period: treat it as disconnected and close it.
-
-        A client whose app is stuck can keep its connection open (a browser answers pings even while the page's
-        JavaScript is hung), and ``release_hold`` deliberately cannot override a client that is merely overdue. Without
-        this, such a client could keep the hold on forever. From here on it is a disconnect hold, which any client can
-        end with ``release_hold``.
-
-        The client leaves the watchdog right away, and whatever it still sends while its connection closes is ignored
-        (see :meth:`_handle_connection`), so it can neither end the hold itself nor re-arm. The close runs in the
-        background: a stuck client may never answer the closing handshake, and waiting for ``close_timeout`` would
-        delay the heartbeat checks of every other client.
-        """
-        # Set before it leaves _heartbeat_timed_out, so the hold never looks releasable in between.
-        self._disconnect_hold = True
-        self._heartbeat_clients.pop(ws, None)
-        self._heartbeat_timed_out.discard(ws)
-        self._heartbeat_kicked.add(ws)
-        self._log.warning(
-            "Heartbeat client overdue for more than %.0f s. Treating it as disconnected.",
-            self._heartbeat_grace_period,
-        )
-        await self._trip_watchdog(
-            "disconnect",
-            "Heartbeat client stayed overdue and was disconnected. All toys held until a client sends release_hold.",
-        )
-        task = asyncio.get_running_loop().create_task(
-            ws.close(code=_CLOSE_HEARTBEAT_OVERDUE, reason="Heartbeat overdue"),
-            name="close-overdue-client",
-        )
-        # Keep a reference: a bare create_task may be garbage-collected before the close completes.
-        self._kick_tasks.add(task)
-        task.add_done_callback(self._kick_tasks.discard)
-
     async def _stop_all_toys(self, reason: str) -> list[str]:
         """
         Stop every managed toy, which also freezes its pattern playback.
@@ -1076,74 +918,6 @@ class ToyServer:
                 "Could not stop %d toy(s) (%s): %s", len(failed), reason, failed
             )
         return failed
-
-    async def _trip_watchdog(
-        self, reason: Literal["timeout", "disconnect"], message: str
-    ) -> None:
-        """
-        Dead-man's switch: make sure the safety hold is on, then tell every client.
-
-        Shared by the heartbeat check (a client stopped sending heartbeats) and the disconnect handler (a client that
-        armed the heartbeat vanished): both are "we lost the controlling client, make the toys safe". The hold itself
-        lives in the hub (see ``_ToyHub.set_safety_hold``): every toy is kept at zero, while its block, pause, pattern
-        and limits stay untouched. The caller has already recorded why (``_heartbeat_timed_out`` or
-        ``_disconnect_hold``), so :meth:`_release_hold_if_clear` knows when the hold may end.
-
-        ``heartbeat_timeout`` is broadcast on every trip, also when the hold was already on, so clients learn about each
-        client that went overdue or vanished. Its ``reason`` tells them whether the hold can end on its own.
-
-        Never raises: it runs in the heartbeat loop and in the disconnect handler, and neither may die.
-
-        Args:
-            reason: "timeout" for an overdue client, "disconnect" for one that vanished.
-            message: Human-readable description, sent with the event.
-        """
-        async with self._hold_lock:
-            failed: list[str] = []
-            if not self._hold_active:
-                self._hold_active = True
-                try:
-                    failed = await self._hub.set_safety_hold(True)
-                except Exception:
-                    self._log.exception("Failed to put on the safety hold.")
-                if failed:
-                    self._log.error(
-                        "Could not stop %d toy(s) for the safety hold: %s",
-                        len(failed),
-                        failed,
-                    )
-            # Broadcast under the lock, so this event can never arrive after the hold_released that ends it.
-            await self._broadcast(
-                "heartbeat_timeout",
-                dict(message=message, reason=reason, failed_toy_ids=failed),
-            )
-
-    async def _release_hold_if_clear(self) -> None:
-        """
-        End the safety hold once nothing calls for it any more: no armed client overdue, and no disconnect hold.
-
-        Every toy then follows its own state again (a running pattern resumes, a paused or blocked toy stays that
-        way), so nothing has to be restored. Broadcasts ``hold_released``.
-        """
-        async with self._hold_lock:
-            if (
-                not self._hold_active
-                or self._heartbeat_timed_out
-                or self._disconnect_hold
-            ):
-                return
-            self._hold_active = False
-            try:
-                await self._hub.set_safety_hold(False)
-            except Exception:
-                self._log.exception("Failed to release the safety hold.")
-            self._log.info("Safety hold released.")
-            await self._broadcast(
-                "hold_released",
-                dict(
-                    message="Safety hold released. Toys follow their own state again."
-                ),
-            )
 
     async def _handle_http_request(self, _: Any, request: Any) -> Response | None:
         """

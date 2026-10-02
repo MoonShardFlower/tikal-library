@@ -5,6 +5,7 @@ Defines the _ToyController class, which extends the low-level Toy class with add
 Meant to be consumed by _ToyHub, which in turn is consumed by ToyServer and the High-Level ToyHub. Both define a public API.
 """
 
+import asyncio
 from typing import Any
 
 from .._private import PatternHandler
@@ -24,6 +25,7 @@ class _ToyController:
 
     def __init__(self, toy: Toy, initial_battery: int | None = None):
         self._toy = toy
+        self._cmd_lock = asyncio.Lock()
         self._pattern_handler = PatternHandler()
         # What playback last sent on each channel, so it only sends a value when it changes.
         self._last_values: list[int | None] = [None, None]
@@ -40,6 +42,13 @@ class _ToyController:
         self._battery = initial_battery
         # Safety hold of the heartbeat watchdog, owned by _ToyHub. Independent of block and pause.
         self._held = False
+
+    @property
+    def cmd_lock(self) -> asyncio.Lock:
+        """Command lock of this toy. _ToyHub holds it for the check-command-callback sequence of commands that talk to
+        the toy. Prevents races (e.g., clients racing on set_paused) and serializes concurrent BLE commands to the
+        same toy."""
+        return self._cmd_lock
 
     # ------------------------------------------------------------------
     # Read-only passthroughs to the underlying toy

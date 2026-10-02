@@ -159,7 +159,7 @@ async def ws_server():
         await asyncio.sleep(0.05)  # let server-side disconnect handlers run
         with contextlib.suppress(Exception):
             await server._shutdown()
-        for task in (serve_task, server._shutdown_task, server._heartbeat_task):
+        for task in (serve_task, server._shutdown_task, server._watchdog._check_task):
             if task is not None and not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -487,8 +487,8 @@ async def test_limit_applies_to_an_already_running_pattern(ws_server):
 
 def _speed_up_watchdog(server: ToyServer) -> None:
     """Shrink the heartbeat deadline so a timeout fires within a few hundred milliseconds."""
-    server._heartbeat_timeout = 0.3
-    server._heartbeat_check_interval = 0.05
+    server._watchdog.timeout = 0.3
+    server._watchdog.check_interval = 0.05
 
 
 async def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
@@ -568,7 +568,7 @@ async def test_heartbeat_timeout_holds_toys_until_the_client_returns(ws_server):
     assert reply["data"]["ack"] is False
     await asyncio.sleep(COMMUNICATION_INTERVAL * 4)
     assert toy.current_intensities == (0, 0)
-    assert server._heartbeat_timed_out, "watchdog disarmed itself after firing"
+    assert server._watchdog._overdue, "watchdog disarmed itself after firing"
 
     await client.request("heartbeat")
     await client.wait_event("hold_released")
@@ -705,7 +705,7 @@ async def test_disconnect_while_the_hold_goes_on_still_holds_every_toy(ws_server
     await client.request("enable_heartbeat", {"enable": True})
     await asyncio.wait_for(entered.wait(), 5)  # the timeout trip is under way
     await client.raw.close()  # the armed client leaves: the check loop is cancelled
-    assert await _wait_until(lambda: server._heartbeat_task is None)
+    assert await _wait_until(lambda: server._watchdog._check_task is None)
     proceed.set()
 
     await observer.wait_event("heartbeat_timeout")
@@ -783,8 +783,8 @@ async def test_heartbeat_does_not_end_a_disconnect_hold(ws_server):
     await crasher.request("enable_heartbeat", {"enable": True})
     await crasher.raw.close()  # crashes while armed
     assert await _wait_until(
-        lambda: len(server._heartbeat_clients) == 1
-        and bool(server._heartbeat_timed_out)
+        lambda: len(server._watchdog._last_beat) == 1
+        and bool(server._watchdog._overdue)
     )
 
     survivor.events.clear()
@@ -843,7 +843,7 @@ async def test_overdue_client_is_disconnected_after_the_grace_period(ws_server):
     """
     server, connect = ws_server
     _speed_up_watchdog(server)
-    server._heartbeat_grace_period = 0.3
+    server._watchdog.grace_period = 0.3
 
     observer = await connect()
     stuck = await connect()
@@ -872,17 +872,17 @@ async def test_a_disconnected_overdue_client_is_ignored_while_it_closes(ws_serve
     """
     server, connect = ws_server
     _speed_up_watchdog(server)
-    server._heartbeat_grace_period = 0.3
+    server._watchdog.grace_period = 0.3
 
     observer = await connect()
     stuck = await connect()
     await _scan_and_add(observer, "Thunder_ID", "Thunder")
     await stuck.request("enable_heartbeat", {"enable": True})
-    server_side = next(iter(server._heartbeat_clients))
+    server_side = next(iter(server._watchdog._last_beat))
     original_close = server_side.close
     server_side.close = AsyncMock()  # the closing handshake never completes
     try:
-        assert await _wait_until(lambda: server_side in server._heartbeat_kicked)
+        assert await _wait_until(lambda: server_side in server._watchdog._kicked)
 
         for command in ("release_hold", "heartbeat"):
             with pytest.raises(
@@ -890,7 +890,7 @@ async def test_a_disconnected_overdue_client_is_ignored_while_it_closes(ws_serve
             ):  # no reply: the message was dropped
                 await stuck.request(command, timeout=0.3)
         server_side.close.assert_awaited_once()
-        assert not server._heartbeat_clients
+        assert not server._watchdog._last_beat
         assert (await _state(observer))["is_held"] is True
     finally:
         server_side.close = original_close
