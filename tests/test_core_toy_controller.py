@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tikal._core import _ToyController
-from tikal.low_level import Toy
+from tikal._core import _LovenseController, _ToyController
+from tikal.low_level import LovenseToy, Toy, UnexpectedToyResponse
 
 
 @pytest.fixture
@@ -233,6 +233,56 @@ async def test_get_info_single_capability_blanks_second_name(controller, mock_to
     assert info["intensity_names"] == ["Stim", ""]
 
 
+@pytest.fixture
+def lovense_toy():
+    toy = AsyncMock(spec=LovenseToy)
+    toy.toy_id = "toy-2"
+    toy.name = "LVS-Gush"
+    toy.brand = "Lovense"
+    toy.model_name = "Gush"
+    toy.max_intensity = 20
+    toy.current_intensities = (0, 0)
+    toy.intensity_names = ("Vibration", None)
+    toy.change_rotation_direction_available = False
+    toy.recommended_min_interval = 200
+    toy.strict_get_status.return_value = 2
+    toy.strict_get_batch_number.return_value = "241015"
+    toy.strict_get_device_type.return_value = "C:11:0082059AD3BD"
+    return toy
+
+
+@pytest.mark.asyncio
+async def test_lovense_full_info_adds_what_the_toy_reports(lovense_toy):
+    info = await _LovenseController(lovense_toy).get_info(full=True)
+    assert info["model_name"] == "Gush"
+    assert info["status"] == 2
+    assert info["batch_number"] == "241015"
+    assert info["device_type"] == "C:11:0082059AD3BD"
+
+
+@pytest.mark.asyncio
+async def test_lovense_full_info_is_none_where_the_toy_does_not_know_the_request(
+    lovense_toy,
+):
+    lovense_toy.strict_get_status.side_effect = UnexpectedToyResponse("unkown")
+    lovense_toy.strict_get_batch_number.side_effect = UnexpectedToyResponse("unkown")
+
+    info = await _LovenseController(lovense_toy).get_info(full=True)
+
+    assert info["status"] is None and info["batch_number"] is None
+    assert info["device_type"] == "C:11:0082059AD3BD"  # the rest is still gathered
+    assert info["model_name"] == "Gush"
+
+
+@pytest.mark.asyncio
+async def test_lovense_full_info_propagates_a_connection_error(lovense_toy):
+    # A request that cannot be sent, or that the toy does not answer at all, is a connection problem like for any
+    # other command: _ToyHub relies on the exception to trigger its retry / reconnect handling.
+    lovense_toy.strict_get_status.side_effect = ConnectionError("timeout")
+    with pytest.raises(ConnectionError):
+        await _LovenseController(lovense_toy).get_info(full=True)
+
+
 # ---------------------------------------------------------------------------
 # Battery / lifecycle / playback
 # ---------------------------------------------------------------------------
@@ -329,7 +379,7 @@ async def test_held_pattern_latches_single_stop_and_resumes(controller, mock_toy
     # The hold mutes playback like a block does, but leaves pause and block alone, so releasing re-drives the pattern.
     controller.apply_pattern([(10_000, 5, 3)])
     await controller.process_communication()  # drive
-    controller.set_held(True)
+    controller.set_hold_reasons(["timeout"])
 
     mock_toy.reset_mock()
     await controller.process_communication()  # playback stop, latch
@@ -340,7 +390,7 @@ async def test_held_pattern_latches_single_stop_and_resumes(controller, mock_toy
     mock_toy.strict_intensity1.assert_not_called()
     assert controller.is_paused is False and controller.is_blocked is False
 
-    controller.set_held(False)
+    controller.set_hold_reasons([])
     mock_toy.reset_mock()
     await controller.process_communication()
     mock_toy.strict_intensity1.assert_awaited_once_with(5)
@@ -384,11 +434,11 @@ def test_manual_intensity_is_refused_while_blocked_or_held(controller):
     controller.apply_blocked(True)
     assert controller.accept_manual_intensity() is False
     controller.apply_blocked(False)
-    controller.set_held(True)
+    controller.set_hold_reasons(["timeout"])
     assert controller.accept_manual_intensity() is False
     assert controller.is_paused is False  # a refused command changes nothing
 
-    controller.set_held(False)
+    controller.set_hold_reasons([])
     assert controller.accept_manual_intensity() is True
     assert controller.is_paused is True  # so the pattern does not override the command
 

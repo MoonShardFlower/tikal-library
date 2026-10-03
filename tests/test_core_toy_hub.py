@@ -199,7 +199,7 @@ async def test_safety_hold_mutes_toys_and_leaves_their_state(hub):
     await hub.set_pattern("Thunder_ID", [(10_000, 10, 0)], True, True)
     assert await _wait_until(lambda: controller.current_intensities == (10, 0))
 
-    assert await hub.set_safety_hold(True) == []
+    assert await hub.set_safety_hold(["timeout"]) == []
     state = await hub.get_state("Thunder_ID")
     assert state["is_held"] is True and state["current_intensities"] == [0, 0]
     assert state["is_paused"] is False and state["is_blocked"] is False
@@ -210,16 +210,48 @@ async def test_safety_hold_mutes_toys_and_leaves_their_state(hub):
     assert controller.current_intensities == (0, 0)
 
     # Releasing restores nothing: the pattern was never paused, so playback simply drives the toy again.
-    assert await hub.set_safety_hold(False) == []
+    assert await hub.set_safety_hold([]) == []
     assert await _wait_until(lambda: controller.current_intensities == (10, 0))
 
 
-async def test_toy_added_during_safety_hold_is_held(hub):
-    await hub.set_safety_hold(True)
-    await hub.add("Lightning_ID", "Lightning")
-    assert (await hub.get_state("Lightning_ID"))["is_held"] is True
+async def test_the_state_tells_why_a_toy_is_held_and_a_change_of_reasons_stops_nothing(
+    hub,
+):
+    reports = []
+    hub._on_toy_state_change = reports.append
+    controller = await _add_thunder(hub)
+    state = await hub.get_state("Thunder_ID")
+    assert state["is_held"] is False and state["hold_reasons"] == []
 
-    await hub.set_safety_hold(False)
+    assert await hub.set_safety_hold(["timeout"]) == []
+    assert (await hub.get_state("Thunder_ID"))["hold_reasons"] == ["timeout"]
+
+    # The hold stays on for another reason: every toy reports it, but nothing is stopped again
+    reports.clear()
+    controller._toy.strict_stop = AsyncMock(return_value=True)
+    assert await hub.set_safety_hold(["timeout", "disconnect"]) == []
+    state = await hub.get_state("Thunder_ID")
+    assert state["is_held"] is True
+    assert state["hold_reasons"] == ["disconnect", "timeout"]  # sorted
+    controller._toy.strict_stop.assert_not_awaited()
+    assert [report["hold_reasons"] for report in reports] == [["disconnect", "timeout"]]
+
+    reports.clear()
+    await hub.set_safety_hold(["disconnect", "timeout"])  # nothing changes
+    assert reports == []
+
+    await hub.set_safety_hold([])
+    state = await hub.get_state("Thunder_ID")
+    assert state["is_held"] is False and state["hold_reasons"] == []
+
+
+async def test_toy_added_during_safety_hold_is_held(hub):
+    await hub.set_safety_hold(["timeout"])
+    await hub.add("Lightning_ID", "Lightning")
+    state = await hub.get_state("Lightning_ID")
+    assert state["is_held"] is True and state["hold_reasons"] == ["timeout"]
+
+    await hub.set_safety_hold([])
     assert (await hub.get_state("Lightning_ID"))["is_held"] is False
 
 
@@ -227,7 +259,7 @@ async def test_safety_hold_reports_a_toy_it_could_not_stop(hub):
     controller = await _add_thunder(hub)
     controller._toy.strict_stop = AsyncMock(side_effect=ConnectionError("radio gone"))
 
-    assert await hub.set_safety_hold(True) == ["Thunder_ID"]
+    assert await hub.set_safety_hold(["timeout"]) == ["Thunder_ID"]
     assert (
         controller.is_held
     )  # held regardless, so nothing drives it once it is reachable again
@@ -389,6 +421,38 @@ async def test_command_failure_triggers_reconnect(hub):
         and not hub._reconnect_tasks
     )
     assert "Thunder_ID" in hub._toys
+
+
+async def test_full_info_from_a_toy_that_does_not_know_a_request_starts_no_reconnect(
+    hub, monkeypatch
+):
+    from tikal.mock import MockBleakClient
+
+    gush_id = "00:00:00:00:00:02"
+    process_command = MockBleakClient._process_command
+
+    async def like_a_real_gush(client, command):
+        if command.startswith("Status:"):
+            return b"unkown;"
+        return await process_command(client, command)
+
+    monkeypatch.setattr(MockBleakClient, "_process_command", like_a_real_gush)
+    statuses = []
+    hub._on_status_change = lambda toy_id, status: statuses.append(status)
+    assert await _wait_until(lambda: gush_id in hub._toy_data)
+    await hub.add(gush_id, "Gush")
+    await hub.intensity(gush_id, 0, 7)
+
+    info = await hub.get_info(gush_id, full=True)
+
+    assert info["status"] is None
+    assert info["batch_number"] == "241225"
+    assert info["device_type"] == "C:11:000000000002"
+    assert (await hub.get_all(gush_id, full=True))["status"] is None
+    # The toy was neither reconnected to nor stopped.
+    assert statuses == [] and not hub._reconnect_tasks
+    assert await hub.get_status(gush_id) == ToyStatus.CONNECTED
+    assert (await hub.get_state(gush_id))["current_intensities"] == [7, 0]
 
 
 async def test_reconnect_failure_marks_lost_and_removes(hub, short_reconnect_window):
@@ -661,7 +725,7 @@ async def test_state_changes_that_need_no_command_succeed_while_the_toy_reconnec
 async def test_safety_hold_reports_a_reconnecting_toy_without_trying_to_stop_it(hub):
     controller = await _reconnecting_thunder(hub)
 
-    assert await hub.set_safety_hold(True) == ["Thunder_ID"]
+    assert await hub.set_safety_hold(["timeout"]) == ["Thunder_ID"]
     assert controller.is_held is True
     assert _nothing_sent(controller)
 

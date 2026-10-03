@@ -465,8 +465,9 @@ class ToyController:
         - ``recommended_min_interval`` (int): recommended minimum interval between intensity commands, in ms
         - ``battery`` (int or None): battery level (0-100), None if the toy has no battery
 
-        Depending on the brand, there is more. Lovense toys add ``status`` (e.g., "2" for normal), ``batch_number``
-        (e.g., "241015") and ``device_type`` (e.g., "C:11:ADDRESS").
+        Depending on the brand, there is more. Lovense toys add ``status`` (e.g., 2 for normal), ``batch_number``
+        (e.g., "241015") and ``device_type`` (e.g., "C:11:ADDRESS"). ``status`` and ``batch_number`` are None for a toy
+        that does not report them.
 
         Args:
             callback: Callback invoked with the dictionary, or None if the toy could not be queried.

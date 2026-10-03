@@ -114,6 +114,7 @@ import websockets
 from pydantic import BaseModel, ValidationError
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.datastructures import Headers
+from websockets.frames import CloseCode
 from websockets.http11 import Response
 
 from .._core import (
@@ -314,6 +315,8 @@ class ToyServer:
         mock_toys: bool = False,
         log_name: str = "tikal_ws",
         insecure: bool = False,
+        bluetooth_scanner: Any = None,
+        bluetooth_client: Any = None,
     ) -> None:
         """
         Initialize the server and wire it up to a new _ToyHub instance. Call await self.serve() to begin accepting connections.
@@ -331,6 +334,8 @@ class ToyServer:
             insecure:       Allow binding a non-loopback ``host`` even though tikal has no built-in authentication.
                             Off by default: an exposed bind raises :class:`InsecureBindError`. Only set this when the
                             server is protected another way (reverse proxy, firewall, trusted LAN, or testing).
+            bluetooth_scanner: BLE scanner class to use instead of the one ``mock_toys`` picks (e.g., for tests).
+            bluetooth_client: BLE client class to use instead of the one ``mock_toys`` picks (e.g., for tests).
 
         Raises:
             InsecureBindError: ``host`` is not a loopback interface and ``insecure`` is False.
@@ -369,6 +374,8 @@ class ToyServer:
         self._shutdown_task: asyncio.Task[None] | None = None
         # The underlying websockets server object; set in serve().
         self._server: websockets.Server | None = None
+        # Set once the server no longer accepts connections (see _stop_accepting), which is the first step of a shutdown.
+        self._stopped_accepting = False
 
         self._shutdown_initiated = False
 
@@ -385,11 +392,13 @@ class ToyServer:
             default_model="",
             log_name=log_name,
             mock_toys=mock_toys,
+            bluetooth_scanner=bluetooth_scanner,
+            bluetooth_client=bluetooth_client,
         )
         self._status_page = ToyServerStatusPage(self._hub, host, port)
         # Dead-man's switch for clients that armed the heartbeat.
         self._watchdog = _HeartbeatWatchdog(
-            lambda held: self._hub.set_safety_hold(held),
+            lambda reasons: self._hub.set_safety_hold(reasons),
             lambda event_name, payload: self._broadcast(event_name, payload),
             self._log,
         )
@@ -432,7 +441,8 @@ class ToyServer:
 
     async def shutdown(self) -> None:
         """
-        Stop the server and make every toy safe: stops and disconnects all toys, then closes the listening socket.
+        Stop the server and make every toy safe: stops accepting connections (which frees the port for a new server
+        right away), stops and disconnects all toys, then closes the remaining connections.
 
         Idempotent, and safe to call from a signal handler. :meth:`serve` returns once this completes.
         """
@@ -455,14 +465,37 @@ class ToyServer:
         await self._shutdown()
 
     async def _shutdown(self) -> None:
-        """Tear down _ToyHub and close the server."""
+        """Stop accepting connections, tear down _ToyHub, and close the remaining connections."""
+        self._stop_accepting()
         await self._hub.shutdown()  # idempotent
         if self._shutdown_initiated:
             return
         self._shutdown_initiated = True
         self._watchdog.shutdown()
         if self._server is not None:
-            self._server.close()
+            # The server already stopped accepting (above), and closing it again does nothing, so the connections
+            # still open are closed here, the way Server.close() would have closed them.
+            await asyncio.gather(
+                *(
+                    connection.close(CloseCode.GOING_AWAY)
+                    for connection in list(self._server.connections)
+                ),
+                return_exceptions=True,
+            )
+
+    def _stop_accepting(self) -> None:
+        """
+        Stop accepting new connections, so a new server can take over the port right away. Idempotent.
+
+        Stopping and disconnecting every toy takes a while with real toys, and an application that is restarted
+        meanwhile must not connect to a server that is about to go away. Its own server could not even start, because
+        the port would still be taken. Connections already open stay open until the shutdown closes them.
+        """
+        if self._stopped_accepting or self._server is None:
+            return
+        self._stopped_accepting = True
+        self._server.close(close_connections=False)
+        self._log.info("Shutting down: no longer accepting connections.")
 
     async def _handle_connection(self, ws: ServerConnection) -> None:
         """
@@ -474,6 +507,7 @@ class ToyServer:
 
         On disconnect (normal close or connection error):
 
+        - If this client requested the shutdown: stops accepting connections first, so the port is free at once.
         - Removes the client from _clients and _scan_subscribers.
         - Makes the toys safe: an armed heartbeat client vanishing puts on the safety hold until a client sends
           release_hold; the *last* client leaving stops every toy and pauses its pattern, as no one has control anymore
@@ -507,6 +541,9 @@ class ToyServer:
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
+            if ws in self._shutdown_requested_clients:
+                # The shutdown begins now. The cleanup below can take seconds, and a new server may want the port.
+                self._stop_accepting()
             self._clients.discard(ws)
             # An armed heartbeat client vanishing puts on the safety hold until a client sends release_hold.
             await self._watchdog.client_disconnected(ws)

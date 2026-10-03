@@ -356,6 +356,8 @@ class ToyStateData(BaseModel):
         intensity_limits: Current intensity limits as [limit1, limit2]. All intensity commands are clamped to these values.
         is_blocked: True when the toy is blocked (both intensities forced to zero).
         is_held: True when the toy is under the safety hold of the heartbeat watchdog (both intensities forced to zero).
+        hold_reasons: Why the toy is held, sorted: "disconnect" (a client vanished; ends with release_hold) and/or
+            "timeout" (a client is overdue; ends once it is back). Empty when it is not held.
         pattern_version: Increments each time the pattern state changes.
         pattern: Active pattern as a list of (duration_ms, intensity1, intensity2) tuples.
         wraparound: True if the pattern loops after the final segment; False if it stops.
@@ -368,6 +370,7 @@ class ToyStateData(BaseModel):
     intensity_limits: list[int]
     is_blocked: bool
     is_held: bool
+    hold_reasons: list[str]
     pattern_version: int
     pattern: list[tuple[int, int, int]]
     wraparound: bool
@@ -456,6 +459,7 @@ class GetAllResponseData(BaseModel):
     intensity_limits: list[int]
     is_blocked: bool
     is_held: bool
+    hold_reasons: list[str]
     pattern_version: int
     pattern: list[tuple[int, int, int]]
     wraparound: bool

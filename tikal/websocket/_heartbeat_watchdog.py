@@ -12,7 +12,9 @@ The rules:
 - An armed client that disconnects leaves a *disconnect hold*, which ends when a client sends ``release_hold``.
 - The hold ends once no armed client is overdue and there is no disconnect hold.
 
-Every trip is announced with a ``heartbeat_timeout`` event, the end of the hold with ``hold_released``.
+Every trip is announced with a ``heartbeat_timeout`` event, the end of the hold with ``hold_released``. What the hold
+is on for at any moment ("timeout": a client is overdue, "disconnect": a disconnect hold, or both) is part of every
+toy's state (``hold_reasons``), so a client can tell whether ``release_hold`` would help.
 See docs/websocket/events.md.
 """
 
@@ -35,15 +37,15 @@ class _HeartbeatWatchdog:
     its clients do (:meth:`arm`, :meth:`disarm`, :meth:`beat`, :meth:`release`, :meth:`client_disconnected`).
 
     Args:
-        set_safety_hold: Puts the safety hold on every toy (True) or takes it off (False). Returns the ids of the toys
-            that could not be stopped when the hold was put on.
+        set_safety_hold: Puts every toy under the safety hold for the given reasons, changes the reasons, or takes the
+            hold off (no reasons). Returns the ids of the toys that could not be stopped when the hold went on.
         broadcast: Sends an event (its name and its data) to every connected client.
         log: Logger to use.
     """
 
     def __init__(
         self,
-        set_safety_hold: Callable[[bool], Awaitable[list[str]]],
+        set_safety_hold: Callable[[list[str]], Awaitable[list[str]]],
         broadcast: Callable[[str, dict[str, Any]], Awaitable[None]],
         log: Logger,
     ) -> None:
@@ -65,9 +67,8 @@ class _HeartbeatWatchdog:
         self._overdue: set[ServerConnection] = set()
         # Set when an armed client disconnected. It can never prove it is back, so only release() clears this.
         self._disconnect_hold = False
-        # Whether the safety hold is currently applied. Only changed under _hold_lock, which also keeps
-        # heartbeat_timeout / hold_released broadcasts in the order the hold actually changed.
-        self._hold_active = False
+        # The reasons the safety hold is currently applied for (see _current_reasons); empty while it is off.
+        self._applied: tuple[str, ...] = ()
         self._hold_lock = asyncio.Lock()
         # Clients given up for staying overdue whose connection is still closing. Their messages are ignored.
         self._kicked: set[ServerConnection] = set()
@@ -119,7 +120,7 @@ class _HeartbeatWatchdog:
         if self._disconnect_hold:
             self._log.info("release_hold received; clearing the disconnect hold.")
         self._disconnect_hold = False
-        await self._release_hold_if_clear()
+        await self._update_hold()
 
     async def client_disconnected(self, client: ServerConnection) -> None:
         """
@@ -172,7 +173,20 @@ class _HeartbeatWatchdog:
         self._log.info(
             "Heartbeat client recovered; %d still overdue.", len(self._overdue)
         )
-        await self._release_hold_if_clear()
+        await self._update_hold()
+
+    def _current_reasons(self) -> tuple[str, ...]:
+        """
+        What calls for the safety hold right now, sorted as the toys report it: "disconnect" for a disconnect hold
+        (which release() ends), "timeout" while an armed client is overdue (which ends once it is back). Empty if
+        nothing does.
+        """
+        reasons = []
+        if self._disconnect_hold:
+            reasons.append("disconnect")
+        if self._overdue:
+            reasons.append("timeout")
+        return tuple(reasons)
 
     async def _check_loop(self) -> None:
         """Background loop that checks heartbeat deadlines and puts on the safety hold on timeout."""
@@ -250,12 +264,12 @@ class _HeartbeatWatchdog:
         self, reason: Literal["timeout", "disconnect"], message: str
     ) -> None:
         """
-        Make sure the safety hold is on, then tell every client.
+        Make sure the safety hold is on, for what calls for it now, then tell every client.
 
         Shared by the deadline check (a client stopped sending heartbeats) and the disconnect path (a client that armed
         the heartbeat vanished): both are "we lost the controlling client, make the toys safe". The caller has already
-        recorded why (``_overdue`` or ``_disconnect_hold``), so :meth:`_release_hold_if_clear` knows when the hold may
-        end.
+        recorded why (``_overdue`` or ``_disconnect_hold``), so :meth:`_current_reasons` includes it, and
+        :meth:`_update_hold` knows when the hold may end.
 
         ``heartbeat_timeout`` is broadcast on every trip, also when the hold was already on, so clients learn about each
         client that went overdue or vanished. Its ``reason`` tells them whether the hold can end on its own.
@@ -267,11 +281,16 @@ class _HeartbeatWatchdog:
             message: Human-readable description, sent with the event.
         """
         async with self._hold_lock:
+            reasons = self._current_reasons()
+            if not reasons:
+                # What tripped it is gone already: the client sent a heartbeat (or a release_hold came) before this ran.
+                self._log.info("Heartbeat %s resolved before the hold went on.", reason)
+                return
             failed: list[str] = []
-            if not self._hold_active:
-                self._hold_active = True
+            if reasons != self._applied:
+                self._applied = reasons
                 try:
-                    failed = await self._set_safety_hold(True)
+                    failed = await self._set_safety_hold(list(reasons))
                 except Exception:
                     self._log.exception("Failed to put on the safety hold.")
                 if failed:
@@ -286,21 +305,30 @@ class _HeartbeatWatchdog:
                 dict(message=message, reason=reason, failed_toy_ids=failed),
             )
 
-    async def _release_hold_if_clear(self) -> None:
+    async def _update_hold(self) -> None:
         """
-        End the safety hold once nothing calls for it any more: no armed client overdue, and no disconnect hold.
+        Bring the safety hold in line with what calls for it, after a reason for it may have gone (a client is back, or
+        a release_hold came).
 
-        Every toy then follows its own state again (a running pattern resumes, a paused or blocked toy stays that
-        way), so nothing has to be restored. Broadcasts ``hold_released``.
+        With nothing left (no armed client overdue, no disconnect hold), the hold ends: every toy follows its own state
+        again (a running pattern resumes, a paused or blocked toy stays that way), so nothing has to be restored, and
+        ``hold_released`` is broadcast. Otherwise only its reasons change, which every toy's state reports (e.g., a
+        release_hold ended the disconnect hold, but another client is still overdue).
         """
         async with self._hold_lock:
-            if not self._hold_active or self._overdue or self._disconnect_hold:
+            if not self._applied:
+                return  # The hold is off. Putting it on is up to _trip, which announces it.
+            reasons = self._current_reasons()
+            if reasons == self._applied:
                 return
-            self._hold_active = False
+            self._applied = reasons
             try:
-                await self._set_safety_hold(False)
+                await self._set_safety_hold(list(reasons))
             except Exception:
-                self._log.exception("Failed to release the safety hold.")
+                self._log.exception("Failed to change the safety hold.")
+            if reasons:
+                self._log.info("Safety hold stays on, now for: %s", ", ".join(reasons))
+                return
             self._log.info("Safety hold released.")
             await self._broadcast(
                 "hold_released",

@@ -20,12 +20,15 @@ from tikal.websocket._heartbeat_watchdog import (
 
 pytestmark = pytest.mark.asyncio
 
-TRIPPED = ["hold on", "heartbeat_timeout:timeout"]
+TRIPPED = ["hold timeout", "heartbeat_timeout:timeout"]
 RELEASED = ["hold off", "hold_released"]
 
 
 class _Recorder:
-    """Stands in for the hub and the clients: records every hold change and every event, in order."""
+    """
+    Stands in for the hub and the clients: records every hold change (as "hold <reasons>" or "hold off") and every
+    event, in order.
+    """
 
     def __init__(self) -> None:
         self.actions: list[str] = []
@@ -36,13 +39,13 @@ class _Recorder:
             None  # if set, putting the hold on waits for it
         )
 
-    async def set_safety_hold(self, held: bool) -> list[str]:
-        self.actions.append("hold on" if held else "hold off")
-        if held and self.hold_gate is not None:
+    async def set_safety_hold(self, reasons: list[str]) -> list[str]:
+        self.actions.append(f"hold {','.join(reasons)}" if reasons else "hold off")
+        if reasons and self.hold_gate is not None:
             await self.hold_gate.wait()
         if self.hold_error is not None:
             raise self.hold_error
-        return list(self.failed_toy_ids) if held else []
+        return list(self.failed_toy_ids) if reasons else []
 
     async def broadcast(self, name: str, data: dict[str, Any]) -> None:
         self.events.append((name, data))
@@ -201,7 +204,7 @@ async def test_an_armed_client_that_disconnects_leaves_a_hold_only_release_ends(
     await dog.arm(other)
 
     await dog.client_disconnected(crashed)
-    assert recorder.actions == ["hold on", "heartbeat_timeout:disconnect"]
+    assert recorder.actions == ["hold disconnect", "heartbeat_timeout:disconnect"]
     assert recorder.events[0][1]["message"] == (
         "Heartbeat client disconnected. All toys held until a client sends release_hold."
     )
@@ -247,12 +250,15 @@ async def test_the_hold_needs_both_the_release_and_the_overdue_client_back(watch
     await _until(lambda: recorder.actions == TRIPPED)  # both in one check: one trip
 
     await dog.client_disconnected(crashed)
-    assert recorder.actions == TRIPPED + ["heartbeat_timeout:disconnect"]
+    assert recorder.actions == TRIPPED + [
+        "hold disconnect,timeout",
+        "heartbeat_timeout:disconnect",
+    ]
 
     await dog.beat(overdue)  # back, but the disconnect hold remains
-    assert len(recorder.actions) == 3
+    assert recorder.actions[4:] == ["hold disconnect"]
     await dog.release()
-    assert recorder.actions[3:] == RELEASED
+    assert recorder.actions[5:] == RELEASED
 
 
 async def test_a_client_overdue_for_the_grace_period_is_given_up(watchdog):
@@ -262,7 +268,11 @@ async def test_a_client_overdue_for_the_grace_period_is_given_up(watchdog):
     await dog.arm(client)
 
     await _until(lambda: "heartbeat_timeout:disconnect" in recorder.actions)
-    assert recorder.actions == TRIPPED + ["heartbeat_timeout:disconnect"]
+    # From now on it is a disconnect hold: what keeps the toys held changed, so the toys' state tells
+    assert recorder.actions == TRIPPED + [
+        "hold disconnect",
+        "heartbeat_timeout:disconnect",
+    ]
     await _until(lambda: client.close.await_count == 1)
     client.close.assert_awaited_once_with(
         code=CLOSE_HEARTBEAT_OVERDUE, reason="Heartbeat overdue"
@@ -272,13 +282,15 @@ async def test_a_client_overdue_for_the_grace_period_is_given_up(watchdog):
     assert client not in dog._last_beat
 
     await dog.beat(client)  # it is no longer watched, so this proves nothing
-    assert len(recorder.actions) == 3
+    assert len(recorder.actions) == 4
     await dog.release()  # now a disconnect hold, which any client may end
-    assert recorder.actions[3:] == RELEASED
+    assert recorder.actions[4:] == RELEASED
 
     await dog.client_disconnected(client)  # its connection finally closed
     assert dog.is_kicked(client) is False
-    assert recorder.actions == TRIPPED + ["heartbeat_timeout:disconnect"] + RELEASED
+    assert recorder.actions == (
+        TRIPPED + ["hold disconnect", "heartbeat_timeout:disconnect"] + RELEASED
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -319,15 +331,22 @@ async def test_a_release_waits_for_a_trip_in_progress(watchdog):
 
     leaving = asyncio.create_task(dog.client_disconnected(client))
     await _until(
-        lambda: recorder.actions == ["hold on"]
+        lambda: recorder.actions == ["hold disconnect"]
     )  # stopping the toys takes a while
     releasing = asyncio.create_task(dog.release())
     await asyncio.sleep(0.05)
-    assert recorder.actions == ["hold on"]
+    assert recorder.actions == ["hold disconnect"]
 
     recorder.hold_gate.set()
     await asyncio.gather(leaving, releasing)
-    assert recorder.actions == ["hold on", "heartbeat_timeout:disconnect"] + RELEASED
+    assert (
+        recorder.actions
+        == [
+            "hold disconnect",
+            "heartbeat_timeout:disconnect",
+        ]
+        + RELEASED
+    )
 
 
 async def test_shutdown_forgets_every_client(watchdog):
@@ -354,12 +373,57 @@ async def test_the_hold_of_a_given_up_client_outlasts_another_clients_recovery(
     await _until(lambda: recorder.actions == TRIPPED)
     await dog.beat(other)
 
-    gave_up = TRIPPED + ["heartbeat_timeout:disconnect"]
+    gave_up = TRIPPED + ["hold disconnect", "heartbeat_timeout:disconnect"]
     await _until(lambda: recorder.actions == gave_up)
     # The other client goes overdue as well, and comes back: that must not end the hold the stuck client left.
-    await _until(lambda: recorder.actions == gave_up + ["heartbeat_timeout:timeout"])
+    overdue_too = gave_up + ["hold disconnect,timeout", "heartbeat_timeout:timeout"]
+    await _until(lambda: recorder.actions == overdue_too)
     await dog.beat(other)
-    assert len(recorder.actions) == 4
+    assert recorder.actions == overdue_too + ["hold disconnect"]
 
     await dog.release()
-    assert recorder.actions[4:] == RELEASED
+    assert recorder.actions == overdue_too + ["hold disconnect"] + RELEASED
+
+
+# ---------------------------------------------------------------------------
+# What the hold is on for
+# ---------------------------------------------------------------------------
+
+
+async def test_a_release_with_a_client_still_overdue_leaves_a_timeout_hold(watchdog):
+    """The disconnect part ends and the timeout part stays: the toys' state has to tell what release_hold did."""
+    dog, recorder = watchdog
+    crashed, overdue = _client(), _client()
+    await dog.arm(crashed)
+    await dog.arm(overdue)
+    await _until(lambda: recorder.actions == TRIPPED)
+    await dog.client_disconnected(crashed)
+    assert recorder.actions[-2:] == [
+        "hold disconnect,timeout",
+        "heartbeat_timeout:disconnect",
+    ]
+
+    await dog.release()
+    assert (
+        recorder.actions[-1] == "hold timeout"
+    )  # still held, now only for the overdue client
+
+    await dog.beat(overdue)
+    assert recorder.actions[-2:] == RELEASED
+
+
+async def test_a_trip_whose_cause_is_gone_puts_no_hold_on(watchdog):
+    """
+    The deadline check runs the trip as a task, so a heartbeat can arrive before it starts. Putting the hold on then
+    would leave it on with nothing to take it off again.
+    """
+    dog, recorder = watchdog
+    client = _client()
+    dog._last_beat[client] = 0.0  # armed, without the deadline checks running
+    dog._overdue.add(client)
+    dog._overdue.discard(client)  # its heartbeat came first
+
+    await dog._trip("timeout", "Heartbeat timeout.")
+
+    assert recorder.actions == []
+    dog._last_beat.clear()

@@ -74,6 +74,7 @@ Any part of a toy’s internal state has changed (intensities, intensity limits,
   "intensity_limits": [20, 20],
   "is_blocked": false,
   "is_held": false,
+  "hold_reasons": [],
   "pattern_version": 3,
   "pattern": [[500, 100, 0], [500, 0, 100]],
   "wraparound": true,
@@ -89,6 +90,7 @@ Any part of a toy’s internal state has changed (intensities, intensity limits,
 | `intensity_limits`    | list[int]                | `[limit1, limit2]`; current intensity limits. All intensity commands are clamped to these values.              |
 | `is_blocked`          | bool                     | `true` if the toy is forced to zero intensities.                                                               |
 | `is_held`             | bool                     | `true` while the heartbeat watchdog's safety hold is on (intensities forced to zero, see `heartbeat_timeout`). |
+| `hold_reasons`        | list[str]                | Why the safety hold is on, sorted: `"disconnect"` and/or `"timeout"` (see `heartbeat_timeout`). `[]` if it is off. |
 | `pattern_version`     | int                      | Increments each time the pattern state changes.                                                                |
 | `pattern`             | list[tuple[int,int,int]] | Active pattern as a list of `(duration_ms, intensity1, intensity2)` segments.                                  |
 | `wraparound`          | bool                     | `true` if the pattern loops after the last segment; `false` if it stops.                                       |
@@ -224,6 +226,10 @@ How the hold ends depends on `reason`:
   subscribed client is overdue).
 - `"disconnect"`: only when a client sends `release_hold`. The disconnected client can never send the heartbeat that
   would end it, and another client's heartbeat does not end it either.
+
+Both can apply at once. What the hold is on for right now is in every toy's state (`hold_reasons` in
+`toy_state_changed` and `get_state`), which is broadcast again whenever it changes while the hold stays on, e.g., when
+an overdue client is given up on (`"timeout"` becomes `"disconnect"`) or a `release_hold` ended only the disconnect part.
 
 If a toy cannot be stopped (the stop and an immediate retry both failed, e.g., because the connection dropped), it is
 listed in `failed_toy_ids`. It is held regardless, and the server reconnects to it for up to about a minute, stopping it

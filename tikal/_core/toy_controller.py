@@ -6,10 +6,12 @@ Meant to be consumed by _ToyHub, which in turn is consumed by ToyServer and the 
 """
 
 import asyncio
-from typing import Any
+from typing import Any, Awaitable, Callable, Iterable, TypeVar
 
 from .._private import PatternHandler
-from ..low_level import LovenseToy, MockEstimToy, Toy
+from ..low_level import LovenseToy, MockEstimToy, Toy, UnexpectedToyResponse
+
+T = TypeVar("T")
 
 
 class _ToyController:
@@ -40,8 +42,9 @@ class _ToyController:
             self._toy.max_intensity,
         ]
         self._battery = initial_battery
-        # Safety hold of the heartbeat watchdog, owned by _ToyHub. Independent of block and pause.
-        self._held = False
+        # Safety hold of the heartbeat watchdog, owned by _ToyHub: why the toy is held (empty: not held).
+        # Independent of block and pause.
+        self._hold_reasons: tuple[str, ...] = ()
 
     @property
     def cmd_lock(self) -> asyncio.Lock:
@@ -133,11 +136,16 @@ class _ToyController:
     @property
     def is_held(self) -> bool:
         """Whether the toy is under the safety hold (intensities forced to zero, manual intensity commands rejected)."""
-        return self._held
+        return bool(self._hold_reasons)
 
-    def set_held(self, held: bool) -> None:
+    @property
+    def hold_reasons(self) -> tuple[str, ...]:
+        """Why the toy is under the safety hold, sorted (see :meth:`set_hold_reasons`). Empty if it is not held."""
+        return self._hold_reasons
+
+    def set_hold_reasons(self, reasons: Iterable[str]) -> None:
         """
-        Put the toy under the safety hold, or take it off.
+        Put the toy under the safety hold (some reasons), take it off (none), or change why it is held.
 
         The hold is independent of block and pause and leaves both untouched. While held, manual intensity commands
         are rejected and a pattern keeps advancing without driving the toy. Once the hold is off, the toy follows its
@@ -147,9 +155,10 @@ class _ToyController:
         down to zero is a separate step: see :meth:`stop_output`.
 
         Args:
-            held: True to hold the toy, False to release it.
+            reasons: Why the toy is held, as the owner of the hold names it (the WebSocket server's heartbeat watchdog
+                uses "timeout" and "disconnect"). Reported in the state as ``hold_reasons``. Empty to release the toy.
         """
-        self._held = held
+        self._hold_reasons = tuple(sorted(set(reasons)))
 
     async def stop_output(self) -> bool:
         """
@@ -168,7 +177,7 @@ class _ToyController:
 
     def _output_suppressed(self) -> bool:
         """Playback keeps the toy at zero while it is blocked *or* held."""
-        return self._is_blocked or self._held
+        return self._is_blocked or self.is_held
 
     @property
     def battery(self) -> int | None:
@@ -305,7 +314,7 @@ class _ToyController:
         Returns:
             True if the command may be sent (see :meth:`send_intensity`), False if the toy is blocked or held.
         """
-        if self._is_blocked or self._held:
+        if self._is_blocked or self.is_held:
             return False
         self._pattern_handler.set_paused(True)
         self._accepted_pause = True
@@ -385,7 +394,7 @@ class _ToyController:
             UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
 
         Returns:
-            True if the command was accepted, False if the toy has no such capability or is blocked or held. See :meth:`apply_blocked` and :meth:`set_held`
+            True if the command was accepted, False if the toy has no such capability or is blocked or held. See :meth:`apply_blocked` and :meth:`set_hold_reasons`
         """
         if not self.accept_manual_intensity():
             return False
@@ -516,6 +525,7 @@ class _ToyController:
         -  `intensity_limits` (list[int, int]) Current set intensity limits.
         -  `is_blocked` (bool) Whether the toy is currently blocked (toy's intensities are forced to zero)
         -  `is_held` (bool) Whether the toy is under the safety hold (toy's intensities are forced to zero)
+        -  `hold_reasons` (list[str]) Why the toy is under the safety hold, sorted (see :meth:`set_hold_reasons`). Empty if it is not held.
         -  `pattern_version` (int) Each time the pattern state changes, the version number is incremented
         -  `pattern` (list[tuple[int, int, int]]) List of tuples (duration, intensity1, intensity2) defining the pattern segment
         -  `wraparound` (bool)  Whether the pattern repeats from the beginning after completing the last segment. If False, both Intensities are 0 after the last segment
@@ -533,7 +543,8 @@ class _ToyController:
             current_intensities=list(self._toy.current_intensities),
             intensity_limits=self._intensity_limits.copy(),
             is_blocked=self._is_blocked,
-            is_held=self._held,
+            is_held=self.is_held,
+            hold_reasons=list(self._hold_reasons),
             pattern_version=self._pattern_handler.pattern_version,
             pattern=pattern,
             wraparound=wraparound,
@@ -685,13 +696,12 @@ class _LovenseController(_ToyController):
 
         Additional info if `full` is true:
 
-        - 'status' (str): Status code ("2" for normal)
-        - 'batch_number' (str): Manufacturing batch (e.g., "241015")
+        - 'status' (int | None): Status code (2 for normal). None if the toy does not report one.
+        - 'batch_number' (str | None): Manufacturing batch (e.g., "241015"). None if the toy does not report one.
         - 'device_type' (str): Device info (e.g., "C:11:ADDRESS")
 
         Raises:
-            - ConnectionError: The command could not be sent to the toy.
-            - UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+            - ConnectionError: A request could not be sent to the toy, or the toy did not answer it.
 
         Returns:
             dict: dictionary containing the gathered info.
@@ -702,11 +712,32 @@ class _LovenseController(_ToyController):
         info = await super().get_info(full)
 
         if full:
-            info["status"] = await self._toy.strict_get_status()
-            info["batch_number"] = await self._toy.strict_get_batch_number()
+            info["status"] = await self._if_reported(self._toy.strict_get_status)
+            info["batch_number"] = await self._if_reported(
+                self._toy.strict_get_batch_number
+            )
             info["device_type"] = await self._toy.strict_get_device_type()
 
         return info
+
+    @staticmethod
+    async def _if_reported(query: Callable[[], Awaitable[T]]) -> T | None:
+        """
+        Ask the toy for a value that not every toy reports (a Gush answers the status request with "unkown").
+
+        Args:
+            query: The strict request to send (e.g., ``strict_get_status``).
+
+        Raises:
+            ConnectionError: The request could not be sent, or the toy did not answer at all.
+
+        Returns:
+            The value, or None if the toy answered with something else.
+        """
+        try:
+            return await query()
+        except UnexpectedToyResponse:
+            return None
 
 
 class _MockEstimController(_ToyController):

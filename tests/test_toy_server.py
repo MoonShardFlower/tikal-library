@@ -662,6 +662,50 @@ async def test_direct_command_is_refused_during_a_hold(ws_server):
     assert (await client.request("direct_command", command))["success"] is True
 
 
+async def test_the_toy_state_tells_why_the_toys_are_held(ws_server):
+    """
+    hold_reasons tells a client what ends the hold: "timeout" ends once the overdue client is back, "disconnect" with
+    release_hold. When the server gives up on an overdue client, the one turns into the other.
+    """
+    server, connect = ws_server
+    _speed_up_watchdog(server)
+    server._watchdog.grace_period = 0.6
+    observer = await connect()
+    stuck = await connect()
+    await _scan_and_add(observer, "Thunder_ID", "Thunder")
+
+    async def reasons() -> list[str]:
+        reply = await observer.request("get_state", {"toy_id": "Thunder_ID"})
+        return list(reply["data"]["hold_reasons"])
+
+    assert await reasons() == []
+    get_all = await observer.request("get_all", {"toy_id": "Thunder_ID", "full": False})
+    assert get_all["data"]["hold_reasons"] == []
+
+    await stuck.request(
+        "enable_heartbeat", {"enable": True}
+    )  # and no heartbeat ever after
+    await observer.wait_event("heartbeat_timeout")
+    assert await reasons() == ["timeout"]
+    get_all = await observer.request("get_all", {"toy_id": "Thunder_ID", "full": False})
+    assert get_all["data"]["is_held"] and get_all["data"]["hold_reasons"] == ["timeout"]
+
+    # Given up after the grace period: now release_hold can end it, which the state event tells
+    observer.events.clear()
+    event = await observer.wait_event("heartbeat_timeout")
+    assert event["data"]["reason"] == "disconnect"
+    assert await reasons() == ["disconnect"]
+    assert any(
+        e["event"] == "toy_state_changed"
+        and e["data"]["hold_reasons"] == ["disconnect"]
+        for e in observer.events
+    )
+
+    await observer.request("release_hold")
+    await observer.wait_event("hold_released")
+    assert await reasons() == []
+
+
 async def test_heartbeat_timeout_reports_a_toy_it_could_not_stop(ws_server):
     """A toy the watchdog cannot reach may still be running, so the event names it. It is held regardless."""
     server, connect = ws_server
@@ -694,11 +738,11 @@ async def test_disconnect_while_the_hold_goes_on_still_holds_every_toy(ws_server
     real_set_safety_hold = server._hub.set_safety_hold
     entered, proceed = asyncio.Event(), asyncio.Event()
 
-    async def slow_set_safety_hold(held: bool) -> list[str]:
-        if held:
+    async def slow_set_safety_hold(reasons: list[str]) -> list[str]:
+        if reasons:
             entered.set()
             await proceed.wait()
-        return await real_set_safety_hold(held)
+        return await real_set_safety_hold(reasons)
 
     server._hub.set_safety_hold = slow_set_safety_hold
 
@@ -1101,6 +1145,116 @@ async def test_last_client_leaving_stops_toys_even_without_idle_shutdown():
     finally:
         with contextlib.suppress(Exception):
             await server._shutdown()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await serve_task
+
+
+async def _start_server(port: int) -> tuple[ToyServer, asyncio.Task[None]]:
+    """Start a mock-backed ToyServer on *port* and wait until it listens."""
+    server = ToyServer(
+        host="localhost",
+        port=port,
+        mock_toys=True,
+        idle_shutdown_delay=3600.0,
+        log_name="test_ws",
+    )
+    serve_task = asyncio.create_task(server.serve())
+    for _ in range(250):
+        if server._server is not None:
+            return server, serve_task
+        await asyncio.sleep(0.02)
+    serve_task.cancel()
+    raise RuntimeError("ToyServer did not start listening")
+
+
+async def test_requested_shutdown_frees_the_port_before_the_toys_are_disconnected():
+    """
+    A restarted application must be able to start its own server at once.
+
+    Stopping and disconnecting real toys takes seconds. If the old server kept listening meanwhile, the new
+    application would connect to it (only to lose it moments later), and its own server could not bind the port.
+    """
+    port = _free_port()
+    server, serve_task = await _start_server(port)
+    toys_released = asyncio.Event()
+    real_hub_shutdown = server._hub.shutdown
+
+    async def slow_hub_shutdown() -> None:
+        await toys_released.wait()
+        await real_hub_shutdown()
+
+    successor: ToyServer | None = None
+    successor_task: asyncio.Task[None] | None = None
+    try:
+        with patch.object(server._hub, "shutdown", slow_hub_shutdown):
+            client = _Client(await websockets.connect(f"ws://localhost:{port}"))
+            await client.request("shutdown")
+            await client.raw.close()
+
+            for _ in range(100):
+                if server._stopped_accepting:
+                    break
+                await asyncio.sleep(0.02)
+            assert server._stopped_accepting
+            await asyncio.sleep(0.1)
+            assert not serve_task.done()  # the toys are still being taken care of
+            with pytest.raises(OSError):
+                await websockets.connect(f"ws://localhost:{port}", open_timeout=1)
+
+            successor, successor_task = await _start_server(port)
+            newcomer = _Client(await websockets.connect(f"ws://localhost:{port}"))
+            assert (await newcomer.request("get_toy_ids"))["success"]
+            await newcomer.raw.close()
+
+            toys_released.set()
+            await asyncio.wait_for(serve_task, 10)
+    finally:
+        toys_released.set()
+        if not serve_task.done():
+            serve_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await serve_task
+        if successor is not None and successor_task is not None:
+            with contextlib.suppress(Exception):
+                await successor.shutdown()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(successor_task, 10)
+
+
+async def test_shutdown_still_closes_the_other_clients():
+    """Clients still connected when the server shuts down are closed with 1001 (going away), as before."""
+    port = _free_port()
+    server, serve_task = await _start_server(port)
+    try:
+        other = await websockets.connect(f"ws://localhost:{port}")
+        requester = _Client(await websockets.connect(f"ws://localhost:{port}"))
+        await requester.request("shutdown")
+        await requester.raw.close()
+
+        with pytest.raises(websockets.ConnectionClosed):
+            await asyncio.wait_for(other.recv(), 10)
+        assert other.close_code == 1001
+        await asyncio.wait_for(serve_task, 10)
+    finally:
+        if not serve_task.done():
+            serve_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await serve_task
+
+
+async def test_idle_shutdown_stops_accepting_first():
+    """Every way into the shutdown frees the port first, also the idle shutdown."""
+    port = _free_port()
+    server, serve_task = await _start_server(port)
+    try:
+        await server._shutdown()
+        assert server._stopped_accepting
+        with pytest.raises(OSError):
+            await websockets.connect(f"ws://localhost:{port}", open_timeout=1)
+        await asyncio.wait_for(serve_task, 10)
+    finally:
+        if not serve_task.done():
+            serve_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await serve_task
 

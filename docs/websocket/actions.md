@@ -231,6 +231,7 @@ Retrieve the in‑memory state of a toy. This is completely retrieved from the s
   "intensity_limits": [20, 20],
   "is_blocked": false,
   "is_held": false,
+  "hold_reasons": [],
   "pattern_version": 3,
   "pattern": [[1000, 5, 0], [500, 0, 0]],
   "wraparound": true,
@@ -246,6 +247,7 @@ Retrieve the in‑memory state of a toy. This is completely retrieved from the s
 | `intensity_limits`    | [int, int]      | Current intensity limits. All intensity commands are clamped to these values.                   |
 | `is_blocked`          | boolean         | `true` if the toy is blocked (both intensities forced to zero).                                 |
 | `is_held`             | boolean         | `true` while the heartbeat watchdog's safety hold is on (both intensities forced to zero).      |
+| `hold_reasons`        | array of string | Why the safety hold is on, sorted: `"disconnect"` and/or `"timeout"` (see `enable_heartbeat`). `[]` if it is off. |
 | `pattern_version`     | integer         | Increments each time the pattern state changes.                                                 |
 | `pattern`             | array of arrays | Active pattern segments: `[duration_ms, intensity1, intensity2]`. `[]` if no pattern is active. |
 | `wraparound`          | boolean         | Whether the pattern loops back to the start after finishing.                                    |
@@ -290,7 +292,8 @@ Use `full=false` for fast in‑memory data only; `full=true` may request additio
   "recommended_min_interval": 400
 }
 ```
-When `full` is `true`, extra brand-specific fields (e.g., `batch`) may appear.
+When `full` is `true`, extra brand-specific fields may appear (Lovense: `status`, `batch_number`, `device_type`).
+A value the toy itself does not report is `null`.
 
 | Field                      | Type                 | Description                                                                                                        |
 |----------------------------|----------------------|--------------------------------------------------------------------------------------------------------------------|
@@ -341,6 +344,7 @@ Use `full=false` for fast in‑memory data only; `full=true` may request additio
   "intensity_limits": [20, 20],
   "is_blocked": false,
   "is_held": false,
+  "hold_reasons": [],
   "pattern_version": 3,
   "pattern": [[1000, 5, 0], [500, 0, 0]],
   "wraparound": true,
@@ -348,7 +352,8 @@ Use `full=false` for fast in‑memory data only; `full=true` may request additio
   "elapsed": 245.0
 }
 ```
-When `full` is `true`, extra brand-specific fields (e.g., `batch`) may appear.
+When `full` is `true`, extra brand-specific fields may appear (Lovense: `status`, `batch_number`, `device_type`).
+A value the toy itself does not report is `null`.
 
 **Possible errors**
 - Unknown Toy: The provided toy ID is not known to the server.
@@ -776,7 +781,11 @@ The safety hold is separate from block and pause, and leaves both untouched. Whi
 - `intensity1` / `intensity2` are ignored (`ack: false`) and `direct_command` is refused with a Safety Hold error.
 - Patterns keep advancing without driving the toy.
 - Everything else still works and keeps its value: you can block, pause, change patterns and limits, or `stop`.
-- `get_state` reports `is_held: true`.
+- `get_state` reports `is_held: true`, and in `hold_reasons` what the hold is on for: `"timeout"` while a subscribed
+  client is overdue (ends once it is back), `"disconnect"` after a subscribed client disconnected or was given up on
+  (ends with `release_hold`). Both can apply at once. Whenever the reasons change while the hold stays on (e.g., an
+  overdue client is given up on, or `release_hold` ended the disconnect part), every toy's new state is broadcast as
+  `toy_state_changed`. So `release_hold` only helps while `hold_reasons` contains `"disconnect"`.
 
 When the hold ends, each toy simply follows its own state again: a running pattern carries on from its current position,
 a paused or blocked toy stays that way, and manual intensity levels are not replayed. A `hold_released` event is broadcast.
@@ -877,6 +886,11 @@ Watch for `hold_released` (or `is_held` in `get_state`) to know when the toys ar
 Shut down the server. Any toys still connected will be automatically stopped and disconnected.
 The command is acknowledged right away. 
 However, the actual shutdown is only triggered once the client who made the request has closed its Websocket connection.
+
+From then on, the server no longer accepts connections, so a new server can take over the port at once (e.g., when an
+application is restarted) while this one is still stopping and disconnecting the toys. Clients that are still connected
+are closed with close code 1001 (going away) once the toys are taken care of. The same applies to the automatic shutdown
+after the last client has left.
 
 **Request data**
 ```json

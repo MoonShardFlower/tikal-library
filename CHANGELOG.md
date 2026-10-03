@@ -22,6 +22,9 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
         ends, every toy follows its own state again and the new `hold_released` event is broadcast.
     - Web API: The `heartbeat_timeout` event payload gained `reason` ("timeout" or "disconnect") and `failed_toy_ids`, so a client can
         tell whether the hold ends on its own and which toys could not be reached (and may still be running).
+    - Web API: A toy's state (`get_state`, `get_all`, `toy_state_changed`) gained `hold_reasons`: what the safety hold is on for right
+        now ("disconnect" and/or "timeout"), so a client can tell whether `release_hold` would help. A change of the reasons while the
+        hold stays on (e.g., an overdue client is given up on) is broadcast as `toy_state_changed`.
     - High-Level API + Web API: A toy whose connection fails is now reconnected with repeated attempts for up to one minute before
         it is given up (previously a single attempt, which the High-Level API also cut off after 5 seconds). Each attempt stops the
         toy and pauses its pattern once connected, so a stop that failed before (e.g., the safety hold's) still gets through.
@@ -93,6 +96,10 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
         internal `ToyController.toy`, `is_connected` setter, `process_communication` and `internal_*` methods.
 
 ### Fixed
+    - High-Level API + Web API: Asking a Lovense toy for its full information (`get_information`, `get_info` / `get_all` with
+        `full=true`) no longer fails when the toy does not know one of the requests.
+    - Web API: A server that shuts down stops accepting connections right away, instead of only after it has stopped and
+        disconnected every toy.
     - Web API: `--log-level` accepts lower-case level names (e.g., `debug`). Previously they crashed the CLI at startup.
     - High-Level API: A disconnected toy's `ToyController` no longer reports `is_blocked` as True.
     - Web API: `set_blocked`, `set_paused`, `toggle_block` and `toggle_pause` no longer undo themselves when the first attempt hits a
