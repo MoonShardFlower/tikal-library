@@ -11,6 +11,12 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     - Web API: New documentation file in ./docs/websocket/security.md
     - Web API: Ready-to-run reverse-proxy examples under ./examples/Websocket/reverse-proxy/ 
         (Caddyfile with public-domain and LAN variants, an nginx equivalent, and a decision guide covering Caddy vs. Tailscale plus a Windows quick-start).
+    - Web API: `ToyServer.shutdown()`, a public, idempotent counterpart to `serve()` that stops and disconnects every toy and then closes the server.
+    - High-Level API: `ToyHub` now registers `shutdown()` as an `atexit` safety net. A program that never calls it (including one ending in an
+       uncaught exception or a KeyboardInterrupt) no longer leaves its toys running. The hook holds only a weak reference and is
+       unregistered by an explicit `shutdown()`. It cannot help if the process is killed outright (SIGKILL, `os._exit`).
+    - High-Level API: Intensity limits, as in the WebSocket API: `ToyController.set_intensity1_limit`, `set_intensity2_limit` and
+       `intensity_limits`. A limit caps every command and pattern value, and brings a toy already running above it down right away.
 
 ### Changed
     - Web API: The heartbeat watchdog now blocks every toy (and stops it) instead of just stopping it. Toys stay blocked 
@@ -72,14 +78,6 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
         current_intensities therefore reports what the toy is actually at instead of what was last requested.
     - Low-Level API: New helper `carried_over_capabilities(old, new)` in toy_data, exported from tikal.low_level. Brand Toy implementations
         use it to decide which capabilities survive a model change.
-
-### Added
-    - Web API: `ToyServer.shutdown()`, a public, idempotent counterpart to `serve()` that stops and disconnects every toy and then closes the server.
-    - High-Level API: `ToyHub` now registers `shutdown()` as an `atexit` safety net. A program that never calls it (including one ending in an
-        uncaught exception or a KeyboardInterrupt) no longer leaves its toys running. The hook holds only a weak reference and is
-        unregistered by an explicit `shutdown()`. It cannot help if the process is killed outright (SIGKILL, `os._exit`).
-    - High-Level API: Intensity limits, as in the WebSocket API: `ToyController.set_intensity1_limit`, `set_intensity2_limit` and
-        `intensity_limits`. A limit caps every command and pattern value, and brings a toy already running above it down right away.
 
 ### Removed
     - High-Level API: The module path `tikal.high_level.toy_cache` no longer exists. Import `ToyCache` from `tikal.high_level` instead
