@@ -89,9 +89,12 @@ def test_set_pattern_is_visible_at_once_and_clearing_stops_the_toy(mock_hub):
     assert toy.get_pattern_data()[0] == [(60_000, 30, 0)]
     assert wait_until(lambda: toy.current_intensities == (30, 0))
 
-    toy.set_pattern([])
-    assert toy.get_pattern_data()[0] == [] and toy.is_paused is True
+    toy.set_pattern([])  # leaves the pause alone
+    assert toy.get_pattern_data()[0] == [] and toy.is_paused is False
     assert wait_until(lambda: toy.current_intensities == (0, 0))
+
+    toy.set_pattern([(60_000, 30, 0)])  # plays right away, as no pause was left behind
+    assert wait_until(lambda: toy.current_intensities == (30, 0))
 
 
 # ---------------------------------------------------------------------------

@@ -237,8 +237,8 @@ class _ToyController:
         - intensity1: Primary capability intensity (0-max)
         - intensity2: Secondary capability intensity (0-max)
 
-        The maximum possible intensity can be looked up via :meth:`get_info`. An empty list clears the pattern, which
-        stops the toy like :meth:`apply_stop` does.
+        The maximum possible intensity can be looked up via :meth:`get_info`. An empty list clears the pattern and stops
+        the toy but leaves the pause as it is.
 
         Args:
             pattern: List of (duration_ms, intensity1, intensity2) tuples
@@ -259,7 +259,9 @@ class _ToyController:
         """
         self._pattern_handler.set_pattern(pattern, wraparound, reset_time)
         if not pattern:  # ensure that intensities are 0 if pattern is cleared
-            return self.apply_stop()
+            # The stop happens behind playback's back: a pattern set later has to send its values again.
+            self._invalidate_last_values()
+            return True
         return False
 
     def apply_stop(self) -> bool:

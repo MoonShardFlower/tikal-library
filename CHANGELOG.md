@@ -63,6 +63,7 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
         Else an error message is logged and the server terminated.
     - Web API: set_pattern now stores the pattern exactly as sent instead of baking the current intensity limits into it.
         get_state therefore reports the pattern you sent, and withdrawing a limit restores the pattern's own values.
+    - High-Level API + Web API: Clearing a pattern (set_pattern with an empty list) still stops the toy, but no longer pauses it.
     - Web API: set_intensity1_limit / set_intensity2_limit now also bring a toy that is already running above the new limit down to it, instead of only clamping later commands.
     - Low-Level API: A model change now only interrupts the capabilities it has to. Capabilities both models drive with the same command
         keep their level (Solace -> Sex Machine interrupts nothing). A command that the new model replaces or drops is switched off as part of the change.

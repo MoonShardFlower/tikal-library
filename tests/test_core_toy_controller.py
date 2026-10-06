@@ -334,12 +334,32 @@ async def test_pattern_playback_sends_changed_values_once(controller, mock_toy):
     mock_toy.strict_intensity2.assert_not_called()
 
 
-def test_clearing_pattern_asks_for_a_stop(controller, mock_toy):
+def test_clearing_pattern_asks_for_a_stop_and_keeps_the_pause(controller, mock_toy):
     assert controller.apply_pattern([(1000, 5, 3)]) is False
     assert controller.apply_pattern([]) is True  # the toy has to be stopped
     assert controller.get_state()["pattern"] == []
-    assert controller.is_paused is True  # like every stop
+    assert controller.is_paused is False  # nothing left that could start the toy again
     assert not mock_toy.mock_calls
+
+    controller.apply_paused(True)
+    assert controller.apply_pattern([]) is True
+    assert controller.is_paused is True
+
+
+@pytest.mark.asyncio
+async def test_pattern_set_after_clearing_drives_the_toy(controller, mock_toy):
+    # Clearing stops the toy behind playback's back: a new pattern at the same level must still be sent.
+    controller.apply_pattern([(10_000, 5, 3)])
+    await controller.process_communication()
+    assert controller.apply_pattern([]) is True
+    await controller.stop_output()
+    await controller.process_communication()  # no pattern: nothing to play
+
+    mock_toy.reset_mock()
+    controller.apply_pattern([(10_000, 5, 3)])
+    await controller.process_communication()
+    mock_toy.strict_intensity1.assert_awaited_once_with(5)
+    mock_toy.strict_intensity2.assert_awaited_once_with(3)
 
 
 @pytest.mark.asyncio
