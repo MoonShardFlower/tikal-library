@@ -375,11 +375,13 @@ async def test_blocked_pattern_latches_single_stop(controller, mock_toy):
 
 
 @pytest.mark.asyncio
-async def test_held_pattern_latches_single_stop_and_resumes(controller, mock_toy):
-    # The hold mutes playback like a block does, but leaves pause and block alone, so releasing re-drives the pattern.
+async def test_a_block_that_keeps_the_pause_leaves_a_running_pattern_running(
+    controller, mock_toy
+):
+    # Muted like any block, but the pattern is not paused by it, so unblocking re-drives the pattern.
     controller.apply_pattern([(10_000, 5, 3)])
     await controller.process_communication()  # drive
-    controller.set_hold_reasons(["timeout"])
+    assert controller.apply_blocked(True, keep_pause=True) is True
 
     mock_toy.reset_mock()
     await controller.process_communication()  # playback stop, latch
@@ -388,9 +390,9 @@ async def test_held_pattern_latches_single_stop_and_resumes(controller, mock_toy
     assert await controller.intensity(0, 7) is False
     assert await controller.intensity(1, 7) is False
     mock_toy.strict_intensity1.assert_not_called()
-    assert controller.is_paused is False and controller.is_blocked is False
+    assert controller.is_paused is False and controller.is_blocked is True
 
-    controller.set_hold_reasons([])
+    controller.apply_blocked(False)
     mock_toy.reset_mock()
     await controller.process_communication()
     mock_toy.strict_intensity1.assert_awaited_once_with(5)
@@ -429,16 +431,26 @@ def test_apply_stop_pauses_the_pattern_and_leaves_the_block_alone(controller, mo
     assert not mock_toy.mock_calls
 
 
-def test_manual_intensity_is_refused_while_blocked_or_held(controller):
+def test_a_block_that_keeps_the_pause_keeps_a_paused_toy_paused(controller):
     controller.apply_pattern([(10_000, 5, 3)])
-    controller.apply_blocked(True)
-    assert controller.accept_manual_intensity() is False
+    controller.apply_paused(True)
+    controller.apply_blocked(True, keep_pause=True)
+    assert controller.is_blocked is True and controller.is_paused is True
+
     controller.apply_blocked(False)
-    controller.set_hold_reasons(["timeout"])
+    assert controller.is_blocked is False and controller.is_paused is True
+
+    controller.apply_blocked(True)  # an ordinary block still ends the pause
+    assert controller.is_paused is False
+
+
+def test_manual_intensity_is_refused_while_blocked(controller):
+    controller.apply_pattern([(10_000, 5, 3)])
+    controller.apply_blocked(True, keep_pause=True)
     assert controller.accept_manual_intensity() is False
     assert controller.is_paused is False  # a refused command changes nothing
 
-    controller.set_hold_reasons([])
+    controller.apply_blocked(False)
     assert controller.accept_manual_intensity() is True
     assert controller.is_paused is True  # so the pattern does not override the command
 

@@ -17,8 +17,8 @@ from tikal._core import (
     DiscoveryError,
     DiscoveryStartError,
     InvalidModelError,
-    SafetyHoldError,
     ToyAlreadyAddedError,
+    ToyBlockedError,
     ToyConnectionError,
     ToyNotConnectedError,
     ToyStatus,
@@ -194,75 +194,65 @@ async def test_block_and_pause_survive_a_retried_stop(hub, command, args, flag):
     assert controller._toy.strict_stop.await_count == 2  # the retry re-sent the stop
 
 
-async def test_safety_hold_mutes_toys_and_leaves_their_state(hub):
+async def test_safety_block_blocks_and_stops_every_toy_and_keeps_its_pause(hub):
     controller = await _add_thunder(hub)
     await hub.set_pattern("Thunder_ID", [(10_000, 10, 0)], True, True)
     assert await _wait_until(lambda: controller.current_intensities == (10, 0))
 
-    assert await hub.set_safety_hold(["timeout"]) == []
+    assert await hub.block_all_for_safety() == (["Thunder_ID"], [])
     state = await hub.get_state("Thunder_ID")
-    assert state["is_held"] is True and state["current_intensities"] == [0, 0]
-    assert state["is_paused"] is False and state["is_blocked"] is False
+    assert state["is_blocked"] is True and state["current_intensities"] == [0, 0]
+    assert state["is_paused"] is False  # unlike an ordinary block, which ends the pause
     assert await hub.intensity("Thunder_ID", 0, 5) is False
-    with pytest.raises(SafetyHoldError):
+    with pytest.raises(ToyBlockedError):
         await hub.direct_command("Thunder_ID", "DeviceType")
-    await asyncio.sleep(COMMUNICATION_INTERVAL * 4)  # playback cannot drive a held toy
+    await asyncio.sleep(
+        COMMUNICATION_INTERVAL * 4
+    )  # playback cannot drive a blocked toy
     assert controller.current_intensities == (0, 0)
 
-    # Releasing restores nothing: the pattern was never paused, so playback simply drives the toy again.
-    assert await hub.set_safety_hold([]) == []
+    # Unblocking restores nothing: the pattern was never paused, so playback simply drives the toy again.
+    await hub.set_blocked("Thunder_ID", False)
     assert await _wait_until(lambda: controller.current_intensities == (10, 0))
 
 
-async def test_the_state_tells_why_a_toy_is_held_and_a_change_of_reasons_stops_nothing(
-    hub,
-):
+async def test_safety_block_leaves_blocked_toys_alone_and_keeps_a_pause(hub):
     reports = []
     hub._on_toy_state_change = reports.append
-    controller = await _add_thunder(hub)
-    state = await hub.get_state("Thunder_ID")
-    assert state["is_held"] is False and state["hold_reasons"] == []
-
-    assert await hub.set_safety_hold(["timeout"]) == []
-    assert (await hub.get_state("Thunder_ID"))["hold_reasons"] == ["timeout"]
-
-    # The hold stays on for another reason: every toy reports it, but nothing is stopped again
-    reports.clear()
-    controller._toy.strict_stop = AsyncMock(return_value=True)
-    assert await hub.set_safety_hold(["timeout", "disconnect"]) == []
-    state = await hub.get_state("Thunder_ID")
-    assert state["is_held"] is True
-    assert state["hold_reasons"] == ["disconnect", "timeout"]  # sorted
-    controller._toy.strict_stop.assert_not_awaited()
-    assert [report["hold_reasons"] for report in reports] == [["disconnect", "timeout"]]
-
-    reports.clear()
-    await hub.set_safety_hold(["disconnect", "timeout"])  # nothing changes
-    assert reports == []
-
-    await hub.set_safety_hold([])
-    state = await hub.get_state("Thunder_ID")
-    assert state["is_held"] is False and state["hold_reasons"] == []
-
-
-async def test_toy_added_during_safety_hold_is_held(hub):
-    await hub.set_safety_hold(["timeout"])
+    thunder = await _add_thunder(hub)
     await hub.add("Lightning_ID", "Lightning")
-    state = await hub.get_state("Lightning_ID")
-    assert state["is_held"] is True and state["hold_reasons"] == ["timeout"]
+    await hub.set_pattern("Thunder_ID", [(10_000, 10, 0)], True, True)
+    await hub.set_paused("Thunder_ID", True)
+    await hub.set_blocked("Lightning_ID", True)
 
-    await hub.set_safety_hold([])
-    assert (await hub.get_state("Lightning_ID"))["is_held"] is False
+    reports.clear()
+    thunder._toy.strict_stop = AsyncMock(return_value=True)
+    assert await hub.block_all_for_safety() == (["Thunder_ID"], [])
+    state = await hub.get_state("Thunder_ID")
+    assert state["is_blocked"] is True and state["is_paused"] is True
+    assert [report["toy_id"] for report in reports] == ["Thunder_ID"]
+
+    await hub.set_blocked("Thunder_ID", False)
+    assert (await hub.get_state("Thunder_ID"))[
+        "is_paused"
+    ] is True  # still paused: nothing starts
 
 
-async def test_safety_hold_reports_a_toy_it_could_not_stop(hub):
+async def test_toy_added_after_a_safety_block_is_not_blocked(hub):
+    await _add_thunder(hub)
+    await hub.block_all_for_safety()
+    await hub.add("Lightning_ID", "Lightning")
+    assert (await hub.get_state("Lightning_ID"))["is_blocked"] is False
+
+
+async def test_safety_block_reports_a_toy_it_could_not_stop(hub):
     controller = await _add_thunder(hub)
     controller._toy.strict_stop = AsyncMock(side_effect=ConnectionError("radio gone"))
 
-    assert await hub.set_safety_hold(["timeout"]) == ["Thunder_ID"]
+    assert await hub.block_all_for_safety() == (["Thunder_ID"], ["Thunder_ID"])
     assert (
-        controller.is_held
-    )  # held regardless, so nothing drives it once it is reachable again
+        controller.is_blocked
+    )  # blocked regardless, so nothing drives it once it is reachable again
 
 
 async def test_intensity_limits_clamp(hub):
@@ -722,11 +712,11 @@ async def test_state_changes_that_need_no_command_succeed_while_the_toy_reconnec
     assert _nothing_sent(controller)
 
 
-async def test_safety_hold_reports_a_reconnecting_toy_without_trying_to_stop_it(hub):
+async def test_safety_block_reports_a_reconnecting_toy_without_trying_to_stop_it(hub):
     controller = await _reconnecting_thunder(hub)
 
-    assert await hub.set_safety_hold(["timeout"]) == ["Thunder_ID"]
-    assert controller.is_held is True
+    assert await hub.block_all_for_safety() == (["Thunder_ID"], ["Thunder_ID"])
+    assert controller.is_blocked is True
     assert _nothing_sent(controller)
 
 

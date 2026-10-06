@@ -123,8 +123,8 @@ from .._core import (
     DiscoveryError,
     DiscoveryStartError,
     InvalidModelError,
-    SafetyHoldError,
     ToyAlreadyAddedError,
+    ToyBlockedError,
     ToyConnectionError,
     ToyNotConnectedError,
     ToyStatus,
@@ -251,8 +251,8 @@ _ERROR_REPLIES: dict[type, _ErrorReply] = {
     InvalidModelError: _ErrorReply("Invalid Model", _ErrMsg.INVALID_MODEL_ERROR),
     BadModelError: _ErrorReply("Bad Model", _ErrMsg.BAD_MODEL_ERROR, logging.ERROR),
     UnknownToyError: _ErrorReply("Unknown Toy", _ErrMsg.UNKNOWN_TOY_ERROR),
-    SafetyHoldError: _ErrorReply(
-        "Safety Hold", _ErrMsg.SAFETY_HOLD_ERROR, logging.INFO, with_traceback=False
+    ToyBlockedError: _ErrorReply(
+        "Blocked Toy", _ErrMsg.BLOCKED_TOY_ERROR, logging.INFO, with_traceback=False
     ),
     # Same error kind as a failed command, so clients handle both alike; only the message tells them apart.
     ToyNotConnectedError: _ErrorReply(
@@ -398,7 +398,7 @@ class ToyServer:
         self._status_page = ToyServerStatusPage(self._hub, host, port)
         # Dead-man's switch for clients that armed the heartbeat.
         self._watchdog = _HeartbeatWatchdog(
-            lambda reasons: self._hub.set_safety_hold(reasons),
+            lambda: self._hub.block_all_for_safety(),
             lambda event_name, payload: self._broadcast(event_name, payload),
             self._log,
         )
@@ -509,9 +509,8 @@ class ToyServer:
 
         - If this client requested the shutdown: stops accepting connections first, so the port is free at once.
         - Removes the client from _clients and _scan_subscribers.
-        - Makes the toys safe: an armed heartbeat client vanishing puts on the safety hold until a client sends
-          release_hold; the *last* client leaving stops every toy and pauses its pattern, as no one has control anymore
-          and idle shutdown might be disabled or still seconds away.
+        - Watchdog: an armed heartbeat client vanishing blocks every toy; the last client leaving stops every toy and
+          pauses its pattern (no one has control anymore) and idle shutdown might be disabled or still seconds away.
         - Stops the BLE scan if this was the last scan subscriber.
         - Drops this client's intensity limits and re-applies the remaining clients' ceiling.
         - Starts the idle-shutdown timer if no other clients remain.
@@ -530,8 +529,7 @@ class ToyServer:
         try:
             async for raw in ws:
                 if self._watchdog.is_kicked(ws):
-                    # The watchdog gave up on this client. Whatever it still sends while its connection closes must
-                    # not count, e.g., a release_hold for the hold it caused.
+                    # Watchdog gave up on this client. Whatever it sends while the connection closes does not count.
                     continue
                 # Spawn a task per message so the receiver loop stays responsive.
                 message = raw if isinstance(raw, str) else raw.decode("utf-8")
@@ -545,7 +543,7 @@ class ToyServer:
                 # The shutdown begins now. The cleanup below can take seconds, and a new server may want the port.
                 self._stop_accepting()
             self._clients.discard(ws)
-            # An armed heartbeat client vanishing puts on the safety hold until a client sends release_hold.
+            # An armed heartbeat client vanishing blocks every toy, until the user unblocks them.
             await self._watchdog.client_disconnected(ws)
             if not self._clients:
                 # Nobody is watching anymore, so a running pattern would keep driving the toy indefinitely: idle
@@ -824,7 +822,6 @@ class ToyServer:
                 HeartbeatEnableData, AckData, self._cmd_enable_heartbeat
             ),
             "heartbeat": _Command(_EmptyData, AckData, self._cmd_heartbeat),
-            "release_hold": _Command(_EmptyData, AckData, self._cmd_release_hold),
             "shutdown": _Command(_EmptyData, AckData, self._cmd_shutdown),
         }
 
@@ -859,13 +856,6 @@ class ToyServer:
                     await self._hub.stop_scan()
                 except Exception:
                     pass
-
-    async def _cmd_release_hold(
-        self, _ws: ServerConnection, _data: Any
-    ) -> dict[str, Any]:
-        """End a hold caused by a disconnected client (see _HeartbeatWatchdog.release)."""
-        await self._watchdog.release()
-        return {"ack": True}
 
     async def _cmd_enable_heartbeat(
         self, ws: ServerConnection, data: Any

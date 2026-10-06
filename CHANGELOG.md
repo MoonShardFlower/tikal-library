@@ -13,21 +13,15 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
         (Caddyfile with public-domain and LAN variants, an nginx equivalent, and a decision guide covering Caddy vs. Tailscale plus a Windows quick-start).
 
 ### Changed
-    - Web API: The heartbeat watchdog now puts every toy under a **safety hold** instead of just stopping it, and no longer disarms
-        itself when it fires. The hold is separate from block and pause and leaves both untouched: toys are kept at zero (including
-        toys added during the hold), `direct_command` is refused, and patterns advance without effect.
-        It stays on while any subscribed client is overdue and ends when it sends a `heartbeat` again (or unsubscribes).
-        A client that stays overdue for 30 seconds is treated as disconnected and closed with close code 4000. 
-        A hold caused by a subscribed client disconnecting only ends with the new `release_hold` command. When the hold
-        ends, every toy follows its own state again and the new `hold_released` event is broadcast.
-    - Web API: The `heartbeat_timeout` event payload gained `reason` ("timeout" or "disconnect") and `failed_toy_ids`, so a client can
-        tell whether the hold ends on its own and which toys could not be reached (and may still be running).
-    - Web API: A toy's state (`get_state`, `get_all`, `toy_state_changed`) gained `hold_reasons`: what the safety hold is on for right
-        now ("disconnect" and/or "timeout"), so a client can tell whether `release_hold` would help. A change of the reasons while the
-        hold stays on (e.g., an overdue client is given up on) is broadcast as `toy_state_changed`.
+    - Web API: The heartbeat watchdog now blocks every toy (and stops it) instead of just stopping it. Toys stay blocked 
+        until a client unblocks them. Unlike a block a client asks for, the watchdog's block keeps a toy's pause
+        (block+pause possible at the same time).
+    - Web API: The `heartbeat_timeout` event payload gained `reason` ("timeout" or "disconnect"), `blocked_toy_ids` and
+        `failed_toy_ids`, so a client can tell which toys were blocked and which could not be reached (and may still be running).
+    - Web API: `direct_command` is refused for a blocked toy (new error: Blocked Toy), as a raw command could drive it.
     - High-Level API + Web API: A toy whose connection fails is now reconnected with repeated attempts for up to one minute before
         it is given up (previously a single attempt, which the High-Level API also cut off after 5 seconds). Each attempt stops the
-        toy and pauses its pattern once connected, so a stop that failed before (e.g., the safety hold's) still gets through.
+        toy and pauses its pattern once connected, so a stop that failed before (e.g., the heartbeat watchdog's) still gets through.
         Web API: a toy that is given up is declared lost and removed. High-Level API: the reconnection-failure callback fires and
         the toy is disconnected, as before.
     - High-Level API: After reconnecting, a toy is now stopped and its pattern paused instead of resuming on its own (a block is
@@ -79,8 +73,6 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
         use it to decide which capabilities survive a model change.
 
 ### Added
-    - Web API: `release_hold` command and `hold_released` event for the heartbeat watchdog's safety hold, `is_held` in the toy state
-        (`get_state`, `get_all`, `toy_state_changed`), and a Safety Hold error for `direct_command` during the hold.
     - Web API: `ToyServer.shutdown()`, a public, idempotent counterpart to `serve()` that stops and disconnects every toy and then closes the server.
     - High-Level API: `ToyHub` now registers `shutdown()` as an `atexit` safety net. A program that never calls it (including one ending in an
         uncaught exception or a KeyboardInterrupt) no longer leaves its toys running. The hook holds only a weak reference and is

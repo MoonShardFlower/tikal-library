@@ -13,7 +13,7 @@ import logging
 import traceback
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Coroutine, Iterable, TypeVar
+from typing import Any, Awaitable, Callable, Coroutine, TypeVar
 
 from bleak import BleakClient, BleakScanner
 
@@ -66,8 +66,8 @@ class UnknownToyError(ValueError):
         self.toy_id = toy_id
 
 
-class SafetyHoldError(ValueError):
-    """Raised when a command that could drive a toy is refused because the toy is under the safety hold."""
+class ToyBlockedError(ValueError):
+    """Raised when a command that could drive a toy is refused because the toy is blocked."""
 
     def __init__(self, toy_id: str):
         self.toy_id = toy_id
@@ -208,8 +208,6 @@ class _ToyHub:
         self._toy_data: dict[str, ToyData] = {}
         self._all_seen_toy_ids: set[str] = set()
         self._pending_toy_ids: set[str] = set()
-        # Safety hold (see set_safety_hold): why every toy is held, sorted (empty: no hold).
-        self._hold_reasons: tuple[str, ...] = ()
 
         # Status tracking
         self._on_status_change = on_status_change or (lambda a, b: None)
@@ -869,8 +867,6 @@ class _ToyHub:
             raise e
 
         self._pending_toy_ids.discard(toy_id)
-        # A toy connected during a safety hold is held too. It is at rest after connecting, so no stop is needed.
-        toy.set_hold_reasons(self._hold_reasons)
         self._toys[toy_id] = toy
         self._toy_status[toy_id] = ToyStatus.CONNECTED
         self._toy_cache.update({toy.name: toy.model_name})
@@ -967,7 +963,7 @@ class _ToyHub:
         Set the intensity of one capability of a toy.
 
         If a pattern is active and not paused, calling this method pauses the pattern to avoid conflicts.
-        Will do nothing if the toy is blocked or under the safety hold.
+        Will do nothing if the toy is blocked.
         Safe to call for the secondary capability of a toy that has none (will do nothing on it).
 
         Args:
@@ -981,7 +977,7 @@ class _ToyHub:
             UnknownToyError: The toy was not added before.
 
         Returns:
-            True if the toy took the command, False if it is blocked, held, or has no such capability.
+            True if the toy took the command, False if it is blocked or has no such capability.
         """
         name = f"intensity{channel + 1}"
         self._log.info(f"Setting {name} of {toy_id} to {intensity}")
@@ -1087,57 +1083,47 @@ class _ToyHub:
             lambda toy: None if toy.is_blocked == block else toy.apply_blocked(block),
         )
 
-    async def set_safety_hold(self, reasons: Iterable[str]) -> list[str]:
+    async def block_all_for_safety(self) -> tuple[list[str], list[str]]:
         """
-        Put every toy under the safety hold (some reasons), take it off (none), or change why it is on.
+        Block every toy that is not blocked yet, and stop it: what the WebSocket server's heartbeat watchdog does when a
+        controlling client stops responding or vanishes.
 
-        The hold is independent of block and pause, and leaves both (and patterns and limits) untouched. While it is
-        on, every toy, including one added later, is kept at zero: manual intensity commands are rejected, direct
-        commands raise :class:`SafetyHoldError`, and patterns keep advancing without driving the toy. Taking it off
-        lets every toy follow its own state again, so nothing has to be restored.
+        Unlike a block a client asks for, this one leaves the pause alone (see :meth:`_ToyController.apply_blocked`):
+        once a toy is unblocked, a paused pattern stays paused, and a running one carries on from where it is by then.
+        Toys that are blocked already stay as they are. Nothing lifts this block on its own: each toy has to be unblocked
+        (:meth:`set_blocked`), which is up to the user.
 
-        All flags change at once (without an await in between), so no command or playback tick sees a half-applied
-        hold. Putting the hold on then stops every toy, concurrently.
-
-        Args:
-            reasons: Why every toy is held, as the owner of the hold names it (the WebSocket server's heartbeat watchdog
-                uses "timeout" and "disconnect"). Empty to release them.
+        All flags change at once (without an await in between), so no command or playback tick sees some toys blocked
+        and others not yet. Then every newly blocked toy is stopped, concurrently. Toys that are not connected (e.g.,
+        reconnecting) are blocked as well, so nothing drives them once they are back, but cannot be stopped now.
 
         Returns:
-            Ids of the toys that could not be stopped when the hold was put on, including toys that were not connected
-            (e.g., reconnecting). They are held regardless (nothing drives them once they are reachable again), but may
-            still be running. Always empty unless the hold was off before.
+            ``(blocked, not_stopped)``: the ids of the toys this blocked, and of those among them that could not be
+            stopped. They may still be running until the hub reaches them again (reconnecting stops a toy).
         """
-        new_reasons = tuple(sorted(set(reasons)))
-        if new_reasons == self._hold_reasons:
-            return []
-        held = bool(new_reasons)
-        went_on = held and not self._hold_reasons
-        self._log.info(f"Setting safety hold to {list(new_reasons) or 'off'}")
-        self._hold_reasons = new_reasons
-        for toy in self._toys.values():
-            toy.set_hold_reasons(new_reasons)
-        toy_ids = list(self._toys.keys())
+        blocked = [toy_id for toy_id, toy in self._toys.items() if not toy.is_blocked]
+        self._log.info(f"Blocking every toy for safety: {blocked}")
+        for toy_id in blocked:
+            self._toys[toy_id].apply_blocked(True, keep_pause=True)
 
-        async def apply(toy_id: str) -> bool:
-            """Stop one toy if the hold went on, and report its new state. False if the stop failed."""
+        async def stop(toy_id: str) -> bool:
+            """Stop one toy that was just blocked, and report its new state. False if the stop failed."""
             try:
                 toy = self._get_toy(toy_id)
             except UnknownToyError:
                 return True  # removed in the meantime
             stopped = True
-            if went_on:
-                try:
-                    async with toy.cmd_lock:
-                        await self._run_toy_command(toy, "stop", toy.stop_output)
-                except ToyConnectionError:
-                    self._log.warning(f"Could not stop {toy_id} for the safety hold.")
-                    stopped = False
+            try:
+                async with toy.cmd_lock:
+                    await self._run_toy_command(toy, "stop", toy.stop_output)
+            except ToyConnectionError:
+                self._log.warning(f"Could not stop {toy_id} after blocking it.")
+                stopped = False
             await self._report_state(toy)
             return stopped
 
-        results = await asyncio.gather(*(apply(toy_id) for toy_id in toy_ids))
-        return [toy_id for toy_id, ok in zip(toy_ids, results) if not ok]
+        results = await asyncio.gather(*(stop(toy_id) for toy_id in blocked))
+        return blocked, [toy_id for toy_id, ok in zip(blocked, results) if not ok]
 
     async def set_intensity_limit(
         self, toy_id: str, channel: int, level: int | None
@@ -1346,8 +1332,6 @@ class _ToyHub:
         -  `current_intensity` (list[int, int]) Current intensity values. The second value is always zero if the toy only has one intensity.
         -  `intensity_limits` (list[int, int]) Current intensity limits. All intensity commands are clamped to these values.
         -  `is_blocked` (bool) Whether the toy is currently blocked (toy's intensities are forced to zero)
-        -  `is_held` (bool) Whether the toy is under the safety hold (toy's intensities are forced to zero)
-        -  `hold_reasons` (list[str]) Why the toy is under the safety hold (see :meth:`set_safety_hold`). Empty if it is not held.
         -  `pattern_version` (int) Each time the pattern state changes, the version number is incremented
         -  `pattern` (list[tuple[int, int, int]]) List of tuples (duration, intensity1, intensity2) defining the pattern segment
         -  `wraparound` (bool)  Whether the pattern repeats from the beginning after completing the last segment. If False, both Intensities are 0 after the last segment
@@ -1472,7 +1456,7 @@ class _ToyHub:
             ToyNotConnectedError: The toy is not connected. Nothing was sent.
             ToyConnectionError: Failed to send the command to the toy due to a connection issue. Reconnecting is attempted automatically.
             UnknownToyError: The toy was not added before.
-            SafetyHoldError: The toy is under the safety hold (see :meth:`set_safety_hold`).
+            ToyBlockedError: The toy is blocked (see :meth:`set_blocked`).
 
         Returns:
             toy response string. Empty string if the command could not be delivered.
@@ -1483,9 +1467,9 @@ class _ToyHub:
         self._log.info(f"Sending direct command to {toy_id}: {command}")
         toy = self._get_toy(toy_id)
         async with toy.cmd_lock:
-            # A raw command can drive the toy, and the hub cannot tell which ones would, so none pass the hold.
-            if toy.is_held:
-                raise SafetyHoldError(toy_id)
+            # A raw command can drive the toy, and the hub cannot tell which ones would, so none pass a block.
+            if toy.is_blocked:
+                raise ToyBlockedError(toy_id)
             return await self._run_toy_command(
                 toy, "direct_command", toy.direct_command, command
             )

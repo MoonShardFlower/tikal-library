@@ -64,7 +64,7 @@ The set of toys managed by the server changed: a toy was added or removed.
 ---
 
 ### 3. `toy_state_changed`
-Any part of a toy’s internal state has changed (intensities, intensity limits, pattern, pause/block/hold state, pattern version, elapsed time)
+Any part of a toy’s internal state has changed (intensities, intensity limits, pattern, pause/block state, pattern version, elapsed time)
 
 **Data**
 ```json
@@ -73,8 +73,6 @@ Any part of a toy’s internal state has changed (intensities, intensity limits,
   "current_intensities": [0, 0],
   "intensity_limits": [20, 20],
   "is_blocked": false,
-  "is_held": false,
-  "hold_reasons": [],
   "pattern_version": 3,
   "pattern": [[500, 100, 0], [500, 0, 100]],
   "wraparound": true,
@@ -89,8 +87,6 @@ Any part of a toy’s internal state has changed (intensities, intensity limits,
 | `current_intensities` | list[int]                | `[intensity1, intensity2]`; second value is always `0` for single‑intensity toys.                              |
 | `intensity_limits`    | list[int]                | `[limit1, limit2]`; current intensity limits. All intensity commands are clamped to these values.              |
 | `is_blocked`          | bool                     | `true` if the toy is forced to zero intensities.                                                               |
-| `is_held`             | bool                     | `true` while the heartbeat watchdog's safety hold is on (intensities forced to zero, see `heartbeat_timeout`). |
-| `hold_reasons`        | list[str]                | Why the safety hold is on, sorted: `"disconnect"` and/or `"timeout"` (see `heartbeat_timeout`). `[]` if it is off. |
 | `pattern_version`     | int                      | Increments each time the pattern state changes.                                                                |
 | `pattern`             | list[tuple[int,int,int]] | Active pattern as a list of `(duration_ms, intensity1, intensity2)` segments.                                  |
 | `wraparound`          | bool                     | `true` if the pattern loops after the last segment; `false` if it stops.                                       |
@@ -213,72 +209,36 @@ Similar to replies, you can use the success field of the event envelope to deter
 Fired when the heartbeat watchdog trips. This happens in two cases:
 - A client subscribed to the heartbeat watchdog failed to send a `heartbeat` command within 3 seconds (`reason: "timeout"`), or
 - A subscribed client **disconnected** while still subscribed, e.g., a crash or dropped connection (`reason: "disconnect"`).
-  This includes a client that stayed overdue for 30 seconds: the server then treats it as disconnected and closes its
-  connection (close code `4000`), so a stuck client cannot hold the toys forever.
 
-In both cases the server puts **every** toy under the **safety hold**: every toy is kept at zero (including toys added
-later), intensity commands are ignored, `direct_command` is refused, and patterns keep advancing without driving the
-toy. Block, pause, patterns, and limits are left untouched and stay editable. `get_state` reports `is_held: true`.
-See the `enable_heartbeat` action in **actions.md** for the full rules.
+In both cases the server **blocks every toy** that is not blocked yet, and stops it. The toys stay blocked until a
+client unblocks them (`set_blocked` / `toggle_block`), toy by toy; nothing unblocks them on its own. The watchdog's block
+keeps a toy's pause, so a paused toy stays paused once it is unblocked. Each blocked toy's new state is broadcast as
+`toy_state_changed`. See the `enable_heartbeat` action in **actions.md** for the full rules.
 
-How the hold ends depends on `reason`:
-- `"timeout"`: automatically, once the overdue client sends a `heartbeat` again or unsubscribes (and no other
-  subscribed client is overdue).
-- `"disconnect"`: only when a client sends `release_hold`. The disconnected client can never send the heartbeat that
-  would end it, and another client's heartbeat does not end it either.
-
-Both can apply at once. What the hold is on for right now is in every toy's state (`hold_reasons` in
-`toy_state_changed` and `get_state`), which is broadcast again whenever it changes while the hold stays on, e.g., when
-an overdue client is given up on (`"timeout"` becomes `"disconnect"`) or a `release_hold` ended only the disconnect part.
+A client that stays overdue for 30 seconds is disconnected with close code `4000`. That blocks nothing more: the toys
+were blocked when it went overdue.
 
 If a toy cannot be stopped (the stop and an immediate retry both failed, e.g., because the connection dropped), it is
-listed in `failed_toy_ids`. It is held regardless, and the server reconnects to it for up to about a minute, stopping it
-as soon as the connection is back (which also pauses its pattern). Watch `connection_status_changed`: `connected` means
-the toy was stopped; `lost` means the server gave up and removed it, and can no longer tell whether it is still running.
+listed in `failed_toy_ids`. It is blocked regardless, and the server reconnects to it for up to about a minute, stopping
+it as soon as the connection is back. Watch `connection_status_changed`: `connected` means the toy was stopped; `lost`
+means the server gave up and removed it, and can no longer tell whether it is still running.
 
-The event is sent every time the watchdog trips, also while the hold is already on, so you learn about each client
+The event is sent every time the watchdog trips, also when every toy was blocked already, so you learn about each client
 that went overdue or disconnected. It is broadcast to **all** connected clients, not just the affected one.
 
 **Data**
 ```json
 {
-  "message": "Heartbeat timeout. All toys held until a heartbeat is received again.",
+  "message": "Heartbeat timeout. All toys were blocked.",
   "reason": "timeout",
+  "blocked_toy_ids": ["AA:BB:CC:DD:EE:FF"],
   "failed_toy_ids": []
 }
 ```
 
-| Field            | Type            | Description                                                                                         |
-|------------------|-----------------|-----------------------------------------------------------------------------------------------------|
-| `message`        | string          | Human-readable description of what happened.                                                        |
-| `reason`         | string          | `"timeout"` (a subscribed client is overdue) or `"disconnect"` (a subscribed client disconnected).  |
-| `failed_toy_ids` | list of strings | Toys whose stop failed even after an immediate retry (see above). Empty if the hold was already on. |
-
----
-
-### 8. `hold_released`
-Fired when the safety hold ends: no subscribed client is overdue any more, and any hold caused by a disconnect was
-released with `release_hold`.
-
-Every toy then follows its own state again:
-- A **running pattern carries on** from its current position. It kept advancing during the hold, so it does not pick
-  up where it was when the hold started.
-- A **paused** toy (including one you were driving with manual intensity commands, which pause the pattern) stays
-  paused, and a **blocked** toy stays blocked. Manual intensity levels are not replayed.
-- A toy that **lost its connection** during the hold comes back paused: after reconnecting, the server always stops the
-  toy, which pauses its pattern (see `connection_status_changed`).
-
-This event is broadcast to **all** connected clients.
-
-**Data**
-```json
-{
-  "message": "Safety hold released. Toys follow their own state again."
-}
-```
-
-| Field     | Type   | Description                                  |
-|-----------|--------|----------------------------------------------|
-| `message` | string | Human-readable description of what happened. |
-
----
+| Field             | Type            | Description                                                                                        |
+|-------------------|-----------------|----------------------------------------------------------------------------------------------------|
+| `message`         | string          | Human-readable description of what happened.                                                       |
+| `reason`          | string          | `"timeout"` (a subscribed client is overdue) or `"disconnect"` (a subscribed client disconnected). |
+| `blocked_toy_ids` | list of strings | Toys this trip blocked. Toys that were blocked already are not listed.                             |
+| `failed_toy_ids`  | list of strings | Toys among them whose stop failed even after an immediate retry (see above).                       |

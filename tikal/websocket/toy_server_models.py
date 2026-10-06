@@ -91,7 +91,7 @@ class _ErrMsg:
     UNKNOWN_TOY_ERROR = (
         "Unable to execute '{cmd}' on '{toy_id}'. Please add the toy first."
     )
-    SAFETY_HOLD_ERROR = "Unable to execute '{cmd}' on '{toy_id}'. The toy is under the safety hold of the heartbeat watchdog. Wait for the hold_released event, or send release_hold if the hold was caused by a disconnected client."
+    BLOCKED_TOY_ERROR = "Unable to execute '{cmd}' on '{toy_id}'. The toy is blocked, so nothing that could drive it is sent. Unblock it first (set_blocked or toggle_block)."
     DEVELOPER_ERROR = "Unexpected error occurred in the TIKAL Web-API. If you see this, please contact MoonShardFlower@gmail.com and provide the following: {details}"
 
 
@@ -355,9 +355,6 @@ class ToyStateData(BaseModel):
         current_intensities: Current intensity values as [intensity1, intensity2]. intensity2 is always 0 for single-intensity toys.
         intensity_limits: Current intensity limits as [limit1, limit2]. All intensity commands are clamped to these values.
         is_blocked: True when the toy is blocked (both intensities forced to zero).
-        is_held: True when the toy is under the safety hold of the heartbeat watchdog (both intensities forced to zero).
-        hold_reasons: Why the toy is held, sorted: "disconnect" (a client vanished; ends with release_hold) and/or
-            "timeout" (a client is overdue; ends once it is back). Empty when it is not held.
         pattern_version: Increments each time the pattern state changes.
         pattern: Active pattern as a list of (duration_ms, intensity1, intensity2) tuples.
         wraparound: True if the pattern loops after the final segment; False if it stops.
@@ -369,8 +366,6 @@ class ToyStateData(BaseModel):
     current_intensities: list[int]
     intensity_limits: list[int]
     is_blocked: bool
-    is_held: bool
-    hold_reasons: list[str]
     pattern_version: int
     pattern: list[tuple[int, int, int]]
     wraparound: bool
@@ -458,8 +453,6 @@ class GetAllResponseData(BaseModel):
     current_intensities: list[int]
     intensity_limits: list[int]
     is_blocked: bool
-    is_held: bool
-    hold_reasons: list[str]
     pattern_version: int
     pattern: list[tuple[int, int, int]]
     wraparound: bool

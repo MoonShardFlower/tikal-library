@@ -230,8 +230,6 @@ Retrieve the in‑memory state of a toy. This is completely retrieved from the s
   "current_intensities": [5, 0],
   "intensity_limits": [20, 20],
   "is_blocked": false,
-  "is_held": false,
-  "hold_reasons": [],
   "pattern_version": 3,
   "pattern": [[1000, 5, 0], [500, 0, 0]],
   "wraparound": true,
@@ -246,8 +244,6 @@ Retrieve the in‑memory state of a toy. This is completely retrieved from the s
 | `current_intensities` | [int, int]      | Current intensity levels. Second value is always `0` if the toy has no second capability.       |
 | `intensity_limits`    | [int, int]      | Current intensity limits. All intensity commands are clamped to these values.                   |
 | `is_blocked`          | boolean         | `true` if the toy is blocked (both intensities forced to zero).                                 |
-| `is_held`             | boolean         | `true` while the heartbeat watchdog's safety hold is on (both intensities forced to zero).      |
-| `hold_reasons`        | array of string | Why the safety hold is on, sorted: `"disconnect"` and/or `"timeout"` (see `enable_heartbeat`). `[]` if it is off. |
 | `pattern_version`     | integer         | Increments each time the pattern state changes.                                                 |
 | `pattern`             | array of arrays | Active pattern segments: `[duration_ms, intensity1, intensity2]`. `[]` if no pattern is active. |
 | `wraparound`          | boolean         | Whether the pattern loops back to the start after finishing.                                    |
@@ -343,8 +339,6 @@ Use `full=false` for fast in‑memory data only; `full=true` may request additio
   "current_intensities": [5, 0],
   "intensity_limits": [20, 20],
   "is_blocked": false,
-  "is_held": false,
-  "hold_reasons": [],
   "pattern_version": 3,
   "pattern": [[1000, 5, 0], [500, 0, 0]],
   "wraparound": true,
@@ -367,8 +361,8 @@ A value the toy itself does not report is `null`.
 ### 11. `intensity1` / `intensity2`
 Set the primary (intensity1) or secondary (intensity2) capability intensity.
 Sending a manual intensity command automatically **pauses** any running pattern.
-Intensity commands are ignored if the toy is **blocked** or **held** (both force the intensities to zero; see
-`enable_heartbeat` for the hold).
+Intensity commands are ignored if the toy is **blocked** (which forces the intensities to zero). Besides a client,
+the heartbeat watchdog blocks toys: see `enable_heartbeat`.
 Intensity values are clamped to the range (0-`max_intensity`).
 
 **Request data**:
@@ -391,7 +385,7 @@ Intensity values are clamped to the range (0-`max_intensity`).
 "toy_id": "00:00:00:00:00:01"
 }
 ```
-`ack` is `true` if the intensity was set; `false` if the toy is blocked or held, or you try to set intensity2 on a toy that only has one capability.
+`ack` is `true` if the intensity was set; `false` if the toy is blocked, or you try to set intensity2 on a toy that only has one capability.
 
 **Possible errors**
 - Unknown Toy: The provided toy ID is not known to the server.
@@ -458,8 +452,9 @@ Sets both intensities to zero and pauses any active pattern.
 ---
 
 ### 14. `toggle_block`
-Toggle the blocked state. When blocked, both intensities are forced to zero regardless of the pattern or manual commands.
-Blocking a paused toy clears the paused state.
+Toggle the blocked state. When blocked, both intensities are forced to zero regardless of the pattern or manual commands,
+and `direct_command` is refused. Blocking a paused toy clears the paused state (except when the heartbeat watchdog
+blocks it, see `enable_heartbeat`).
 
 **Request data**:
 ```json
@@ -624,7 +619,7 @@ The pattern is stored exactly as you sent it, and `get_state` reports it back un
 Send a raw command string directly to the toy.
 Use this to access functionality not exposed by the API.
 **Do not** change tracked state (like intensities) this way as the server would be unaware of the change.
-Refused while the heartbeat watchdog's safety hold is on, because a raw command could drive the toy (see `enable_heartbeat`).
+Refused while the toy is blocked, because a raw command could drive the toy.
 
 **Request data**:
 ```json
@@ -650,7 +645,7 @@ Refused while the heartbeat watchdog's safety hold is on, because a raw command 
 
 **Possible errors**
 - Unknown Toy: The provided toy ID is not known to the server.
-- Safety Hold: The safety hold is on. Nothing was sent to the toy.
+- Blocked Toy: The toy is blocked. Nothing was sent to the toy.
 - Connection Error: The toy is currently not responding.
 - Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
 - Invalid Data: Your request data is wrong, e.g., missing the `toy_id` field.
@@ -773,38 +768,35 @@ Send `null` to withdraw your limit, letting the remaining clients' limits (or `m
 
 ### 23. `enable_heartbeat`
 Subscribe or unsubscribe to the heartbeat watchdog. Clients that enable the heartbeat watchdog **must** send a `heartbeat` command
-at least every 3 seconds. If the server does not receive a heartbeat in time, it puts **every** toy under the
-**safety hold** and broadcasts a `heartbeat_timeout` event (see **events.md**).
+at least every 3 seconds. If the server does not receive a heartbeat in time, it **blocks every toy** that is not
+blocked yet, stops it, and broadcasts a `heartbeat_timeout` event (see **events.md**).
 
-The safety hold is separate from block and pause, and leaves both untouched. While it is on:
-- Every toy is kept at zero, including toys added while the hold is on.
-- `intensity1` / `intensity2` are ignored (`ack: false`) and `direct_command` is refused with a Safety Hold error.
+Nothing unblocks the toys on its own, not even the client sending heartbeats again: each toy stays blocked until a client
+unblocks it (`set_blocked` / `toggle_block`), which is meant to be the user's decision. Until then:
+- `intensity1` / `intensity2` are ignored (`ack: false`) and `direct_command` is refused with a Blocked Toy error.
 - Patterns keep advancing without driving the toy.
-- Everything else still works and keeps its value: you can block, pause, change patterns and limits, or `stop`.
-- `get_state` reports `is_held: true`, and in `hold_reasons` what the hold is on for: `"timeout"` while a subscribed
-  client is overdue (ends once it is back), `"disconnect"` after a subscribed client disconnected or was given up on
-  (ends with `release_hold`). Both can apply at once. Whenever the reasons change while the hold stays on (e.g., an
-  overdue client is given up on, or `release_hold` ended the disconnect part), every toy's new state is broadcast as
-  `toy_state_changed`. So `release_hold` only helps while `hold_reasons` contains `"disconnect"`.
+- Everything else still works: you can pause, change patterns and limits, or `stop`.
 
-When the hold ends, each toy simply follows its own state again: a running pattern carries on from its current position,
-a paused or blocked toy stays that way, and manual intensity levels are not replayed. A `hold_released` event is broadcast.
+Unlike a block a client asks for, the watchdog's block keeps a toy's pause: a toy that was paused (including one you were
+driving with manual intensity commands, which pause the pattern) is blocked *and* paused, and stays paused once it is
+unblocked, so nothing starts. A running pattern stays running and drives the toy again from its current position once
+the toy is unblocked. Manual intensity levels are not replayed. Toys that were blocked already stay as they are, and
+toys added afterwards are not blocked.
 
-The hold stays on while **any** subscribed client is overdue. You stay subscribed after a timeout (the watchdog does not
-disarm itself just because it fired), and the hold ends once you send a `heartbeat` again or unsubscribe.
+You stay subscribed after a timeout (the watchdog does not disarm itself just because it fired). Your next `heartbeat`
+tells the server you are back; if you go overdue again, the watchdog trips again and blocks every toy that was unblocked
+meanwhile.
 
-If you stay overdue for **30 seconds**, the server gives up on you: it treats you as disconnected (see below), closes
-your connection with close code `4000` and reason `"Heartbeat overdue"`, and ignores anything you still send while the
-connection closes. Reconnect to continue. This keeps a stuck client from holding the toys forever.
+If you stay overdue for **30 seconds**, the server gives up on you: it closes your connection with close code `4000` and
+reason `"Heartbeat overdue"`, and ignores anything you still send while the connection closes, so a stuck client cannot
+send stale commands once it wakes up. Reconnect to continue. The toys were blocked when you went overdue; giving up on
+you blocks nothing more.
 
 The watchdog also trips if a subscribed client **disconnects** while still subscribed (a crash or dropped connection is
-regarded as client malfunction). That client can never send the heartbeat that would end the hold, so the hold then
-stays on until a client sends `release_hold`; another client's heartbeat does not end it. If you want to disconnect
-*without* holding the toys, send `enable_heartbeat` with `enable: false` first.
+regarded as client malfunction). If you want to disconnect *without* blocking the toys, send `enable_heartbeat` with
+`enable: false` first.
 
 This is an optional protective measure against client malfunction (e.g., the client freezing or crashing while toys are active).
-If you prefer that nothing restarts on its own after a timeout, pause your toys when you receive `heartbeat_timeout` and
-only then send your next heartbeat.
 
 **Request data**:
 ```json
@@ -836,8 +828,8 @@ only then send your next heartbeat.
 Reset the heartbeat timer. Must be sent at least every 3 seconds while subscribed to the heartbeat watchdog (see `enable_heartbeat`).
 If the client is not subscribed to the heartbeat watchdog, this command is accepted but has no effect.
 
-If you are already overdue, this is also what tells the server you are back: once no subscribed client is overdue (and
-no disconnect is holding the toys), the safety hold ends and `hold_released` is broadcast (see **events.md**).
+If you are already overdue, this is also what tells the server you are back, so your next miss trips the watchdog
+again. It unblocks no toy (see `enable_heartbeat`).
 
 **Request data**: `{}`
 
@@ -856,33 +848,7 @@ no disconnect is holding the toys), the safety hold ends and `hold_released` is 
 
 ---
 
-### 25. `release_hold`
-End a safety hold that was caused by a subscribed client **disconnecting** (see `enable_heartbeat`). Any client may send
-it, subscribed or not. If no subscribed client is overdue, the hold ends and `hold_released` is broadcast.
-
-It does not override a client that is still **overdue**: that hold stays on until the client sends a heartbeat again,
-unsubscribes, or disconnects. The server disconnects a client that stays overdue for 30 seconds, after which
-`release_hold` ends the hold. If there is nothing to release, the command does nothing.
-Watch for `hold_released` (or `is_held` in `get_state`) to know when the toys are free.
-
-**Request data**: `{}`
-
-**Response data**:
-```json
-{
-  "ack": true,
-  "toy_id": null
-}
-```
-
-**Possible errors**
-- Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
-- Invalid Data: Your request data is wrong, e.g., not the empty dict.
-- Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
-
----
-
-### 26. `shutdown`
+### 25. `shutdown`
 Shut down the server. Any toys still connected will be automatically stopped and disconnected.
 The command is acknowledged right away. 
 However, the actual shutdown is only triggered once the client who made the request has closed its Websocket connection.

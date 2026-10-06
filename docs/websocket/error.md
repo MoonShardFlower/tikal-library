@@ -280,20 +280,20 @@ This error can only occur in the `discovered_toys` event.
 
 ---
 
-### 10. Safety Hold
+### 10. Blocked Toy
 
 **Payload:**
 ```json
 {
-  "error": "Safety Hold",
-  "message": "Unable to execute '{cmd}' on '{toy_id}'. The toy is under the safety hold of the heartbeat watchdog. Wait for the hold_released event, or send release_hold if the hold was caused by a disconnected client.",
+  "error": "Blocked Toy",
+  "message": "Unable to execute '{cmd}' on '{toy_id}'. The toy is blocked, so nothing that could drive it is sent. Unblock it first (set_blocked or toggle_block).",
   "traceback": null,
   "toy_id": "AA:BB:CC:DD:EE:FF",
   "model_name": null,
   "brand": null
 }
 ```
-This error can only occur in the `direct_command` command, while the heartbeat watchdog's safety hold is on (see
-`enable_heartbeat` in **actions.md**). Nothing was sent to the toy.
+This error can only occur in the `direct_command` command, while the toy is blocked (by a client, or by the heartbeat
+watchdog, see `enable_heartbeat` in **actions.md**). Nothing was sent to the toy.
 
 ---
