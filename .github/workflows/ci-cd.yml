@@ -172,6 +172,10 @@ jobs:
             tag="${{ github.ref_name }}"
             echo "Building Release $tag"
 
+            # actions/checkout recreates the tag as a lightweight tag pointing at the commit, so its
+            # message would be the commit message. Fetch the real (annotated) tag object first.
+            git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
+
             # Extract annotated tag message
             releaseNotes=$(git tag -l --format='%(contents)' "$tag")
 
