@@ -1,5 +1,8 @@
 """Tests for the private :class:`PatternHandler` (pattern playback timing and state)."""
 
+import random
+from itertools import accumulate
+
 import pytest
 
 from tikal._private import pattern_handler as ph_module
@@ -127,6 +130,55 @@ def test_values_no_wraparound_past_end_returns_zero(clock):
     assert h.get_pattern_values(999) == (0, 0)  # past end
 
 
+def test_values_zero_duration_segment_is_skipped(clock):
+    h = PatternHandler()
+    h.set_pattern([(100, 1, 2), (0, 9, 9), (100, 3, 4)])
+    assert h.get_pattern_values(99) == (1, 2)
+    assert h.get_pattern_values(100) == (3, 4)  # the zero-length segment never plays
+
+
+def test_values_negative_duration_counts_as_zero(clock):
+    h = PatternHandler()
+    h.set_pattern([(100, 1, 2), (-50, 9, 9), (100, 3, 4)], wraparound=False)
+    assert h.get_pattern_values(100) == (3, 4)
+    assert h.get_pattern_values(199) == (3, 4)
+    assert h.get_pattern_values(200) == (0, 0)
+
+
+def _linear_lookup(pattern, wraparound, pattern_time):
+    """The segment scan get_pattern_values used before it switched to a binary search."""
+    total = sum(duration for duration, _, _ in pattern)
+    if not pattern or total == 0:
+        return 0, 0
+    if wraparound:
+        pattern_time %= total
+    elif pattern_time >= total:
+        return 0, 0
+    elapsed = 0.0
+    for duration, intensity1, intensity2 in pattern:
+        if pattern_time < elapsed + duration:
+            return intensity1, intensity2
+        elapsed += duration
+    return pattern[-1][1], pattern[-1][2]
+
+
+@pytest.mark.parametrize("wraparound", [True, False])
+def test_values_match_a_linear_scan(clock, wraparound):
+    rng = random.Random(4)
+    for _ in range(50):
+        pattern = [
+            (rng.choice([0, 1, 50, 200, 800]), rng.randint(0, 20), rng.randint(0, 20))
+            for _ in range(rng.randint(1, 30))
+        ]
+        h = PatternHandler()
+        h.set_pattern(pattern, wraparound=wraparound)
+        total = sum(duration for duration, _, _ in pattern)
+        times = [rng.uniform(0, 2 * total + 1) for _ in range(20)]
+        times += [float(end) for end in accumulate(d for d, _, _ in pattern)]
+        for t in times:
+            assert h.get_pattern_values(t) == _linear_lookup(pattern, wraparound, t)
+
+
 # ---------------------------------------------------------------------------
 # Elapsed-time / pause / resume timing
 # ---------------------------------------------------------------------------
@@ -201,6 +253,87 @@ def test_set_pattern_no_reset_time_keeps_elapsed(clock):
 
     h.set_pattern([(10_000, 9, 0)], reset_time=False)
     assert h.get_pattern_time() == 1000.0  # preserved
+
+
+# ---------------------------------------------------------------------------
+# seek
+# ---------------------------------------------------------------------------
+
+
+def test_seek_while_playing_jumps_and_keeps_running(clock):
+    h = PatternHandler()
+    h.set_pattern([(1000, 1, 0), (1000, 2, 0)])
+    clock.advance(0.2)
+
+    h.seek(1500)
+    assert h.get_pattern_time() == 1500.0
+    assert h.get_pattern_values(h.get_pattern_time()) == (2, 0)
+    clock.advance(0.1)
+    assert h.get_pattern_time() == pytest.approx(1600.0)
+
+
+def test_seek_backwards(clock):
+    h = PatternHandler()
+    h.set_pattern([(10_000, 5, 0)])
+    clock.advance(3.0)
+    h.seek(500)
+    assert h.get_pattern_time() == 500.0
+
+
+def test_seek_while_paused_holds_until_resumed(clock):
+    h = PatternHandler()
+    h.set_pattern([(10_000, 5, 0)])
+    clock.advance(0.5)
+    h.set_paused(True)
+
+    h.seek(4000)
+    clock.advance(2.0)
+    assert h.get_pattern_time() == 4000.0  # still paused
+    assert h.is_paused is True
+
+    h.set_paused(False)
+    clock.advance(0.25)
+    assert h.get_pattern_time() == 4250.0
+
+
+def test_seek_increments_version(clock):
+    h = PatternHandler()
+    h.set_pattern([(10_000, 5, 0)])
+    version = h.pattern_version
+    h.seek(100)
+    assert h.pattern_version == version + 1
+
+
+def test_seek_negative_counts_as_zero(clock):
+    h = PatternHandler()
+    h.set_pattern([(10_000, 5, 0)])
+    clock.advance(1.0)
+    h.seek(-300)
+    assert h.get_pattern_time() == 0.0
+
+
+def test_seek_past_end_wraps_around(clock):
+    h = PatternHandler()
+    h.set_pattern([(100, 1, 0), (100, 2, 0)], wraparound=True)
+    h.seek(350)
+    assert h.get_pattern_values(h.get_pattern_time()) == (2, 0)
+
+
+def test_seek_without_pattern_is_kept_for_a_pattern_set_later(clock):
+    h = PatternHandler()
+    h.seek(2000)
+    h.set_pattern([(10_000, 5, 0)], reset_time=False)
+    assert h.get_pattern_time() == 2000.0
+    clock.advance(0.5)
+    assert h.get_pattern_time() == 2500.0
+
+
+def test_set_pattern_reset_time_overrides_an_earlier_seek(clock):
+    h = PatternHandler()
+    h.set_pattern([(10_000, 5, 0)])
+    h.seek(2000)
+    h.set_pattern([(10_000, 9, 0)], reset_time=True)
+    assert h.get_pattern_time() == 0.0
 
 
 # ---------------------------------------------------------------------------

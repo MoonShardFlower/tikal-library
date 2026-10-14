@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+    - New module `tikal.funscript`: `Funscript` loads, validates and converts `.funscript` files into a pattern that 
+        any of the APIs can play. By default the intensity follows the stroke speed, alternatively a position mapping 
+        is available too. Segments are laid on a grid of the toy's recommended minimum interval, so a dense script does 
+        not flood the toy with commands.
+
+### Changed
+    - Pattern playback finds the current segment with a binary search instead of scanning the whole pattern, making it
+        cheaper. A segment with a negative duration now counts as zero.
+
 ## [2.0.0] - 2026-10-06
 
 ### Added

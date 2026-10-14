@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "TIKAL"
 copyright = "2026, SnugglyBound"
 author = "SnugglyBound"
-release = "1.2.0"
+release = "2.0.0"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -25,6 +25,8 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
 ]
+
+autodoc_use_type_comments = False
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]

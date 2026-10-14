@@ -12,6 +12,17 @@ Subpackages
    tikal.mock
    tikal.websocket
 
+Submodules
+----------
+
+tikal.funscript module
+----------------------
+
+.. automodule:: tikal.funscript
+   :members:
+   :show-inheritance:
+   :undoc-members:
+
 Module contents
 ---------------
 

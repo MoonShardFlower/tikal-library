@@ -1,5 +1,7 @@
 """Private Module: Implements the necessary logic for pattern handling functionality of the High-Level API"""
 
+from bisect import bisect_right
+from itertools import accumulate
 from time import time
 
 
@@ -19,6 +21,8 @@ class PatternHandler:
     def __init__(self) -> None:
         # Pattern state
         self._pattern: list[tuple[int, int, int]] = []
+        # End time of each segment (ms since the pattern start). Lookup is done via binary search.
+        self._segment_ends: list[int] = []
         self._pattern_wraparound = True
         self._is_paused = False
         self._pattern_elapsed_time: float = 0.0
@@ -51,10 +55,14 @@ class PatternHandler:
 
         Args:
             pattern: List of pattern segments as tuples (duration_ms, intensity1, intensity2).
+                A negative duration counts as zero.
             wraparound: If True, the pattern loops indefinitely, else it stops after one playthrough.
             reset_time: If True, restart the pattern from the beginning, if False, start from the current elapsed time.
         """
         self._pattern = pattern
+        self._segment_ends = list(
+            accumulate(max(0, duration) for duration, _, _ in pattern)
+        )
         self._pattern_wraparound = wraparound
         self._pattern_version += 1
 
@@ -103,6 +111,24 @@ class PatternHandler:
             else:
                 self._segment_start_time = None
 
+    def seek(self, pattern_time: float) -> None:
+        """
+        Move playback to a position in the pattern, e.g., to follow a video that was skipped forward or back.
+
+        Works while playing and while paused: a paused pattern stays at the new position until it is resumed. Without
+        a pattern, the position is kept for a pattern set later with ``reset_time=False``.
+
+        Args:
+            pattern_time: The new position in milliseconds. Negative values count as 0. A position past the end of a
+                wraparound pattern wraps around as usual.
+        """
+        self._pattern_elapsed_time = max(0.0, float(pattern_time))
+        if not self._is_paused and self.has_active_pattern:
+            self._segment_start_time = time() * 1000
+        else:
+            self._segment_start_time = None
+        self._pattern_version += 1
+
     def get_pattern_time(self) -> float:
         """
         Get elapsed time in the current pattern (Time spent paused does not count toward elapsed time).
@@ -134,13 +160,10 @@ class PatternHandler:
         Returns:
             tuple: (intensity1, intensity2) at the specified time.
         """
-        pattern = self._pattern
-        if not pattern:
+        if not self._pattern:
             return 0, 0
 
-        # Calculate total pattern duration
-        total_duration = sum(duration for duration, _, _ in pattern)
-
+        total_duration = self._segment_ends[-1]
         if total_duration == 0:
             return 0, 0
 
@@ -150,15 +173,11 @@ class PatternHandler:
         elif pattern_time >= total_duration:
             return 0, 0
 
-        # Find the segment we're in
-        elapsed = 0.0
-        for duration, intensity1, intensity2 in pattern:
-            if pattern_time < elapsed + duration:
-                return intensity1, intensity2
-            elapsed += duration
-
-        # Should not reach here, but return last segment values
-        return pattern[-1][1], pattern[-1][2]
+        # The segment we're in is the first one that ends after pattern_time (a boundary belongs to the next segment)
+        _, intensity1, intensity2 = self._pattern[
+            bisect_right(self._segment_ends, pattern_time)
+        ]
+        return intensity1, intensity2
 
     def get_pattern_data(self) -> tuple[list[tuple[int, int, int]], bool, bool, float]:
         """
