@@ -606,16 +606,122 @@ The pattern is stored exactly as you sent it, and `get_state` reports it back un
 ```
 
 **Possible errors**
-- Validation Error: At least one pattern segment is not exactly three integers.
 - Unknown Toy: The provided toy ID is not known to the server.
 - Connection Error: The toy is currently not responding.
 - Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
-- Invalid Data: Your request data is wrong, e.g., missing the `toy_id` field.
+- Invalid Data: Your request data is wrong, e.g., missing the `toy_id` field, or a pattern segment that is not exactly three integers.
 - Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
 
 ---
 
-### 19. `direct_command`
+### 19. `set_funscript`
+Plays a funscript on a toy. The server converts the script into a pattern for this toy and sets it, played once
+(no wraparound). As with `set_pattern`, playback starts immediately, unless the toy is paused.
+
+With `"mode": "speed"` (the default), the intensity follows how fast the script moves: a full stroke 
+(position 0 to 100) in 250 ms or faster gives the maximum intensity, a full stroke over 1 s 1/4 of the max intensity, 
+holding still gives 0. With `"mode": "position"`, the intensity follows the position instead. The conversion uses the 
+toy's `max_intensity` and never makes a segment shorter than the toy's `recommended_min_interval` (see `get_info`).
+
+After conversion, the script is an ordinary pattern: `get_state` and the `toy_state_changed` event report the converted
+segments, the intensity limits, pause and block apply, and `seek` moves playback. A script without any action after
+0 ms converts to an empty pattern, which clears the pattern and stops the toy.
+
+**Following a video**: send `set_funscript` with `start_ms` set to the video's current position when the video starts,
+`seek` whenever the video jumps, and `set_paused` when the video is paused or resumed.
+
+**Request data**:
+```json
+{
+  "toy_id": "00:00:00:00:00:01",
+  "script": {
+    "version": "1.0",
+    "inverted": false,
+    "actions": [{"at": 0, "pos": 0}, {"at": 500, "pos": 100}, {"at": 1000, "pos": 0}]
+  },
+  "secondary": null,
+  "mode": "speed",
+  "max_speed": 400,
+  "start_ms": 0
+}
+```
+
+| Field       | Type           | Required | Description                                                                                                                             |
+|-------------|----------------|----------|-----------------------------------------------------------------------------------------------------------------------------------------|
+| `toy_id`    | string         | yes      | Toy identifier.                                                                                                                         |
+| `script`    | object         | yes      | The funscript for the primary capability (`intensity1`). See below.                                                                     |
+| `secondary` | object or null | no       | A funscript for the secondary capability (`intensity2`), e.g., a `.twist.funscript` for a rotation. Without it, `intensity2` stays 0.   |
+| `mode`      | string         | no       | `"speed"` (default) or `"position"`.                                                                                                    |
+| `max_speed` | number         | no       | Stroke speed (positions per second) that maps to the maximum intensity in `"speed"` mode. Must be positive. Defaults to `400`.          |
+| `start_ms`  | number         | no       | Where in the script playback starts, in milliseconds (e.g., the video's current position). Defaults to `0`. Negative values count as 0. |
+
+**The script object**: you can send the content of a `.funscript` file as it is. Only `actions` (required) and
+`inverted` (optional, defaults to `false`) are read. Other fields, such as `version`, `range` or `metadata`, are ignored.
+Each action is either an object `{"at": ms, "pos": 0-100}` (the file format) or a compact pair `[at, pos]`. The compact
+form halves the message size. The server accepts messages of up to 1 MiB. Actions don't have to be sorted. Of several 
+actions at the same time, the last one counts. Fractional values are rounded.
+
+Compact form:
+```json
+{
+  "toy_id": "00:00:00:00:00:01",
+  "script": {"actions": [[0, 0], [500, 100], [1000, 0]]}
+}
+```
+
+**Response data**:
+```json
+{
+"ack": true,
+"toy_id": "00:00:00:00:00:01"
+}
+```
+
+**Possible errors**
+- Unknown Toy: The provided toy ID is not known to the server.
+- Connection Error: The script converted to an empty pattern, and the toy could not be stopped. The pattern is cleared all the same.
+- Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
+- Invalid Data: Your request data is wrong, e.g., an action without `pos`, a position outside 0–100, a negative time, 
+an unknown `mode`, or a `max_speed` that is not positive.
+- Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
+
+---
+
+### 20. `seek`
+Moves a toy's pattern playback to a position, e.g., to follow a video skipped forward or back. Nothing is sent to the
+toy. Playback continues from the new position with its next tick. A paused toy stays paused at the new position until
+it is resumed. For a pattern with wraparound, a position past its end wraps around.
+
+**Request data**:
+```json
+{
+  "toy_id": "00:00:00:00:00:01",
+  "pattern_time": 90000
+}
+```
+
+| Field          | Type   | Required | Description                                                                                                         |
+|----------------|--------|----------|---------------------------------------------------------------------------------------------------------------------|
+| `toy_id`       | string | yes      | Toy identifier.                                                                                                     |
+| `pattern_time` | number | yes      | The new position in milliseconds, on the time scale of `elapsed` in the toy's state. Negative values count as 0.    |
+
+**Response data**:
+```json
+{
+"ack": true,
+"toy_id": "00:00:00:00:00:01"
+}
+```
+
+**Possible errors**
+- Unknown Toy: The provided toy ID is not known to the server.
+- Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
+- Invalid Data: Your request data is wrong, e.g., missing the `pattern_time` field.
+- Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
+
+---
+
+### 21. `direct_command`
 Send a raw command string directly to the toy.
 Use this to access functionality not exposed by the API.
 **Do not** change tracked state (like intensities) this way as the server would be unaware of the change.
@@ -653,7 +759,7 @@ Refused while the toy is blocked, because a raw command could drive the toy.
 
 ---
 
-### 20. `set_model`
+### 22. `set_model`
 Change the model name assigned to an already‑added toy. In most cases bad model names are caught while adding the toy, as
 model-dependent commands are attempted and would fail if the wrong model name is assigned to the toy.
 Similar to `add` the `model_name` is case-insensitive here.
@@ -689,7 +795,7 @@ This means either the toy is of a different model or the commands are wrong (dev
 
 ---
 
-### 21 `remove`
+### 23 `remove`
 Disconnect a toy and remove it from the server.
 
 **Request data**:
@@ -716,7 +822,7 @@ Disconnect a toy and remove it from the server.
 
 ---
 
-### 22. `set_intensity1_limit` / `set_intensity2_limit`
+### 24. `set_intensity1_limit` / `set_intensity2_limit`
 Set the upper limit for a toy's primary (`set_intensity1_limit`) or secondary (`set_intensity2_limit`) intensity.
 All `intensity1` / `intensity2` commands and all pattern values are clamped to this limit.
 By default, both limits equal `max_intensity` (no restriction). Values are clamped to the range `0` – `max_intensity`.
@@ -766,7 +872,7 @@ Send `null` to withdraw your limit, letting the remaining clients' limits (or `m
 
 ---
 
-### 23. `enable_heartbeat`
+### 25. `enable_heartbeat`
 Subscribe or unsubscribe to the heartbeat watchdog. Clients that enable the heartbeat watchdog **must** send a `heartbeat` command
 at least every 3 seconds. If the server does not receive a heartbeat in time, it **blocks every toy** that is not
 blocked yet, stops it, and broadcasts a `heartbeat_timeout` event (see **events.md**).
@@ -824,7 +930,7 @@ This is an optional protective measure against client malfunction (e.g., the cli
 
 ---
 
-### 24. `heartbeat`
+### 26. `heartbeat`
 Reset the heartbeat timer. Must be sent at least every 3 seconds while subscribed to the heartbeat watchdog (see `enable_heartbeat`).
 If the client is not subscribed to the heartbeat watchdog, this command is accepted but has no effect.
 
@@ -848,7 +954,7 @@ again. It unblocks no toy (see `enable_heartbeat`).
 
 ---
 
-### 25. `shutdown`
+### 27. `shutdown`
 Shut down the server. Any toys still connected will be automatically stopped and disconnected.
 The command is acknowledged right away. 
 However, the actual shutdown is only triggered once the client who made the request has closed its Websocket connection.

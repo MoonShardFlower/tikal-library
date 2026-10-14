@@ -8,6 +8,7 @@ reached by injecting failing methods onto the added controller.
 """
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock
 
 import pytest
@@ -28,6 +29,7 @@ from tikal._core import (
     _ToyHub,
 )
 from tikal._private import COMMUNICATION_INTERVAL
+from tikal.funscript import Funscript, funscript_to_pattern
 from tikal.low_level import ToyData
 
 pytestmark = pytest.mark.asyncio
@@ -682,6 +684,7 @@ async def test_commands_that_need_the_toy_are_refused_while_it_reconnects(
         ("toggle_pause", (), lambda s: s["is_paused"]),
         ("stop", (), lambda s: s["is_paused"]),
         ("set_pattern", ([], True, True), lambda s: s["pattern"] == []),
+        ("set_funscript", (Funscript(actions=[]),), lambda s: s["pattern"] == []),
         ("set_intensity_limit", (0, 5), lambda s: s["intensity_limits"][0] == 5),
     ],
 )
@@ -850,3 +853,117 @@ async def test_a_command_in_flight_on_one_toy_does_not_delay_another(hub):
 
     async with thunder.cmd_lock:
         assert await asyncio.wait_for(hub.intensity("Lightning_ID", 0, 30), 1) is True
+
+
+# ---------------------------------------------------------------------------
+# Funscripts and seek
+# ---------------------------------------------------------------------------
+
+
+async def test_set_funscript_plays_the_converted_script(hub):
+    reports = []
+    hub._on_toy_state_change = reports.append
+    controller = await _add_thunder(hub)
+    script = Funscript(actions=[(0, 50), (60_000, 50)])
+
+    await hub.set_funscript("Thunder_ID", script, mode="position")
+
+    state = await hub.get_state("Thunder_ID")
+    # Thunder: max_intensity 100, recommended_min_interval 100
+    assert state["pattern"] == funscript_to_pattern(
+        script, max_intensity=100, min_segment_ms=100, mode="position"
+    )
+    assert state["wraparound"] is False
+    assert reports[-1]["pattern"] == state["pattern"]
+    assert await _wait_until(lambda: controller.current_intensities == (50, 0))
+
+
+async def test_set_funscript_starts_at_start_ms(hub):
+    await _add_thunder(hub)
+    await hub.set_funscript(
+        "Thunder_ID", Funscript(actions=[(0, 0), (60_000, 100)]), start_ms=20_000
+    )
+    assert 20_000 <= (await hub.get_state("Thunder_ID"))["elapsed"] < 21_000
+
+
+async def test_seek_moves_the_pattern_and_reports_it(hub):
+    reports = []
+    hub._on_toy_state_change = reports.append
+    controller = await _add_thunder(hub)
+    await hub.set_pattern("Thunder_ID", [(10_000, 10, 0), (60_000, 40, 0)], True, True)
+    assert await _wait_until(lambda: controller.current_intensities == (10, 0))
+
+    await hub.seek("Thunder_ID", 15_000)
+
+    assert reports[-1]["elapsed"] >= 15_000
+    assert await _wait_until(lambda: controller.current_intensities == (40, 0))
+
+
+async def test_set_funscript_without_movement_time_stops_the_toy(hub):
+    controller = await _add_thunder(hub)
+    await hub.set_pattern("Thunder_ID", [(10_000, 10, 0)], True, True)
+    assert await _wait_until(lambda: controller.current_intensities == (10, 0))
+
+    await hub.set_funscript("Thunder_ID", Funscript(actions=[]))
+
+    assert controller.current_intensities == (0, 0)
+    assert (await hub.get_state("Thunder_ID"))["pattern"] == []
+
+
+async def test_set_funscript_with_bad_arguments_changes_nothing(hub):
+    await _add_thunder(hub)
+    await hub.set_pattern("Thunder_ID", [(10_000, 10, 0)], True, True)
+
+    with pytest.raises(ValueError):
+        await hub.set_funscript(
+            "Thunder_ID", Funscript(actions=[(0, 0), (100, 100)]), mode="depth"
+        )
+
+    assert (await hub.get_state("Thunder_ID"))["pattern"] == [(10_000, 10, 0)]
+
+
+async def test_funscript_commands_for_an_unknown_toy(hub):
+    with pytest.raises(UnknownToyError):
+        await hub.set_funscript("Unknown_ID", Funscript(actions=[]))
+    with pytest.raises(UnknownToyError):
+        await hub.seek("Unknown_ID", 0)
+
+
+async def test_funscript_and_seek_are_recorded_while_the_toy_reconnects(hub):
+    controller = await _reconnecting_thunder(hub)
+
+    await hub.set_funscript(
+        "Thunder_ID", Funscript(actions=[(0, 50), (60_000, 50)]), mode="position"
+    )
+    await hub.seek("Thunder_ID", 2000)
+
+    state = await hub.get_state("Thunder_ID")
+    assert state["pattern"] == [(60_000, 50, 0)]
+    assert 2000 <= state["elapsed"] < 3000
+    assert _nothing_sent(controller)
+
+
+async def test_set_funscript_converts_outside_the_event_loop(hub, monkeypatch):
+    """A long script takes a while to convert: playback of the other toys must not wait for it."""
+    controller = await _add_thunder(hub)
+    threads = []
+    convert = controller.convert_funscript
+
+    def recording_convert(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return convert(*args, **kwargs)
+
+    monkeypatch.setattr(controller, "convert_funscript", recording_convert)
+
+    await hub.set_funscript("Thunder_ID", Funscript(actions=[(0, 0), (1000, 100)]))
+
+    assert threads and threads[0] != threading.get_ident()
+    assert (await hub.get_state("Thunder_ID"))["pattern"] != []
+
+
+async def test_seek_to_a_non_finite_time_is_refused(hub):
+    await _add_thunder(hub)
+    await hub.set_pattern("Thunder_ID", [(10_000, 10, 0)], True, True)
+    with pytest.raises(ValueError):
+        await hub.seek("Thunder_ID", float("inf"))
+    assert (await hub.get_state("Thunder_ID"))["elapsed"] < 10_000

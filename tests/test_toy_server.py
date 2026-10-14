@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 import websockets
+from pydantic import ValidationError
 
 from tikal._core import (
     AddConnectionError,
@@ -30,6 +31,7 @@ from tikal._core import (
 from tikal._private import COMMUNICATION_INTERVAL
 from tikal.low_level import ToyData
 from tikal.websocket.toy_server import InsecureBindError, ToyServer
+from tikal.websocket.toy_server_models import SeekData, SetFunscriptData
 
 pytestmark = pytest.mark.asyncio
 
@@ -1367,6 +1369,8 @@ async def test_the_protocols_commands(ws_server):
         "set_paused",
         "set_blocked",
         "set_pattern",
+        "set_funscript",
+        "seek",
         "set_intensity1_limit",
         "set_intensity2_limit",
         "start_scan",
@@ -1607,3 +1611,203 @@ async def test_send_raw_swallows_send_error(ws_server):
     dead_ws = AsyncMock()
     dead_ws.send = AsyncMock(side_effect=ConnectionError("gone"))
     await server._send_raw(dead_ws, "msg")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Funscripts and seek
+# ---------------------------------------------------------------------------
+
+
+def _last_state_event(client: _Client) -> dict:
+    return [e for e in client.events if e["event"] == "toy_state_changed"][-1]["data"]
+
+
+async def test_set_funscript_plays_a_script_file_as_sent(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    # The content of a .funscript file, metadata and all
+    script = {
+        "version": "1.0",
+        "range": 100,
+        "metadata": {"title": "Demo", "duration": 60},
+        "actions": [{"at": 0, "pos": 30}, {"at": 60_000, "pos": 30}],
+    }
+
+    reply = await client.request(
+        "set_funscript",
+        {"toy_id": "Thunder_ID", "script": script, "mode": "position"},
+    )
+
+    assert reply["success"] is True
+    assert reply["data"] == {"ack": True, "toy_id": "Thunder_ID"}
+    state = (await client.request("get_state", {"toy_id": "Thunder_ID"}))["data"]
+    assert state["pattern"] == [[60_000, 30, 0]]  # Thunder: max_intensity 100
+    assert state["wraparound"] is False
+    assert _last_state_event(client)["pattern"] == [[60_000, 30, 0]]
+
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 3)
+    state = (await client.request("get_state", {"toy_id": "Thunder_ID"}))["data"]
+    assert state["current_intensities"] == [30, 0]
+
+
+async def test_set_funscript_with_compact_actions_a_secondary_script_and_a_start(
+    ws_server,
+):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Lightning_ID", "Lightning")
+
+    reply = await client.request(
+        "set_funscript",
+        {
+            "toy_id": "Lightning_ID",
+            "script": {"actions": [[0, 0], [250, 100], [60_000, 100]]},
+            "secondary": {"actions": [[0, 20], [60_000, 20]], "inverted": True},
+            "mode": "position",
+            "start_ms": 30_000,
+        },
+    )
+
+    assert reply["success"] is True
+    state = (await client.request("get_state", {"toy_id": "Lightning_ID"}))["data"]
+    assert 30_000 <= state["elapsed"] < 31_000
+    assert state["pattern"][-1][1:] == [100, 80]  # 100 - 20, as the script is inverted
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 3)
+    state = (await client.request("get_state", {"toy_id": "Lightning_ID"}))["data"]
+    assert state["current_intensities"] == [100, 80]
+
+
+async def test_set_funscript_speed_mode_uses_max_speed(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+
+    # One stroke per second: 100 positions per second, half of max_speed
+    actions = [
+        [at, 0 if i % 2 == 0 else 100] for i, at in enumerate(range(0, 61_000, 1000))
+    ]
+    await client.request(
+        "set_funscript",
+        {"toy_id": "Thunder_ID", "script": {"actions": actions}, "max_speed": 200},
+    )
+
+    state = (await client.request("get_state", {"toy_id": "Thunder_ID"}))["data"]
+    assert state["pattern"] == [[60_000, 50, 0]]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"script": {"actions": [{"at": 0}]}},  # no pos
+        {"script": {"actions": [[0, 101]]}},  # position out of range
+        {"script": {"actions": [[-1, 0]]}},  # negative time
+        {"script": {"actions": [[0, 0, 0]]}},  # not a pair
+        {"script": {"version": "1.0"}},  # no actions
+        {"script": {"actions": []}, "mode": "depth"},
+        {"script": {"actions": []}, "max_speed": 0},
+        {"script": {"actions": []}, "start_ms": "soon"},
+        {"script": {"actions": []}, "loop": True},  # unknown field
+        {},  # no script
+    ],
+)
+async def test_set_funscript_rejects_bad_data_and_changes_nothing(ws_server, data):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    await client.request(
+        "set_pattern",
+        {
+            "toy_id": "Thunder_ID",
+            "pattern": [[10_000, 10, 0]],
+            "wraparound": True,
+            "reset_time": True,
+        },
+    )
+
+    reply = await client.request("set_funscript", {"toy_id": "Thunder_ID", **data})
+
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Invalid Data"
+    state = await client.request("get_state", {"toy_id": "Thunder_ID"})
+    assert state["data"]["pattern"] == [[10_000, 10, 0]]
+
+
+async def test_seek_moves_the_pattern_and_reports_it(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    await client.request(
+        "set_pattern",
+        {
+            "toy_id": "Thunder_ID",
+            "pattern": [[10_000, 10, 0], [60_000, 40, 0]],
+            "wraparound": True,
+            "reset_time": True,
+        },
+    )
+
+    reply = await client.request(
+        "seek", {"toy_id": "Thunder_ID", "pattern_time": 15_000}
+    )
+
+    assert reply["success"] is True
+    assert reply["data"] == {"ack": True, "toy_id": "Thunder_ID"}
+    assert _last_state_event(client)["elapsed"] >= 15_000
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 3)
+    state = (await client.request("get_state", {"toy_id": "Thunder_ID"}))["data"]
+    assert state["current_intensities"] == [40, 0]
+
+
+async def test_seek_keeps_a_paused_toy_paused(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    await client.request(
+        "set_funscript",
+        {"toy_id": "Thunder_ID", "script": {"actions": [[0, 0], [60_000, 100]]}},
+    )
+    await client.request("set_paused", {"toy_id": "Thunder_ID", "pause": True})
+
+    await client.request("seek", {"toy_id": "Thunder_ID", "pattern_time": 42_000})
+
+    state = (await client.request("get_state", {"toy_id": "Thunder_ID"}))["data"]
+    assert state["is_paused"] is True
+    assert state["elapsed"] == 42_000
+
+
+async def test_seek_rejects_bad_data(ws_server):
+    _, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+    for data in ({}, {"pattern_time": "later"}, {"pattern_time": 5, "x": 1}):
+        reply = await client.request("seek", {"toy_id": "Thunder_ID", **data})
+        assert reply["data"]["error"] == "Invalid Data"
+
+
+async def test_funscript_and_seek_data_reject_non_finite_numbers():
+    # JSON has no NaN or Infinity, but some encoders emit them anyway
+    with pytest.raises(ValidationError):
+        SeekData(toy_id="Thunder_ID", pattern_time=float("nan"))
+    with pytest.raises(ValidationError):
+        SetFunscriptData(
+            toy_id="Thunder_ID", script={"actions": []}, start_ms=float("inf")
+        )
+    with pytest.raises(ValidationError):
+        SetFunscriptData(
+            toy_id="Thunder_ID", script={"actions": []}, max_speed=float("inf")
+        )
+
+
+@pytest.mark.parametrize(
+    "command, data",
+    [
+        ("set_funscript", {"script": {"actions": []}}),
+        ("seek", {"pattern_time": 0}),
+    ],
+)
+async def test_funscript_commands_for_an_unknown_toy(ws_server, command, data):
+    _, connect = ws_server
+    client = await connect()
+    reply = await client.request(command, {"toy_id": "nope", **data})
+    assert reply["data"]["error"] == "Unknown Toy"

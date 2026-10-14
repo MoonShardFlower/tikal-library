@@ -10,6 +10,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..funscript import Funscript, FunscriptMode
+
 # -----------------------------------------------------------------------------
 # Protocol envelopes
 # -----------------------------------------------------------------------------
@@ -262,6 +264,46 @@ class SetPatternData(BaseModel):
         return self
 
 
+class SetFunscriptData(BaseModel):
+    """
+    Payload for the set_funscript command.
+
+    Attributes:
+        toy_id (str): Identifier of the toy that plays the script.
+        script (Funscript): The script for the primary capability: the content of a ``.funscript`` file (actions as
+            ``{"at": ms, "pos": 0-100}`` objects. Other fields such as ``metadata`` are ignored), or the same with the
+            actions as compact ``[at, pos]`` pairs.
+        secondary (Funscript | None): An optional script for the secondary capability, in the same form.
+        mode (str): ``"speed"`` (default: the intensity follows the stroke speed) or ``"position"``.
+        max_speed (float): Stroke speed (positions per second) that maps to the maximum intensity in ``"speed"`` mode.
+            Must be positive. Defaults to 400.
+        start_ms (float): Where in the script playback starts, in ms. Defaults to 0. Negative values count as 0.
+    """
+
+    toy_id: str
+    script: Funscript
+    secondary: Optional[Funscript] = None
+    mode: FunscriptMode = "speed"
+    max_speed: float = Field(default=400.0, gt=0, allow_inf_nan=False)
+    start_ms: float = Field(default=0.0, allow_inf_nan=False)
+    model_config = _STRICT
+
+
+class SeekData(BaseModel):
+    """
+    Payload for the seek command.
+
+    Attributes:
+        toy_id (str): Identifier of the toy.
+        pattern_time (float): The new position in the toy's pattern, in ms (the time scale of ``elapsed`` in tge toy's
+            state). Negative values count as 0.
+    """
+
+    toy_id: str
+    pattern_time: float = Field(allow_inf_nan=False)
+    model_config = _STRICT
+
+
 class HeartbeatEnableData(BaseModel):
     """
     Payload for the enable_heartbeat command.
@@ -280,8 +322,10 @@ class GetInfoData(BaseModel):
 
     Attributes:
         toy_id: Unique identifier of the toy to query.
-        full:   If False, return only the inexpensive in-memory fields (toy_id, name, model_name, brand, intensity_names, supports_rotation, max_intensity, battery) with no requests to the toy.
-                If True, also request additional brand-specific information from the toy. Returns an empty dict if the command could not be delivered.
+        full:   If False, return only the inexpensive in-memory fields (toy_id, name, model_name, brand,
+                intensity_names, supports_rotation, max_intensity, battery) with no requests to the toy.
+                If True, also request additional brand-specific information from the toy.
+                Returns an empty dict if the command could not be delivered.
     """
 
     toy_id: str

@@ -1,5 +1,6 @@
 """Private Module: Implements the necessary logic for pattern handling functionality of the High-Level API"""
 
+import math
 from bisect import bisect_right
 from itertools import accumulate
 from time import time
@@ -121,7 +122,15 @@ class PatternHandler:
         Args:
             pattern_time: The new position in milliseconds. Negative values count as 0. A position past the end of a
                 wraparound pattern wraps around as usual.
+
+        Raises:
+            ValueError: *pattern_time* is not a finite number (playback could not find a position in the pattern).
+                Nothing was changed.
         """
+        if not math.isfinite(pattern_time):
+            raise ValueError(
+                f"pattern_time must be a finite number, got {pattern_time}"
+            )
         self._pattern_elapsed_time = max(0.0, float(pattern_time))
         if not self._is_paused and self.has_active_pattern:
             self._segment_start_time = time() * 1000

@@ -22,6 +22,7 @@ from .._private import (
     COMMUNICATION_INTERVAL,
     retry_within_window,
 )
+from ..funscript import Funscript, FunscriptMode
 from ..low_level import BRANDS
 from ..low_level import BadModelError as LowLevelBadModelError
 from ..low_level import ConnectionBuilder
@@ -1190,11 +1191,82 @@ class _ToyHub:
         Note:
             Any manual intensity command will automatically pause pattern playback. Use `toggle_pause()` or `set_paused()` to resume.
         """
-        self._log.info(f"Setting pattern of {toy_id} to {pattern}")
+        # A converted funscript can have thousands of segments: the full pattern only goes to the debug log.
+        self._log.info(f"Setting pattern of {toy_id} ({len(pattern)} segments)")
+        self._log.debug(f"Pattern of {toy_id}: {pattern}")
         await self._change_state(
             toy_id,
             "set_pattern",
             lambda toy: toy.apply_pattern(pattern, wraparound, reset_time),
+        )
+
+    async def set_funscript(
+        self,
+        toy_id: str,
+        script: Funscript,
+        *,
+        mode: FunscriptMode = "speed",
+        max_speed: float = 400.0,
+        secondary: Funscript | None = None,
+        start_ms: float = 0.0,
+    ) -> None:
+        """
+        Play a funscript on a toy: convert it into a pattern for this toy and set it (played once, without wraparound).
+
+        The script is converted with the toy's maximum intensity and recommended minimum interval in a worker thread.
+        From then on it is an ordinary pattern: limits, pause, block, and the safety hold apply, and :meth:`seek` moves
+        it. Like :meth:`set_pattern`, this leaves the pause as it is.
+
+        Args:
+            toy_id: Identifier of the toy.
+            script: The script for the primary capability.
+            mode: ``"speed"`` (the intensity follows the stroke speed) or ``"position"``.
+            max_speed: Stroke speed (positions per second) that maps to the maximum intensity in ``"speed"`` mode.
+            secondary: An optional script for the secondary capability (e.g., a ``.twist.funscript`` for a rotation).
+            start_ms: Where in the script playback starts, in ms (e.g., the current position of a video).
+                Negative values count as 0.
+
+        Raises:
+            ValueError: *max_speed* is not positive, *mode* is unknown, or *start_ms* is not a finite number.
+            ToyNotConnectedError: The script has no action after 0 ms, so the pattern was cleared, but the toy is not
+                connected, so it could not be stopped. The pattern is cleared all the same.
+            ToyConnectionError: The pattern was cleared, but the stop failed. Reconnecting is attempted automatically.
+            UnknownToyError: The toy was not added.
+        """
+        self._log.info(
+            f"Setting funscript of {toy_id} ({len(script.actions)} actions, starting at {start_ms} ms)"
+        )
+        pattern = await asyncio.to_thread(
+            self._get_toy(toy_id).convert_funscript,
+            script,
+            mode=mode,
+            max_speed=max_speed,
+            secondary=secondary,
+        )
+        await self._change_state(
+            toy_id,
+            "set_funscript",
+            lambda toy: toy.apply_funscript(pattern, start_ms),
+        )
+
+    async def seek(self, toy_id: str, pattern_time: float) -> None:
+        """
+        Move a toy's pattern playback to a position, e.g., to follow a video that was skipped forward or back.
+
+        The next playback tick plays the new position. A paused pattern stays paused at the new position.
+
+        Args:
+            toy_id: Identifier of the toy.
+            pattern_time: The new position in ms. Negative values count as 0. A position past the end of a wraparound
+                 pattern wraps around.
+
+        Raises:
+            ValueError: *pattern_time* is not a finite number. Nothing was changed.
+            UnknownToyError: The toy was not added.
+        """
+        self._log.info(f"Moving pattern of {toy_id} to {pattern_time} ms")
+        await self._change_state(
+            toy_id, "seek", lambda toy: toy.apply_seek(pattern_time)
         )
 
     def apply_state(self, toy_id: str, transition: Callable[[_ToyController], T]) -> T:

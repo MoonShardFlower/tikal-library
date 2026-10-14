@@ -32,6 +32,10 @@ from pydantic import BaseModel, ConfigDict, field_validator
 #: Highest position a funscript action can have (the lowest is 0).
 MAX_POSITION = 100
 
+#: How :func:`funscript_to_pattern` maps a script to intensities: ``"speed"`` (the intensity follows the stroke speed)
+#: or ``"position"`` (the intensity follows the position).
+FunscriptMode = Literal["speed", "position"]
+
 
 class Funscript(BaseModel):
     """
@@ -150,7 +154,7 @@ def funscript_to_pattern(
     *,
     max_intensity: int,
     min_segment_ms: int,
-    mode: Literal["speed", "position"] = "speed",
+    mode: FunscriptMode = "speed",
     max_speed: float = 400.0,
     secondary: Funscript | None = None,
 ) -> list[tuple[int, int, int]]:

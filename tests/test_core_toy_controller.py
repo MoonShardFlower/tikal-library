@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from tikal._core import _LovenseController, _ToyController
+from tikal.funscript import Funscript, funscript_to_pattern
 from tikal.low_level import LovenseToy, Toy, UnexpectedToyResponse
 
 
@@ -509,3 +510,129 @@ async def test_refresh_battery_remembers_the_level(controller, mock_toy):
     with pytest.raises(ConnectionError):
         await controller.refresh_battery()
     assert controller.battery == 42  # the last known level is kept
+
+
+# ---------------------------------------------------------------------------
+# Seek and funscripts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_seek_moves_playback_and_needs_no_command(controller, mock_toy):
+    controller.apply_pattern([(1000, 5, 3), (60_000, 9, 4)])
+
+    assert controller.apply_seek(5000) is False
+    assert not mock_toy.strict_stop.called
+
+    await controller.process_communication()
+    mock_toy.strict_intensity1.assert_awaited_once_with(9)
+    mock_toy.strict_intensity2.assert_awaited_once_with(4)
+
+
+def test_seek_keeps_a_paused_pattern_paused(controller):
+    controller.apply_pattern([(1000, 5, 3), (60_000, 9, 4)])
+    controller.apply_paused(True)
+
+    controller.apply_seek(5000)
+    assert controller.is_paused is True
+    assert controller.get_pattern_time() == 5000.0
+
+
+@pytest.mark.parametrize("pattern_time", [float("inf"), float("-inf"), float("nan")])
+def test_seek_to_a_non_finite_time_changes_nothing(controller, pattern_time):
+    controller.apply_pattern([(1000, 5, 3)])
+    controller.apply_paused(True)
+    frozen_at = controller.get_pattern_time()
+    version = controller.pattern_version
+
+    with pytest.raises(ValueError):
+        controller.apply_seek(pattern_time)
+
+    assert controller.get_pattern_time() == frozen_at
+    assert controller.pattern_version == version
+
+
+def test_convert_funscript_uses_the_toys_settings(controller):
+    # The mock toy has max_intensity 100 and recommended_min_interval 100
+    script = Funscript(actions=[(0, 0), (250, 100), (1250, 0)])
+
+    pattern = controller.convert_funscript(script)
+
+    assert pattern == funscript_to_pattern(
+        script, max_intensity=100, min_segment_ms=100
+    )
+    assert pattern[0] == (200, 100, 0)  # 400 positions per second: the maximum
+    assert controller.get_pattern_data()[0] == []  # converting changes nothing
+
+
+def test_convert_funscript_passes_the_options_on(controller):
+    script = Funscript(actions=[(0, 0), (1000, 100)])
+    twist = Funscript(actions=[(0, 0), (1000, 50)])
+
+    pattern = controller.convert_funscript(
+        script, mode="position", max_speed=50, secondary=twist
+    )
+
+    assert pattern == funscript_to_pattern(
+        script,
+        max_intensity=100,
+        min_segment_ms=100,
+        mode="position",
+        max_speed=50,
+        secondary=twist,
+    )
+
+
+def test_convert_funscript_rejects_bad_arguments(controller):
+    with pytest.raises(ValueError):
+        controller.convert_funscript(
+            Funscript(actions=[(0, 0), (100, 100)]), max_speed=0
+        )
+
+
+def test_apply_funscript_plays_once_from_start_ms(controller):
+    pattern = controller.convert_funscript(Funscript(actions=[(0, 0), (60_000, 100)]))
+
+    assert controller.apply_funscript(pattern, start_ms=30_000) is False
+
+    stored, wraparound, is_paused, _ = controller.get_pattern_data()
+    assert stored == pattern
+    assert wraparound is False and is_paused is False
+    assert 30_000 <= controller.get_pattern_time() < 31_000
+
+
+def test_apply_funscript_leaves_the_pause_alone(controller):
+    controller.apply_paused(True)
+    controller.apply_funscript([(1000, 50, 0)])
+    assert controller.is_paused is True
+
+
+def test_apply_funscript_without_movement_time_clears_the_pattern(controller):
+    controller.apply_pattern([(10_000, 5, 3)])
+    empty = controller.convert_funscript(Funscript(actions=[]))
+
+    assert controller.apply_funscript(empty) is True  # stop the toy
+    assert controller.get_pattern_data()[0] == []
+
+
+def test_apply_funscript_with_a_non_finite_start_changes_nothing(controller):
+    controller.apply_pattern([(10_000, 5, 3)])
+    version = controller.pattern_version
+
+    with pytest.raises(ValueError):
+        controller.apply_funscript([(1000, 50, 0)], start_ms=float("nan"))
+
+    assert controller.get_pattern_data()[0] == [(10_000, 5, 3)]
+    assert controller.pattern_version == version
+
+
+@pytest.mark.asyncio
+async def test_funscript_playback_respects_the_limits(controller, mock_toy):
+    await _set_limit(controller, 0, 30)
+    pattern = controller.convert_funscript(
+        Funscript(actions=[(0, 0), (60_000, 100)]), mode="position"
+    )
+    controller.apply_funscript(pattern, start_ms=59_000)
+
+    await controller.process_communication()
+    mock_toy.strict_intensity1.assert_awaited_once_with(30)  # the script asks for 98

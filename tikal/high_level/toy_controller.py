@@ -5,7 +5,7 @@ This module provides :class:`ToyController`, the synchronous handle for one conn
 
 - **Synchronous API**: All methods are synchronous, making them easy to use. State changes
   (pause, block, pattern, limits) take effect at once. Commands to the toy are sent in the background.
-- **Pattern Playback**: Set time-based patterns that automatically control toy intensities.
+- **Pattern Playback**: Set time-based patterns that automatically control toy intensities, or play funscripts.
 - **Pause/Block States**: Temporarily halt toy actions while maintaining the pattern state.
 - **Intensity Limits**: Cap what any command or pattern can make the toy do.
 - **Callback Support**: Optional callbacks provide feedback when a command completes.
@@ -17,9 +17,11 @@ Note:
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypeVar
 
 from .._core import UnknownToyError, _ToyController
+from ..funscript import Funscript, FunscriptMode
 
 if TYPE_CHECKING:
     from .toy_hub import ToyHub
@@ -31,7 +33,8 @@ class ToyController:
     """
     Synchronous control of one connected toy.
 
-    State changes (:meth:`set_paused`, :meth:`set_blocked`, :meth:`set_pattern`, the limits) take effect at once, so
+    State changes (:meth:`set_paused`, :meth:`set_blocked`, :meth:`set_pattern`, :meth:`set_funscript`, :meth:`seek`,
+    the limits) take effect at once, so
     reading the state right afterward reflects them. Commands needing the toy are sent in the background. Commands
     that take a callback report their result there: None means the command could not be delivered (e.g., the toy is not
     connected, or the connection failed).
@@ -314,6 +317,78 @@ class ToyController:
         """
         if self._apply(lambda toy: toy.apply_pattern(pattern, wraparound, reset_time)):
             self._send_stop("set_pattern")
+
+    def set_funscript(
+        self,
+        script: Funscript | str | os.PathLike[str],
+        *,
+        mode: FunscriptMode = "speed",
+        max_speed: float = 400.0,
+        secondary: Funscript | str | os.PathLike[str] | None = None,
+        start_ms: float = 0.0,
+    ) -> None:
+        """
+        Play a funscript: convert it into a pattern for this toy and set it (played once, without wraparound).
+
+        The script is converted with the toy's :attr:`max_intensity` and recommended minimum interval in the calling
+        thread. From then on it is an ordinary pattern. To follow a video, call :meth:`seek` when the video jumps, and
+        :meth:`set_paused` when it is paused or resumed. A paused toy starts the script once it is resumed.
+
+        Args:
+            script: The script for the primary capability, or the path of a ``.funscript`` file.
+            mode: ``"speed"`` (default: the intensity follows the stroke speed) or ``"position"`` (the intensity
+                follows the position).
+            max_speed: Stroke speed (positions per second) that maps to :attr:`max_intensity` in ``"speed"`` mode.
+                With the default of 400, a full stroke in 250 ms gives the maximum.
+            secondary: An optional script (or path) for the secondary capability, e.g., a ``.twist.funscript`` for a
+                Nora's rotation. Without it, the secondary capability stays at 0.
+            start_ms: Where in the script playback starts, in ms (e.g., the current position of a video).
+                Negative values count as 0.
+
+        Raises:
+            OSError: A script file could not be read.
+            pydantic.ValidationError: (subclass of ValueError) A script file is not a valid funscript.
+            ValueError: *max_speed* is not positive, *mode* is unknown, or *start_ms* is not a finite number.
+
+        Example::
+
+                toy.set_funscript("video.funscript")
+
+                # Keep the toy in sync with the video player
+                toy.seek(player.position_ms)  # the video jumped
+                toy.set_paused(True)  # the video was paused
+                toy.set_paused(False)  # ... and resumed
+        """
+        # Loading and converting a long script takes a while: here, rather than on the hub's event loop.
+        pattern = self._toy().convert_funscript(
+            _as_funscript(script),
+            mode=mode,
+            max_speed=max_speed,
+            secondary=_as_funscript(secondary) if secondary is not None else None,
+        )
+        if self._apply(lambda toy: toy.apply_funscript(pattern, start_ms)):
+            self._send_stop("set_funscript")
+
+    def seek(self, pattern_time: float) -> None:
+        """
+        Move pattern playback to a position, e.g., to follow a video that was skipped forward or back.
+
+        Nothing is sent to the toy: the pattern simply continues from the new position. A paused pattern stays paused
+        at it until it is resumed.
+
+        Args:
+            pattern_time: The new position in ms. Negative values count as 0. A position past the end of a wraparound
+                pattern wraps around.
+
+        Raises:
+            ValueError: *pattern_time* is not a finite number.
+
+        Example::
+
+                toy.set_funscript("video.funscript")
+                toy.seek(90_000)  # continue 1:30 into the script
+        """
+        self._apply(lambda toy: toy.apply_seek(pattern_time))
 
     def set_intensity1_limit(self, level: int | None) -> None:
         """
@@ -638,3 +713,8 @@ class ToyController:
             self._hub._run_callback(callback, None, command)
             return
         self._hub._submit(run, callback, command)
+
+
+def _as_funscript(script: Funscript | str | os.PathLike[str]) -> Funscript:
+    """The script as given, or the one in the file at the given path."""
+    return script if isinstance(script, Funscript) else Funscript.load(script)

@@ -6,10 +6,14 @@ must report None whenever a command could not be delivered. Driven end to end th
 """
 
 import asyncio
+import json
 import threading
 from unittest.mock import AsyncMock
 
+import pytest
+
 from tikal._core import ToyStatus
+from tikal.funscript import Funscript
 
 from .conftest import connect_mock_toy, wait_until
 
@@ -293,3 +297,97 @@ def test_a_callback_that_raises_goes_to_on_error(mock_hub):
     assert wait_until(lambda: errors)
     assert isinstance(errors[0][0], ValueError) and "intensity1" in errors[0][1]
     assert wait_until(lambda: toy.current_intensities == (6, 0))
+
+
+# ---------------------------------------------------------------------------
+# Funscripts and seek
+# ---------------------------------------------------------------------------
+
+
+def _write_script(path, actions):
+    """Write a .funscript file in the format players use."""
+    data = {
+        "version": "1.0",
+        "actions": [{"at": at, "pos": pos} for at, pos in actions],
+    }
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_set_funscript_from_a_file_is_visible_at_once_and_plays(mock_hub, tmp_path):
+    toy = connect_mock_toy(mock_hub())
+    path = _write_script(tmp_path / "video.funscript", [(0, 30), (60_000, 30)])
+
+    toy.set_funscript(path, mode="position")
+
+    pattern, wraparound, _, _ = toy.get_pattern_data()
+    assert pattern == [(60_000, 30, 0)]  # Thunder: max_intensity 100
+    assert wraparound is False
+    assert wait_until(lambda: toy.current_intensities == (30, 0))
+
+
+def test_set_funscript_with_a_secondary_script(mock_hub, tmp_path):
+    toy = connect_mock_toy(mock_hub(), "Lightning_ID", "Lightning")
+    twist = _write_script(tmp_path / "video.twist.funscript", [(0, 60), (60_000, 60)])
+
+    toy.set_funscript(
+        Funscript(actions=[(0, 30), (60_000, 30)]), mode="position", secondary=twist
+    )
+
+    assert wait_until(lambda: toy.current_intensities == (30, 60))
+
+
+def test_set_funscript_starts_at_start_ms_and_leaves_the_pause_alone(mock_hub):
+    toy = connect_mock_toy(mock_hub())
+    toy.set_paused(True)
+
+    toy.set_funscript(Funscript(actions=[(0, 0), (60_000, 100)]), start_ms=20_000)
+
+    assert toy.is_paused is True
+    assert toy.get_pattern_time() == 20_000.0
+
+
+def test_seek_moves_the_pattern_at_once(mock_hub):
+    toy = connect_mock_toy(mock_hub())
+    toy.set_pattern([(10_000, 10, 0), (60_000, 40, 0)])
+    assert wait_until(lambda: toy.current_intensities == (10, 0))
+
+    toy.seek(15_000)
+
+    assert toy.get_pattern_time() >= 15_000
+    assert wait_until(lambda: toy.current_intensities == (40, 0))
+
+
+def test_set_funscript_without_movement_time_stops_the_toy(mock_hub):
+    toy = connect_mock_toy(mock_hub())
+    toy.set_pattern([(60_000, 30, 0)])
+    assert wait_until(lambda: toy.current_intensities == (30, 0))
+
+    toy.set_funscript(Funscript(actions=[]))
+
+    assert toy.get_pattern_data()[0] == []
+    assert wait_until(lambda: toy.current_intensities == (0, 0))
+
+
+def test_set_funscript_with_a_bad_script_raises_and_changes_nothing(mock_hub, tmp_path):
+    toy = connect_mock_toy(mock_hub())
+    toy.set_pattern([(60_000, 30, 0)])
+    broken = tmp_path / "broken.funscript"
+    broken.write_text('{"actions": [{"at": 0}]}', encoding="utf-8")
+
+    with pytest.raises(OSError):
+        toy.set_funscript(tmp_path / "missing.funscript")
+    with pytest.raises(ValueError):
+        toy.set_funscript(broken)
+    with pytest.raises(ValueError):
+        toy.set_funscript(Funscript(actions=[(0, 0), (100, 100)]), max_speed=-1)
+
+    assert toy.get_pattern_data()[0] == [(60_000, 30, 0)]
+
+
+def test_seek_to_a_non_finite_time_raises(mock_hub):
+    toy = connect_mock_toy(mock_hub())
+    toy.set_pattern([(60_000, 30, 0)])
+    with pytest.raises(ValueError):
+        toy.seek(float("nan"))
+    assert toy.get_pattern_time() < 60_000

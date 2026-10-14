@@ -12,10 +12,22 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
         any of the APIs can play. By default the intensity follows the stroke speed, alternatively a position mapping 
         is available too. Segments are laid on a grid of the toy's recommended minimum interval, so a dense script does 
         not flood the toy with commands.
+    - High-Level API: `ToyController.set_funscript` plays a funscript (a `Funscript` or the path of a `.funscript` file),
+        optionally with a second script for the secondary capability, converted with the toy's own maximum intensity and
+        recommended minimum interval. `ToyController.seek` moves pattern playback to a position, e.g., to follow a video.
+        New example: ./examples/HighLevelAPI/part3_funscript.py
+    - Web API: New actions `set_funscript` and `seek` (see docs/websocket/actions.md). `set_funscript` takes the content
+        of a `.funscript` file as is (or with compact `[at, pos]` actions). It converts it into a pattern for the toy,
+        which `get_state` and `toy_state_changed` report like any other pattern. `seek` moves pattern playback
+        to a position, e.g., to follow a video.
 
 ### Changed
     - Pattern playback finds the current segment with a binary search instead of scanning the whole pattern, making it
         cheaper. A segment with a negative duration now counts as zero.
+
+### Fixed
+    - Web API docs: A request with invalid data is reported as "Invalid Data". error.md and the `set_pattern` section
+        of actions.md wrongly called it "Validation Error".
 
 ## [2.0.0] - 2026-10-06
 

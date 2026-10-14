@@ -154,7 +154,9 @@ from .toy_server_models import (
     IntensityLimitData,
     RequestEnvelope,
     ResponseEnvelope,
+    SeekData,
     SetBlockedData,
+    SetFunscriptData,
     SetModelData,
     SetPatternData,
     SetPausedData,
@@ -808,6 +810,22 @@ class ToyServer:
                 lambda d: hub.set_pattern(
                     d.toy_id, d.pattern, d.wraparound, d.reset_time
                 ),
+            ),
+            # The server converts the script with the toy's own intensity range and recommended minimum interval.
+            "set_funscript": hub_command(
+                SetFunscriptData,
+                AckData,
+                lambda d: hub.set_funscript(
+                    d.toy_id,
+                    d.script,
+                    mode=d.mode,
+                    max_speed=d.max_speed,
+                    secondary=d.secondary,
+                    start_ms=d.start_ms,
+                ),
+            ),
+            "seek": hub_command(
+                SeekData, AckData, lambda d: hub.seek(d.toy_id, d.pattern_time)
             ),
             # Handled by the server itself: these need the client's connection or the server's own state.
             "set_intensity1_limit": _Command(

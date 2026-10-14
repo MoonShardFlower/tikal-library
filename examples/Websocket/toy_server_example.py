@@ -217,25 +217,49 @@ async def run_walkthrough() -> None:
         reply = await send(ws, "set_blocked", {"toy_id": MOCK_TOY_ID, "block": False})
         print_reply("15b. set_blocked  (block=false → unblocked)", reply)
 
+        # ── 19. set_funscript ──────────────────────────────────────────────
+        # The content of a .funscript file can be sent as it is. The server converts it into a pattern for the toy.
+        funscript = {
+            "version": "1.0",
+            "actions": [
+                {"at": at, "pos": 0 if i % 2 == 0 else 100}
+                for i, at in enumerate(range(0, 10_001, 500))
+            ],
+        }
+        reply = await send(
+            ws,
+            "set_funscript",
+            {"toy_id": MOCK_TOY_ID, "script": funscript, "start_ms": 2000},
+        )
+        print_reply("19. set_funscript  (10 s of strokes, starting 2 s in)", reply)
+
+        # ── 20. seek ───────────────────────────────────────────────────────
+        reply = await send(ws, "seek", {"toy_id": MOCK_TOY_ID, "pattern_time": 6000})
+        print_reply("20. seek  (the video jumped to 0:06)", reply)
+
+        await asyncio.sleep(0.2)  # let the server tick once
+        reply = await send(ws, "get_state", {"toy_id": MOCK_TOY_ID})
+        print_reply("8c. get_state  (after set_funscript and seek)", reply)
+
         # ── 13. stop ───────────────────────────────────────────────────────
         reply = await send(ws, "stop", {"toy_id": MOCK_TOY_ID})
         print_reply("13. stop", reply)
 
-        # ── 19. direct_command ─────────────────────────────────────────────
+        # ── 21. direct_command ─────────────────────────────────────────────
         reply = await send(
             ws, "direct_command", {"toy_id": MOCK_TOY_ID, "command": "GetBatch"}
         )
-        print_reply("19. direct_command  ('GetBatch')", reply)
+        print_reply("21. direct_command  ('GetBatch')", reply)
 
-        # ── 20. set_model ──────────────────────────────────────────────────
+        # ── 22. set_model ──────────────────────────────────────────────────
         reply = await send(
             ws, "set_model", {"toy_id": MOCK_TOY_ID, "model_name": "Sex Machine"}
         )
-        print_reply("20. set_model to 'Sex Machine')", reply)
+        print_reply("22. set_model to 'Sex Machine')", reply)
 
-        # ── 21. remove ─────────────────────────────────────────────────────
+        # ── 23. remove ─────────────────────────────────────────────────────
         reply = await send(ws, "remove", {"toy_id": MOCK_TOY_ID})
-        print_reply("21. remove", reply)
+        print_reply("23. remove", reply)
 
     print(f"\n{'═' * 60}")
     print("  Walkthrough complete.")

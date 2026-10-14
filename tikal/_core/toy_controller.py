@@ -6,9 +6,11 @@ Meant to be consumed by _ToyHub, which in turn is consumed by ToyServer and the 
 """
 
 import asyncio
+import math
 from typing import Any, Awaitable, Callable, TypeVar
 
 from .._private import PatternHandler
+from ..funscript import Funscript, FunscriptMode, funscript_to_pattern
 from ..low_level import LovenseToy, MockEstimToy, Toy, UnexpectedToyResponse
 
 T = TypeVar("T")
@@ -263,6 +265,87 @@ class _ToyController:
             self._invalidate_last_values()
             return True
         return False
+
+    def apply_seek(self, pattern_time: float) -> bool:
+        """
+        Move pattern playback to a position, e.g., to follow a video that was skipped forward or back.
+
+        Nothing has to be sent: the next playback tick plays the new position. A paused pattern stays paused at it.
+
+        Args:
+            pattern_time: The new position in milliseconds. Negative values count as 0.
+
+        Raises:
+            ValueError: *pattern_time* is not a finite number. Nothing was changed.
+
+        Returns:
+            Always False: the toy does not have to be stopped.
+        """
+        self._pattern_handler.seek(pattern_time)
+        return False
+
+    def convert_funscript(
+        self,
+        script: Funscript,
+        *,
+        mode: FunscriptMode = "speed",
+        max_speed: float = 400.0,
+        secondary: Funscript | None = None,
+    ) -> list[tuple[int, int, int]]:
+        """
+        Convert a funscript into a pattern for this toy, to be set with :meth:`apply_funscript`.
+
+        The script is converted with the toy's :attr:`max_intensity` and recommended minimum interval, see
+        :func:`tikal.funscript.funscript_to_pattern`. This changes nothing, so it may run outside the event loop: a
+        long script takes a while to convert (around 0.1 s for a dense one-hour script).
+
+        Args:
+            script: The script for the primary capability.
+            mode: ``"speed"`` (the intensity follows the stroke speed) or ``"position"``.
+            max_speed: Stroke speed (positions per second) that maps to the maximum intensity in ``"speed"`` mode.
+            secondary: An optional script for the secondary capability.
+
+        Raises:
+            ValueError: *max_speed* is not positive or *mode* is unknown.
+
+        Returns:
+            The pattern.
+        """
+        return funscript_to_pattern(
+            script,
+            max_intensity=self._toy.max_intensity,
+            min_segment_ms=self._toy.recommended_min_interval,
+            mode=mode,
+            max_speed=max_speed,
+            secondary=secondary,
+        )
+
+    def apply_funscript(
+        self, pattern: list[tuple[int, int, int]], start_ms: float = 0.0
+    ) -> bool:
+        """
+        Set a pattern converted from a funscript (see :meth:`convert_funscript`): played once, without wraparound.
+
+        The pattern and its start position are set in one step, so no playback tick plays the script from its beginning
+        first. Like :meth:`apply_pattern`, this leaves the pause as it is.
+
+        Args:
+            pattern: The converted script.
+            start_ms: Where in the script playback starts, in milliseconds (e.g., the current position of a video).
+                Negative values count as 0.
+
+        Raises:
+            ValueError: *start_ms* is not a finite number. Nothing was changed.
+
+        Returns:
+            True if the toy has to be stopped now (see :meth:`stop_output`): the pattern is empty (the script has no
+            action after 0 ms), which clears the pattern.
+        """
+        if not math.isfinite(start_ms):
+            raise ValueError(f"start_ms must be a finite number, got {start_ms}")
+        must_stop = self.apply_pattern(pattern, wraparound=False)
+        self._pattern_handler.seek(start_ms)
+        return must_stop
 
     def apply_stop(self) -> bool:
         """
