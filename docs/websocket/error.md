@@ -65,7 +65,7 @@ In this special case the fields `reply` and `id` of the response envelope are se
 **Payload:**
 ```json
 {
-  "error": "Validation Error",
+  "error": "Invalid Data",
   "message": "Validation of data field failed for command '{cmd}' failed. Please check field types and required keys: {details}",
   "traceback": "Traceback (most recent call last): ...",
   "toy_id": null,
