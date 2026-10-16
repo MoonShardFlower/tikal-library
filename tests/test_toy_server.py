@@ -125,8 +125,8 @@ async def ws_server():
     """
     Start a mock-backed ToyServer and yield ``(server, connect)``.
 
-    ``connect`` is a factory returning a connected :class:`_Client`. Idle-shutdown is pushed far out so it doesn't fire
-    mid-test; is pushed far out so it never fires mid-test; teardown closes every client and shuts the server down.
+    ``connect`` is a factory returning a connected :class:`_Client`. Idle shutdown is pushed far out, so it never fires
+    mid-test. Teardown closes every client and shuts the server down.
     """
     port = _free_port()
     server = ToyServer(
@@ -447,7 +447,7 @@ async def test_second_clients_limit_reins_in_a_running_toy(ws_server):
 
 
 async def test_limit_applies_to_an_already_running_pattern(ws_server):
-    """Regression: limits used to be baked into the pattern at set time, so a later limit did nothing."""
+    """A limit set while a pattern plays applies to it at once."""
     _, connect = ws_server
     client = await connect()
     await _scan_and_add(client, "Thunder_ID", "Thunder")
@@ -981,10 +981,9 @@ async def test_cancelling_serve_stops_connected_toys():
 
 async def test_last_client_leaving_stops_toys_even_without_idle_shutdown():
     """
-    Nobody connected means nobody is watching: every toy must be stopped and its pattern frozen.
+    Nobody connected means nobody is watching: every toy is stopped and its pattern frozen.
 
-    Auto-shutdown is disabled here (``idle_shutdown_delay=0``), which used to leave a running pattern driving the
-    toy indefinitely.
+    Also with auto-shutdown disabled (``idle_shutdown_delay=0``), where nothing else would stop a running pattern.
     """
     port = _free_port()
     server = ToyServer(
@@ -1110,7 +1109,7 @@ async def test_requested_shutdown_frees_the_port_before_the_toys_are_disconnecte
 
 
 async def test_shutdown_still_closes_the_other_clients():
-    """Clients still connected when the server shuts down are closed with 1001 (going away), as before."""
+    """Clients still connected when the server shuts down are closed with 1001 (going away)."""
     port = _free_port()
     server, serve_task = await _start_server(port)
     try:
@@ -1148,7 +1147,7 @@ async def test_idle_shutdown_stops_accepting_first():
 
 
 async def test_shutdown_sends_single_response(ws_server):
-    """Regression: the shutdown command must reply exactly once (not twice)."""
+    """The shutdown command replies exactly once."""
     _, connect = ws_server
     client = await connect()
     reply = await client.request("shutdown")
@@ -1594,7 +1593,7 @@ async def test_scan_update_maps_errors_and_success(ws_server):
 
     assert calls[0][0] == "scan_update"
     assert calls[0][1]["error"] == "Discovery Error" and calls[0][2] is False
-    # Regression: this error was sent with success=True and its traceback as a list of lines.
+    # An error event: success is False, and the traceback is one string.
     assert calls[1][1]["error"] == "Developer Error" and calls[1][2] is False
     assert isinstance(calls[1][1]["traceback"], str)
     assert "RuntimeError: boom" in calls[1][1]["traceback"]

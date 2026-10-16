@@ -1,4 +1,4 @@
-"""Private Module: Used by the High-Level API to run asyncio coroutines."""
+"""Private module: a background event loop for synchronous callers (used by the High-Level API)."""
 
 import asyncio
 import concurrent.futures
@@ -9,12 +9,20 @@ T = TypeVar("T")
 
 
 class AsyncRunner:
+    """
+    Runs an asyncio event loop on a daemon thread, so synchronous code can run coroutines on it.
+
+    The loop starts in the constructor and runs until :meth:`shutdown`.
+
+    Attributes:
+        loop: The event loop.
+        loop_thread: The thread that runs it.
+
+    Raises:
+        RuntimeError: The loop did not start within 5 seconds.
+    """
 
     def __init__(self) -> None:
-        """
-        AsyncRunner is a utility class for executing asyncio coroutines within a synchronous Application.
-        It runs a dedicated event loop in a background thread.
-        """
         self.loop: asyncio.AbstractEventLoop | None = None
         self.loop_thread: threading.Thread | None = None
         self._setup_event_loop()
@@ -25,28 +33,27 @@ class AsyncRunner:
         return self.loop is not None and self.loop.is_running()
 
     def in_loop_thread(self) -> bool:
-        """Whether the caller runs on the event loop's own thread (e.g., in a callback invoked from a coroutine)."""
+        """Whether the caller runs on the loop's own thread, e.g., in a callback that a coroutine invoked."""
         return threading.current_thread() is self.loop_thread
 
     def run_async(
         self, coro: Coroutine[Any, Any, T], timeout: Optional[float] = 30.0
     ) -> T:
         """
-        Run an async coroutine using the dedicated event loop.
-        This function blocks until the coroutine is finished or the timeout occurs!
+        Run a coroutine on the loop and block until it returns.
 
         Args:
-            coro: The asynchronous coroutine to be executed.
-            timeout: timeout in seconds to wait for the coroutine to complete. If None, there is no timeout. Defaults to 30.0
+            coro: The coroutine to run.
+            timeout: Seconds to wait for the result. None waits indefinitely.
 
         Raises:
-            RuntimeError: If called on the event loop's own thread, where waiting for the loop would deadlock it (use
-                :meth:`submit` there). Also if the event loop has not been initialized, which should never occur.
-            TimeoutError: If the coroutine execution exceeds the specified timeout.
-            Exception: Any exception raised by the coroutine will be propagated to the caller
+            RuntimeError: Called on the loop's own thread, where waiting would deadlock the loop. *coro* is closed
+                without running. Use :meth:`submit` there.
+            TimeoutError: *coro* did not finish within *timeout*. It keeps running on the loop.
+            Exception: Whatever *coro* raises.
 
         Returns:
-            T: The result returned by the executed coroutine.
+            The result of *coro*.
         """
         if self.loop is None:
             coro.close()
@@ -62,18 +69,15 @@ class AsyncRunner:
 
     def submit(self, coro: Coroutine[Any, Any, T]) -> concurrent.futures.Future[T]:
         """
-        Schedule a coroutine on the event loop and return at once (non-blocking). Safe to call from any thread.
+        Schedule a coroutine on the loop and return at once. Thread-safe.
 
         Coroutines submitted one after the other start in that order.
 
         Args:
-            coro: The asynchronous coroutine to be executed.
-
-        Raises:
-            RuntimeError: If the event loop has not been initialized. This should never occur.
+            coro: The coroutine to run.
 
         Returns:
-            A future for the coroutine's result. Nothing has to wait for it.
+            A future for the result of *coro*. It may be ignored.
         """
         if self.loop is None:
             coro.close()
@@ -82,9 +86,10 @@ class AsyncRunner:
 
     def _setup_event_loop(self) -> None:
         """
-        Set up a dedicated event loop in a separate thread.
+        Start the loop on a daemon thread. Returns once the loop exists.
 
-        Blocks until the background thread has created the loop. Callers may schedule work immediately after construction.
+        Raises:
+            RuntimeError: The loop did not start within 5 seconds.
         """
         loop_ready = threading.Event()
 
@@ -105,6 +110,7 @@ class AsyncRunner:
         """
         Gracefully shut down the event loop and background thread.
         Should be called before the AsyncRunner is destroyed to ensure clean cleanup of resources.
+        Pending tasks get up to 2 seconds to finish. Tasks still running then are abandoned with the loop.
         """
         if self.loop and self.loop.is_running():
 

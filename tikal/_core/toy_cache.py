@@ -1,14 +1,8 @@
 """
-Persistent storage for toy model name mappings.
+Persistent mapping of Bluetooth name -> model name, stored as a JSON file. Public as ``tikal.high_level.ToyCache``.
 
-This module provides the ToyCache class, which maintains a persistent mapping between bluetooth_names and model_names.
-This allows you to remember which model each discovered toy is between sessions, so the user does not need to
-re-select models every time. The cache is stored as a JSON file on the disk.
-
-Note:
-    The cache file is created if it doesn't exist.
-    ToyCache does not raise exceptions. Encountered errors are logged, and ToyCache fails silently.
-    :class:`ToyHub` (part of the High-Level-API) and the WebSocket server use ToyCache internally.
+The High-Level ``ToyHub`` and the WebSocket server use it to fill in the model name of discovered toys, so the user
+selects a toy's model only once.
 """
 
 import json
@@ -20,39 +14,23 @@ from typing import Any
 
 class ToyCache:
     """
-    Persistent storage mapping Bluetooth names to toy model names.
+    Remembers each toy's model name by its Bluetooth name, in a JSON file.
 
-    Maintains a JSON file on the disk that maps Bluetooth device names (e.g., "LVS-A123") to their corresponding
-    model names (e.g., "Nora"). This eliminates the need for users to manually identify toys every time they connect.
-
-    The cache is loaded on initialization. Encountered errors are logged, and ToyCache fails silently.
-    Only ``str -> str`` entries are kept, from the file as well as from :meth:`update`.
-    :meth:`get_model_name` always returns a ``str``.
+    - Never raises: errors are logged, and the cache keeps working in memory.
+    - Keeps only ``str -> str`` entries, from the file and from :meth:`update`.
+    - Creates the file and its directories if missing.
 
     Args:
-        cache_path: Path to the JSON cache file. If the path is empty (=``Path()``), the cache operates with no persistence.
-        default_model: Default model name to return when a Bluetooth name is not found in the cache.
-        logger_name: Name of the logger to use. Use empty string for root logger.
+        cache_path: The JSON file. ``Path()`` keeps the cache in memory only.
+        default_model: What :meth:`get_model_name` returns for an unknown toy. A non-str becomes ``""``.
+        logger_name: Name of the logger. Empty string for the root logger.
 
     Example::
 
-        from pathlib import Path
-        from tikal.high_level import ToyCache
-
-        cache = ToyCache(
-            cache_path=Path("./toys.json"),
-            default_model="unknown",
-            logger_name="myapp"
-        )
-
-        # First time: toy not in cache
-        model = cache.get_model_name("LVS-A123")  # Returns "unknown"
-
-        # User selects a model, you can update the cache
+        cache = ToyCache(Path("./toys.json"), default_model="", logger_name="my_app")
+        cache.get_model_name("LVS-A123")  # "" the first time
         cache.update({"LVS-A123": "Nora"})
-
-        # Next time: toy is in cache
-        model = cache.get_model_name("LVS-A123")  # Returns "Nora"
+        cache.get_model_name("LVS-A123")  # "Nora", also in later sessions
     """
 
     def __init__(self, cache_path: Path, default_model: str, logger_name: str):
@@ -73,35 +51,13 @@ class ToyCache:
 
     def update(self, updates: dict[str, str]) -> None:
         """
-        Update cache entries and persist to disk.
+        Add or replace entries and write the cache to its file.
 
-        Merges the provided updates into the cache, overwriting existing entries and adding new ones.
-        The updated cache is immediately written to the disk.
+        Entries that are not ``str -> str`` are dropped and logged. If writing fails, the error is logged and the
+        entries stay in memory.
 
         Args:
-            updates: Dictionary mapping Bluetooth names (keys) to model names (values)
-
-        Example::
-
-                # Update single entry
-                cache.update({"LVS-A123": "Nora"})
-
-                # Update multiple entries
-                cache.update({
-                    "LVS-B456": "Lush",
-                    "LVS-C789": "Max"
-                })
-                # Change existing model
-                cache.update({"LVS-A123": "Ridge"})  # Overwrites "Nora"
-
-        Note:
-            Fails silently if disk I/O errors occur. Errors are logged and do not raise exceptions.
-            The in-memory cache is always updated even if writing to disk fails.
-            If the cache was initialized with an empty path (``Path()``), no disk write is attempted.
-
-        Note:
-            Entries whose name or model name is not a ``str`` are logged and dropped, so a caller ignoring the type
-            hints cannot put a value into the cache that :meth:`get_model_name` would later hand back.
+            updates: Bluetooth name -> model name.
         """
         self._log.info(f"Updating ToyCache with updates={updates}")
         self._cache.update(self._only_string_entries(updates, "update"))
@@ -118,25 +74,13 @@ class ToyCache:
 
     def get_model_name(self, bluetooth_name: str) -> str:
         """
-        Retrieve the cached model name for a Bluetooth device.
-
-        Looks up the model name associated with the given Bluetooth name.
-        If the name is not found in the cache, it returns the default model name specified during initialization.
+        The model name of a toy.
 
         Args:
-            bluetooth_name: Bluetooth device name to look up (e.g., "LVS-A123"). This is obtained from ``ToyData.name`` during discovery.
+            bluetooth_name: The toy's Bluetooth name (``ToyData.name``), e.g., ``"LVS-A123"``.
 
         Returns:
-            str: The cached model name (e.g., "Nora") if found, otherwise the default model name.
-
-        Example::
-
-            # Check if the toy is cached
-            model = cache.get_model_name("LVS-A123")
-            if model == default_model_name:
-                print("Unknown toy")
-            else:
-                print(f"Known toy: {model}")
+            The cached model name, else the default model.
         """
         name = self._cache.get(bluetooth_name, self._default_model)
         self._log.debug(f"ToyCache retrieved {name} for {bluetooth_name}")
@@ -144,12 +88,10 @@ class ToyCache:
 
     def _ensure_cache_exists(self) -> None:
         """
-        Ensure the cache directory and file exist.
-
-        Creates the parent directory structure if it doesn't exist and initializes an empty cache file if one isn't present.
+        Create the file (as ``{}``) and its directories if missing. Does nothing if the file/directories already exist.
 
         Raises:
-            any exception raised by the filesystem
+            OSError: Creating them failed.
         """
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
         if not self._cache_path.exists():
@@ -159,17 +101,15 @@ class ToyCache:
         self, entries: dict[Any, Any], context: str
     ) -> dict[str, str]:
         """
-        Keep only the ``str -> str`` pairs of *entries*, logging whatever is dropped.
-
-        Every cached value is eventually assigned to ``ToyData.model_name``, which rejects anything that is not a
-        ``str``. Filtering keeps the promise that :meth:`get_model_name` returns a ``str``, whatever the file (or a caller) contains.
+        Returns The ``str -> str`` entries of *entries*.
+        The others are logged: each value ends up as a ``ToyData.model_name`` which must be a str.
 
         Args:
-            entries: Candidate name -> model-name pairs, from the cache file or from :meth:`update`.
-            context: Short description of where the entries came from, used in the log message.
+            entries: Bluetooth name -> model name, from the file or from :meth:`update`.
+            context: Where the entries come from, for the log.
 
         Returns:
-            The subset of *entries* whose name and model name are both ``str``.
+            The ``str -> str`` entries.
         """
         clean: dict[str, str] = {}
         rejected: list[str] = []
@@ -187,10 +127,8 @@ class ToyCache:
 
     def _read(self) -> None:
         """
-        Load the cache from the disk.
-
-        Reads the JSON cache file and populates the in-memory cache dictionary. Creates the cache file if it doesn't exist.
-        Anything that is not a ``str -> str`` mapping is logged and skipped.
+        Load the file into memory, creating it if missing. Anything but ``str -> str`` entries is logged and skipped.
+        Never raises.
         """
         if not self._cache_path.name:
             self._log.warning(

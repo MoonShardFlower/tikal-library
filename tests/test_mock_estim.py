@@ -151,8 +151,8 @@ def _spy_on_commands(toy: MockEstimToy) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_model_switch_releases_the_dropped_channel_and_keeps_the_other(callbacks):
-    # Regression: Lightning -> Thunder used to leave channel 2 energised. Thunder has no intensity2
-    # command, so nothing could ever switch it off again - not even stop().
+    # Lightning -> Thunder must switch channel 2 off: Thunder has no intensity2 command, so nothing could switch it
+    # off afterwards, not even stop().
     builder = MockConnectionBuilder(*callbacks, logger_name="test")
     toy = await builder.create_toy(_lightning())
     await toy.intensity1(80)
@@ -172,8 +172,8 @@ async def test_model_switch_releases_the_dropped_channel_and_keeps_the_other(cal
 
 @pytest.mark.asyncio
 async def test_model_switch_validates_the_new_models_commands(callbacks):
-    # Regression: the intensity replay used to run before the new model was assigned, so it exercised
-    # the *old* model's channels and could never surface a BadModelError for the new one.
+    # The validation replay runs with the new model assigned, so it exercises the new model's channels and can
+    # surface a BadModelError for it.
     builder = MockConnectionBuilder(*callbacks, logger_name="test")
     toy = await builder.create_toy(_thunder())
 

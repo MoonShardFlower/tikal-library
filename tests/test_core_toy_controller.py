@@ -1,4 +1,4 @@
-"""Tests for the core :class:`_ToyController` (async toy control with pattern playback and intensity limits)."""
+"""Tests of the core :class:`_ToyController`: state, pattern playback, and intensity limits."""
 
 from unittest.mock import AsyncMock
 
@@ -63,8 +63,7 @@ async def test_set_pattern_stores_pattern_unclamped_and_limits_on_playback(
 
 @pytest.mark.asyncio
 async def test_lowering_limit_reins_in_a_running_pattern(controller, mock_toy):
-    # Regression: a limit lowered mid-playback used to leave the running pattern at its original values,
-    # because set_pattern baked the limits in once and nothing re-clamped afterwards.
+    # A limit lowered mid-playback applies to the running pattern at once.
     controller.apply_pattern([(60_000, 90, 90)])
     await controller.process_communication()
     mock_toy.current_intensities = (90, 90)
@@ -143,8 +142,8 @@ async def test_negative_limit_is_clamped_to_zero(controller, mock_toy):
 
 @pytest.mark.asyncio
 async def test_set_model_name_invalidates_playback_tracking(controller, mock_toy):
-    # The switch stops the toy on the old command set, so playback must re-send rather than assume
-    # the toy still holds what it last sent.
+    # A model switch can change the toy's levels, so playback must re-send rather than assume the toy still holds
+    # what it last sent.
     controller.apply_pattern([(60_000, 5, 3)])
     await controller.process_communication()
 
@@ -309,8 +308,8 @@ async def test_fetch_and_update_battery(mock_toy):
 
 @pytest.mark.asyncio
 async def test_disconnect_silences_playback_and_keeps_the_state(controller, mock_toy):
-    # A playback tick scheduled before the toy was dropped can still run after the disconnect: it must send nothing.
-    # Regression: this used to be done by blocking the toy, so a disconnected toy reported is_blocked=True.
+    # A playback tick scheduled before the toy was dropped can still run after the disconnect: it must send nothing,
+    # and the toy must not report a block or pause it never got.
     controller.apply_pattern([(10_000, 5, 3)])
     await controller.disconnect()
     mock_toy.strict_disconnect.assert_awaited_once()

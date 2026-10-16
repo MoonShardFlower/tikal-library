@@ -1,8 +1,9 @@
 """
-Private package: the async toy-management core.
+Private package: the async core that the High-Level API and the WebSocket server are built on.
 
-Holds the toy hub and toy controllers that manage connected toys (discovery, connection, state tracking, pattern
-playback, reconnection), together with the ToyCache they use. The WebSocket server is built on it.
+- ``_ToyHub`` manages every toy: discovery, connection, state, pattern playback, reconnection.
+- ``_ToyController`` (one per toy, per brand) holds a toy's state and plays its pattern.
+- ``ToyCache`` remembers each toy's model name.
 """
 
 from .toy_cache import ToyCache

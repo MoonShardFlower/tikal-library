@@ -89,8 +89,8 @@ class TestLovenseModelChange(unittest.IsolatedAsyncioTestCase):
     """
     Tests for what a model change does to a *running* toy.
 
-    A change only has to touch capabilities whose command the new model replaces or drops: anything still running on
-    such a command would be unreachable afterwards. Everything else must be left alone.
+    A change only touches capabilities whose command the new model replaces or drops: whatever runs on such a command
+    would be unreachable afterwards. Everything else is left alone.
     """
 
     def setUp(self):
@@ -101,13 +101,12 @@ class TestLovenseModelChange(unittest.IsolatedAsyncioTestCase):
         """
         Build a Lovense whose fake wire only acknowledges *accepted* command heads.
 
-        A command outside ``accepted`` gets a plain ``"ERR"`` reply, which is how a real toy refuses a command it does
-        not implement: it is delivered and answered, so the toy layer turns it into ``UnexpectedToyResponse``. That is
-        deliberately different from a command that never arrives at all (see the link-failure test).
+        Other commands get a plain ``"ERR"`` reply, as from a real toy refusing a command it does not implement:
+        delivered and answered, so the toy layer raises ``UnexpectedToyResponse``. That differs from a command that
+        never arrives (see the link-failure test). Some tests change ``accepted`` mid-test, to make the toy start
+        refusing a command.
 
-        ``accepted`` is mutated in place by some tests to make a toy start refusing a command mid-test.
-
-        Returns ``(toy, sent)`` where ``sent`` records every command string that reached the wire.
+        Returns ``(toy, sent)``: ``sent`` records every command that reached the wire.
         """
         toy = Lovense(self.transport, model, self.on_power_off, "")
         sent: list[str] = []
@@ -168,10 +167,10 @@ class TestLovenseModelChange(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_capability_that_never_ran_needs_no_release(self):
         """
-        A previously wrong model had its commands rejected, so nothing ran on them.
+        Under a wrong model, the toy refused the model's commands, so nothing ran on them.
 
-        The toy really is a Lush but was labelled a Nora: "Rotate" was never acknowledged, so correcting the model
-        must not waste a command switching off a capability that was never on.
+        The toy is a Lush labelled a Nora: "Rotate" was never acknowledged, so correcting the model sends no command
+        switching off a capability that was never on.
         """
         toy, sent = self._toy("Nora", {"Vibrate"})
         self.assertTrue(await toy.intensity1(15))
@@ -205,10 +204,9 @@ class TestLovenseModelChange(unittest.IsolatedAsyncioTestCase):
         """
         A release command the toy *refuses* must not block the model change.
 
-        The toy tolerated ``Thrusting`` while it was labelled a Solace, so the level was tracked, but it is really a
-        Lush. Correcting the model must not fail just because the (wrong) old model cannot switch its own capability
-        off: a command the toy refuses is one the old model could not have used either, so refusing the correction
-        would preserve no way of reaching the capability - it would only strand the user on a model they know is wrong.
+        The toy accepted ``Thrusting`` while labelled a Solace, so the level was tracked, but it is a Lush. A command
+        the toy refuses is one the old model could not use either, so refusing the correction would keep no way of
+        reaching the capability; it would only strand the user on a model they know is wrong.
         """
         accepted = {"Thrusting", "Depth", "Vibrate"}
         toy, sent = self._toy("Solace", accepted)
@@ -228,11 +226,11 @@ class TestLovenseModelChange(unittest.IsolatedAsyncioTestCase):
 
     async def test_undeliverable_release_rolls_back_model_and_levels(self):
         """
-        If the release command never reaches the toy, the whole change is rolled back.
+        A release command that never reaches the toy rolls the whole change back.
 
-        Unlike a refusal, a delivery failure says nothing about whether the old command works - so keeping the old
-        model is strictly better, because ``stop()`` still addresses the capability once the link is back. The tracked
-        levels have to roll back too, or that ``stop()`` would no longer send anything for it.
+        Unlike a refusal, a delivery failure says nothing about whether the old command works, so keeping the old model
+        is better: ``stop()`` still addresses the capability once the link is back. The tracked levels roll back too, or
+        ``stop()`` would send nothing for it.
         """
         toy, sent = self._toy("Nora", {"Vibrate", "Rotate"})
         await toy.intensity1(15)
@@ -323,7 +321,7 @@ class TestLovenseCommands(unittest.IsolatedAsyncioTestCase):
 
     async def test_send_command_success(self):
         """_send_command successfully sends command to toy."""
-        # _send_command now returns None on success (it raises on error)
+        # _send_command returns None on success and raises on error
         await self.toy._send_command("Vibrate:10")
         self.transport.send.assert_called_once_with(b"Vibrate:10;")
 
@@ -615,7 +613,7 @@ class TestLovenseQueryCommands(unittest.IsolatedAsyncioTestCase):
             mock_exec.assert_called_once_with("CustomCommand:5", 2.0)
 
     async def test_rotate_change_direction(self):
-        """rotate_change_direction sends a rotation direction change command."""
+        """change_rotation_direction sends RotateChange."""
         toy = Lovense(self.transport, "Nora", self.on_power_off, "")
         with patch.object(toy, "_execute_command", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = "OK"
@@ -624,13 +622,13 @@ class TestLovenseQueryCommands(unittest.IsolatedAsyncioTestCase):
             mock_exec.assert_called_once_with("RotateChange")
 
     async def test_rotate_change_direction_not_supported(self):
-        """rotate_change_direction returns True if rotation not supported."""
+        """change_rotation_direction returns True and sends nothing without rotation support."""
         toy = Lovense(self.transport, "Gush", self.on_power_off, "")
         result = await toy.change_rotation_direction()
         self.assertTrue(result)  # Does nothing and returns True
 
     async def test_rotate_change_direction_failure(self):
-        """rotate_change_direction returns False if the response is not OK."""
+        """change_rotation_direction returns False if the reply is not OK."""
         toy = Lovense(self.transport, "Nora", self.on_power_off, "")
         with patch.object(toy, "_execute_command", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = "ERROR"

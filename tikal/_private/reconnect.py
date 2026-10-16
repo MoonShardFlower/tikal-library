@@ -1,4 +1,4 @@
-"""Private module: the reconnect policy shared by the High-Level and WebSocket layers."""
+"""Private module: the reconnect policy of the async core."""
 
 import asyncio
 from logging import Logger
@@ -11,19 +11,19 @@ async def retry_within_window(
     attempt: Callable[[], Awaitable[Any]], toy_id: str, log: Logger
 ) -> bool:
     """
-    Run ``attempt`` until it succeeds or RECONNECT_WINDOW has passed, with RECONNECT_PAUSE between attempts.
+    Repeat *attempt* until it succeeds or :data:`RECONNECT_WINDOW` runs out, with :data:`RECONNECT_PAUSE` in between.
 
-    A single attempt would give up on a toy after one Bluetooth hiccup, while retrying forever would leave it in limbo
-    (neither usable nor given up) indefinitely. An attempt still running when the window closes is cut off, so the
-    window is a hard bound even though one Bluetooth connect can take up to 30 s.
+    - An attempt still running when the window closes is canceled: the window is a hard bound.
+    - No new attempt starts once at most :data:`RECONNECT_PAUSE` is left.
+    - Failed attempts and giving up are logged as warnings.
 
     Args:
-        attempt: One reconnect attempt. It succeeds by returning and fails by raising.
+        attempt: One reconnect attempt. Succeeds by returning, fails by raising.
         toy_id: The toy being reconnected, for the log.
-        log: Logger for failed attempts and for giving up.
+        log: Logger to use.
 
     Returns:
-        True as soon as an attempt succeeded, False once the window has run out.
+        True once an attempt succeeded, False once the window ran out.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + RECONNECT_WINDOW
@@ -42,7 +42,7 @@ async def retry_within_window(
                 exc_info=True,
             )
         if deadline - loop.time() <= RECONNECT_PAUSE:
-            # No time left for another attempt after the pause.
+            # No time left for an attempt after the pause.
             log.warning(
                 "Giving up on toy %s after %d reconnect attempt(s).", toy_id, attempts
             )

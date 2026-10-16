@@ -146,7 +146,9 @@ def test_values_negative_duration_counts_as_zero(clock):
 
 
 def _linear_lookup(pattern, wraparound, pattern_time):
-    """The segment scan get_pattern_values used before it switched to a binary search."""
+    """
+    Reference implementation: find the segment at *pattern_time* with a linear scan, to check the binary search against.
+    """
     total = sum(duration for duration, _, _ in pattern)
     if not pattern or total == 0:
         return 0, 0

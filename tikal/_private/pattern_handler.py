@@ -1,4 +1,4 @@
-"""Private Module: Implements the necessary logic for pattern handling functionality of the High-Level API"""
+"""Private module: pattern playback state and timing, used by the async core."""
 
 import math
 from bisect import bisect_right
@@ -8,41 +8,37 @@ from time import time
 
 class PatternHandler:
     """
-    Helper class responsible for toy pattern playback logic.
+    Pattern playback state of one toy: the pattern, the pause, and the pattern time. Sends nothing.
 
-    Manages:
-
-    - Pattern list and wraparound behavior
-    - Pause state and timing (elapsed time freezes during pause)
-    - Pattern version tracking
-    - Current intensity values at any pattern time
-    - Pattern data for visualization
+    - A pattern is a list of ``(duration_ms, intensity1, intensity2)`` segments.
+    - The pattern time is the playback position in ms. It stands still while paused.
     """
 
     def __init__(self) -> None:
-        # Pattern state
         self._pattern: list[tuple[int, int, int]] = []
-        # End time of each segment (ms since the pattern start). Lookup is done via binary search.
+        # End time of each segment in ms since the pattern start, for a binary search.
         self._segment_ends: list[int] = []
         self._pattern_wraparound = True
         self._is_paused = False
+        # Pattern time (ms) reached before the current running stretch.
         self._pattern_elapsed_time: float = 0.0
+        # Wall-clock time (ms) at which the current running stretch began. None while not running.
         self._segment_start_time: float | None = None
         self._pattern_version = 0
 
     @property
     def is_paused(self) -> bool:
-        """Returns True if pattern playback is currently paused, else False"""
+        """Whether playback is paused."""
         return self._is_paused
 
     @property
     def pattern_version(self) -> int:
-        """Each time the pattern state changes, the version number is incremented."""
+        """Counter that increases whenever the pattern, the pause, or the position (:meth:`seek`) changes."""
         return self._pattern_version
 
     @property
     def has_active_pattern(self) -> bool:
-        """Returns True if a non-empty pattern is currently set, else False"""
+        """Whether a non-empty pattern is set."""
         return bool(self._pattern)
 
     def set_pattern(
@@ -52,13 +48,12 @@ class PatternHandler:
         reset_time: bool = True,
     ) -> None:
         """
-        Set a new pattern for playback.
+        Set a new pattern. An empty list clears the pattern.
 
         Args:
-            pattern: List of pattern segments as tuples (duration_ms, intensity1, intensity2).
-                A negative duration counts as zero.
-            wraparound: If True, the pattern loops indefinitely, else it stops after one playthrough.
-            reset_time: If True, restart the pattern from the beginning, if False, start from the current elapsed time.
+            pattern: Segments as ``(duration_ms, intensity1, intensity2)``. A negative duration counts as 0.
+            wraparound: Loop the pattern. If False, it plays once, then the intensities are 0.
+            reset_time: Start at the beginning. If False, keep the current pattern time.
         """
         self._pattern = pattern
         self._segment_ends = list(
@@ -68,28 +63,26 @@ class PatternHandler:
         self._pattern_version += 1
 
         if reset_time:
-            # Reset elapsed time to zero, but don't start the segment timer if paused
             self._pattern_elapsed_time = 0.0
             if not self._is_paused and self.has_active_pattern:
                 self._segment_start_time = time() * 1000
             else:
                 self._segment_start_time = None
         else:
-            # Keep current elapsed time, but ensure segment timer is consistent
             if (
                 not self._is_paused
                 and self.has_active_pattern
                 and self._segment_start_time is None
             ):
-                # Should only happen when resuming after having no pattern
+                # There was no pattern before: start running from the kept pattern time.
                 self._segment_start_time = time() * 1000
 
     def set_paused(self, paused: bool) -> None:
         """
-        Set the paused state. While paused patterns do not progress.
+        Pause or resume playback. The pattern time stands still while paused.
 
         Args:
-            paused: True to pause, False to resume
+            paused: True to pause, False to resume. Repeating the current state changes nothing.
         """
         if paused == self._is_paused:
             return
@@ -98,15 +91,12 @@ class PatternHandler:
         self._pattern_version += 1
 
         if paused:
-            # Entering pause: freeze elapsed time if a pattern is playing
             if self.has_active_pattern and self._segment_start_time is not None:
                 current_time = time() * 1000
                 segment_elapsed = current_time - self._segment_start_time
                 self._pattern_elapsed_time += segment_elapsed
                 self._segment_start_time = None
-            # If no pattern, there is nothing to freeze, just store the paused state
         else:
-            # Exiting pause: resume timing if a pattern exists
             if self.has_active_pattern:
                 self._segment_start_time = time() * 1000
             else:
@@ -114,18 +104,17 @@ class PatternHandler:
 
     def seek(self, pattern_time: float) -> None:
         """
-        Move playback to a position in the pattern, e.g., to follow a video that was skipped forward or back.
+        Move playback to a position, e.g., to follow a video that jumped.
 
-        Works while playing and while paused: a paused pattern stays at the new position until it is resumed. Without
-        a pattern, the position is kept for a pattern set later with ``reset_time=False``.
+        - A paused pattern stays paused at the new position.
+        - Without a pattern, the position is kept for a pattern set later with ``reset_time=False``.
 
         Args:
-            pattern_time: The new position in milliseconds. Negative values count as 0. A position past the end of a
-                wraparound pattern wraps around as usual.
+            pattern_time: The new pattern time in ms. Negative values count as 0.
+                Past the end of a wraparound pattern, playback wraps around.
 
         Raises:
-            ValueError: *pattern_time* is not a finite number (playback could not find a position in the pattern).
-                Nothing was changed.
+            ValueError: *pattern_time* is not a finite number. Nothing was changed.
         """
         if not math.isfinite(pattern_time):
             raise ValueError(
@@ -146,28 +135,25 @@ class PatternHandler:
             elapsed_time: Time elapsed in the pattern in milliseconds.
         """
         if self._is_paused:
-            # When paused, return the frozen elapsed time
             return self._pattern_elapsed_time
 
         if self._segment_start_time is None:
             return 0.0
 
-        # Calculate time elapsed in current segment
         current_time = time() * 1000
         segment_elapsed = current_time - self._segment_start_time
-
-        # Total elapsed = pattern elapsed at segment start + current segment elapsed
         return self._pattern_elapsed_time + segment_elapsed
 
     def get_pattern_values(self, pattern_time: float) -> tuple[int, int]:
         """
-        Get intensity values at a specific time in the pattern.
+        The intensities the pattern plays at *pattern time*.
 
         Args:
-            pattern_time: Time position in the pattern (milliseconds).
+            pattern_time: Pattern time in ms (see :meth:`get_pattern_time`).
 
         Returns:
-            tuple: (intensity1, intensity2) at the specified time.
+            ``(intensity1, intensity2)``.
+            ``(0, 0)`` without a pattern, for a pattern lasting 0 ms, and past the end of a pattern without wraparound.
         """
         if not self._pattern:
             return 0, 0
@@ -176,7 +162,6 @@ class PatternHandler:
         if total_duration == 0:
             return 0, 0
 
-        # Handle wraparound
         if self._pattern_wraparound:
             pattern_time = pattern_time % total_duration
         elif pattern_time >= total_duration:

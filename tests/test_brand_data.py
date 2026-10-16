@@ -1,11 +1,9 @@
 """
-Guards the per-model brand data invariants.
+Per-model brand data stays consistent.
 
-Every brand defines its models **once** in a ``*_SPECIFICATIONS`` mapping of ``model_name -> ToySpecification`` and
-derives its public lookup tables (commands, recommended interval, rotation support) from it. These tests lock in that
-the derived tables stay consistent, so that a future change which re-introduces hand-maintained parallel dicts (the
-historic hazard: a model present in the command table but missing from the interval table -> runtime ``KeyError`` in
-``recommended_min_interval``) is caught here instead of in production.
+Each brand defines its models once, in a ``*_SPECIFICATIONS`` mapping of ``model_name -> ToySpecification``, and derives
+its lookup tables (commands, recommended interval, rotation support) from it. These tests catch tables that drift apart,
+e.g., a model with commands but no recommended interval, which would raise ``KeyError`` in ``recommended_min_interval``.
 """
 
 import unittest
@@ -79,10 +77,10 @@ class TestMockEstimBrandData(unittest.TestCase):
 
 class TestEveryAdvertisedModelResolves(unittest.TestCase):
     """
-    Every model listed in BRANDS resolves through all per-model lookups without KeyError.
+    Every model in BRANDS resolves through all per-model lookups without KeyError.
 
-    This is the end-to-end version of the invariant: BRANDS is what callers pick a model_name from, and every one of
-    those names must have both a command mapping and a recommended interval.
+    The end-to-end version of the invariant: callers pick a model name from BRANDS, so each needs a command mapping and
+    a recommended interval.
     """
 
     def test_lovense_models_resolve(self):
@@ -98,10 +96,10 @@ class TestEveryAdvertisedModelResolves(unittest.TestCase):
 
 class TestCarriedOverCapabilities(unittest.TestCase):
     """
-    ``carried_over_capabilities`` decides how much a model change has to disturb a running toy.
+    ``carried_over_capabilities`` decides how much a model change disturbs a running toy.
 
-    A capability is carried over only when both models drive it with the same command; anything else has to be
-    switched off during the change, because the new model could never address the old command again.
+    A capability carries over only if both models drive it with the same command. Any other has to be switched off
+    during the change, as the new model cannot address the old command.
     """
 
     def test_identical_command_sets_carry_everything(self):

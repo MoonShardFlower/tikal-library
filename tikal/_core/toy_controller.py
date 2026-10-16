@@ -1,8 +1,7 @@
 """
-Private Module of the async core
+Async core: :class:`_ToyController`, the state and pattern playback of one connected toy, and its brand subclasses.
 
-Defines the _ToyController class, which extends the low-level Toy class with additional methods for pattern playback and toy control.
-Meant to be consumed by _ToyHub, which in turn is consumed by ToyServer and the High-Level ToyHub. Both define a public API.
+The hub (``_ToyHub``) owns the controllers and runs every command through them.
 """
 
 import asyncio
@@ -18,13 +17,20 @@ T = TypeVar("T")
 
 class _ToyController:
     """
-    Parent class for high-level toy control.
+    State and pattern playback of one connected toy: pattern, pause, block, intensity limits, and the battery level.
 
-    Wraps a low-level toy and adds pattern playback, pause/block, intensity limits, and a battery cache.
+    There are two types of state changes:
+
+    - ``apply_*`` and :meth:`accept_manual_intensity` change the state without I/O and tell whether the toy needs a
+      command.
+    - :meth:`stop_output`, :meth:`send_intensity` and :meth:`enforce_limit` send a  command.
+
+    A toy is never both paused and blocked, except after ``apply_blocked(True, keep_pause=True)``.
+    Brands can subclass it, see :data:`_CONTROLLER_BY_BRAND`.
 
     Args:
-        toy: Low-level toy object (Toy instance) for BLE communication.
-        initial_battery: Initial battery level (0-100) or None if the toy has no battery.
+        toy: The connected toy.
+        initial_battery: Its battery level in percent. None if it has no battery.
     """
 
     def __init__(self, toy: Toy, initial_battery: int | None = None):
@@ -47,9 +53,10 @@ class _ToyController:
 
     @property
     def cmd_lock(self) -> asyncio.Lock:
-        """Command lock of this toy. _ToyHub holds it for the check-command-callback sequence of commands that talk to
-        the toy. Prevents races (e.g., clients racing on set_paused) and serializes concurrent BLE commands to the
-        same toy."""
+        """
+        The toy's command lock.
+        Prevents races (e.g., clients racing on set_paused) and serializes concurrent BLE commands to the same toy.
+        """
         return self._cmd_lock
 
     # ------------------------------------------------------------------
@@ -63,37 +70,40 @@ class _ToyController:
 
     @property
     def toy_id(self) -> str:
-        """Unique identifier for the toy (typically its Bluetooth address)."""
+        """Unique identifier of the toy, e.g., the Bluetooth address."""
         return self._toy.toy_id
 
     @property
     def name(self) -> str:
-        """Human-readable identifier of the toy (e.g., its Bluetooth name)."""
+        """Human-readable name of the toy, e.g., the Bluetooth name."""
         return self._toy.name
 
     @property
     def brand(self) -> str:
-        """Human-readable identifier of the toy brand (e.g., 'Lovense')."""
+        """Human-readable identifier of the toy brand, e.g., 'Lovense'."""
         return self._toy.brand
 
     @property
     def max_intensity(self) -> int:
-        """Maximum intensity value for this toy (e.g., 20 for Lovense toys)."""
+        """Highest intensity level for this toy, e.g., 20 for Lovense toys. The lowest is 0."""
         return self._toy.max_intensity
 
     @property
     def current_intensities(self) -> tuple[int, int]:
-        """Current (primary, secondary) intensity values. Secondary is always 0 for single-capability toys."""
+        """
+        ``(intensity1, intensity2)``: the levels the toy last acknowledged.
+        intensity2 is always 0 if the toy does not have a secondary capability.
+        """
         return self._toy.current_intensities
 
     @property
     def intensity_names(self) -> tuple[str, str | None]:
-        """Display names of the (primary, secondary) capability. The secondary name is None for single-capability toys."""
+        """Display names ``(primary, secondary)``. The secondary name is None without a secondary capability."""
         return self._toy.intensity_names
 
     @property
     def change_rotation_direction_available(self) -> bool:
-        """Whether the toy supports changing its rotation direction."""
+        """Whether the toy can change its rotation direction."""
         return self._toy.change_rotation_direction_available
 
     # ------------------------------------------------------------------
@@ -102,22 +112,22 @@ class _ToyController:
 
     @property
     def is_paused(self) -> bool:
-        """Whether pattern playback is currently paused (the pattern timer stops advancing)."""
+        """Whether pattern playback is paused. The pattern time stands still while paused."""
         return self._pattern_handler.is_paused
 
     @property
     def is_blocked(self) -> bool:
-        """Whether the toy is currently blocked (all intensities forced to zero)."""
+        """Whether the toy is blocked: it stays at 0, and manual intensity commands are refused."""
         return self._is_blocked
 
     @property
     def intensity_limits(self) -> tuple[int, int]:
-        """The current (intensity1, intensity2) limits. Every command and pattern value is clamped to them."""
+        """``(limit1, limit2)``: manual levels and pattern values are capped at these."""
         return self._intensity_limits[0], self._intensity_limits[1]
 
     @property
     def pattern_version(self) -> int:
-        """Incremented each time the pattern state changes."""
+        """Increases whenever the pattern or pause state changes."""
         return self._pattern_handler.pattern_version
 
     def get_pattern_time(self) -> float:
@@ -125,102 +135,86 @@ class _ToyController:
         return self._pattern_handler.get_pattern_time()
 
     def get_pattern_values(self, pattern_time: float) -> tuple[int, int]:
-        """The ``(intensity1, intensity2)`` values at ``pattern_time`` (milliseconds) in the current pattern."""
+        """The ``(intensity1, intensity2)`` the pattern plays at *pattern_time* (ms), before limits."""
         return self._pattern_handler.get_pattern_values(pattern_time)
 
     def get_pattern_data(self) -> tuple[list[tuple[int, int, int]], bool, bool, float]:
-        """The full pattern state: ``(pattern, wraparound, is_paused, elapsed_ms)``."""
+        """``(pattern, wraparound, is_paused, pattern_time)``, as in :meth:`get_state`."""
         return self._pattern_handler.get_pattern_data()
 
     async def stop_output(self) -> bool:
         """
-        Set both intensities to zero without touching pause or block (unlike :meth:`stop`, which pauses the pattern).
+        Set both intensities to 0. Pause and block stay as they are (unlike :meth:`stop`).
 
         Raises:
             ConnectionError: The command could not be sent to the toy.
-            UnexpectedToyResponse: (subclass of ConnectionError) The toy replied unexpectedly.
+            UnexpectedToyResponse: (subclass of ConnectionError) The toy replied unexpectedly, refusing the command.
 
         Returns:
-            Always True
+            Always True.
         """
         return await self._toy.strict_stop()
 
     def _output_suppressed(self) -> bool:
-        """Playback keeps the toy at zero while it is blocked."""
+        """Whether playback keeps the toy at 0: while it is blocked."""
         return self._is_blocked
 
     @property
     def battery(self) -> int | None:
-        """
-        Get the current battery level of the toy (from memory, automatically updated by _ToyHub)
-
-        Returns:
-            Current battery level (0-100) or None if the toy has no battery.
-        """
+        """The last known battery level in percent, kept up to date by the hub. None if the toy has no battery."""
         return self._battery
 
     async def set_model_name(self, model_name: str) -> None:
         """
-        Set the model name of the toy.
-
-        This method validates and updates the toy's model name. The model name determines which commands are available and how they're interpreted.
+        Change the model name, see :meth:`tikal.low_level.Toy.set_model_name`.
+        The model name determines which commands are available and how they're interpreted.
 
         Args:
-            model_name: New model name. Must be a valid model for this toy brand.
+            model_name: New model name, case-insensitive.
 
         Raises:
-            - InvalidModelError: If model_name is not valid for this toy brand.
-            - BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details
-            - ConnectionError: The toy could not be stopped on its old command set, so the model was left unchanged.
+            tikal.low_level.InvalidModelError: Not a model of the toy's brand. Nothing changed.
+            tikal.low_level.BadModelError: The toy refused or did not answer the new model's commands. Nothing changed.
+            ConnectionError: A command switching off a capability the new model replaces could not be delivered.
+                Nothing changed.
         """
         await self._toy.set_model_name(model_name)
-        # Switching models stops the toy on the old command set, so whatever playback last sent no longer holds.
+        # A model switch can change the toy's levels behind playback's back.
         self._invalidate_last_values()
 
     def apply_paused(self, pause: bool) -> bool:
         """
-        Pause or resume pattern playback.
-
-        When paused:
-
-        - If a pattern is active, it stops advancing.
-        - Toy intensities are to be set to zero, but manual commands can override this.
-        - Block state is cleared if active (toy cannot be paused and blocked at the same time)
+        Pause or resume pattern playback. Pausing unblocks the toy. Manual intensity commands still work while paused.
 
         Args:
             pause: True to pause, False to resume.
 
         Returns:
-            True if the toy has to be stopped now (see :meth:`stop_output`), which is whenever it is paused.
+            Whether the toy has to be stopped now (see :meth:`stop_output`), which is when pausing.
         """
         self._pattern_handler.set_paused(pause)
         if pause:
-            self._is_blocked = False  # I don't want to pause and block at the same time
+            self._is_blocked = False  # A toy is never paused and blocked at once
         return pause
 
     def apply_blocked(self, block: bool, keep_pause: bool = False) -> bool:
         """
-        Block or unblock the toy.
+        Block or unblock the toy. Blocking unpauses the pattern, unless *keep_pause*.
 
-        When blocked:
+        While blocked:
 
-        - All intensity commands are rejected (return False)
-        - Toy intensities are forced to zero
-        - Pattern continues advancing but doesn't control the toy
-        - Pause state is cleared if active (toy cannot be paused and blocked at the same time), unless *keep_pause*
+        - The toy stays at 0. Manual intensity commands are refused, and playback stops.
+        - The pattern keeps advancing.
 
         Args:
             block: True to block, False to unblock.
-            keep_pause: Leave the pause as it is, so a paused toy stays paused once it is unblocked. For a block that
-                is no decision of the user's, which must not change what the toy does afterwards (the heartbeat
-                watchdog's, see ``_ToyHub.block_all_for_safety``).
+            keep_pause: Keep the pause, so the toy can be blocked and paused at once.
 
         Returns:
-            True if the toy has to be stopped now (see :meth:`stop_output`), which is whenever it is blocked.
+            Whether the toy has to be stopped now (see :meth:`stop_output`), which is when blocking.
         """
         self._is_blocked = block
         if block and not keep_pause:
-            # I don't want to pause and block at the same time
             self._pattern_handler.set_paused(False)
         return block
 
@@ -231,33 +225,16 @@ class _ToyController:
         reset_time: bool = True,
     ) -> bool:
         """
-        Set a time-based pattern for automatic toy control.
-
-        Patterns are lists of segments. Each segment is a tuple of (duration_ms, intensity1, intensity2) where:
-
-        - duration_ms: How long this segment lasts (milliseconds)
-        - intensity1: Primary capability intensity (0-max)
-        - intensity2: Secondary capability intensity (0-max)
-
-        The maximum possible intensity can be looked up via :meth:`get_info`. An empty list clears the pattern and stops
-        the toy but leaves the pause as it is.
+        Set a pattern. An empty list clears it. The pause stays as it is.
 
         Args:
-            pattern: List of (duration_ms, intensity1, intensity2) tuples
-            wraparound: If True, the pattern loops indefinitely. If False, the pattern stops after one playthrough.
-            reset_time: If True, restart the pattern from the beginning. If False, maintain the current position in the pattern.
+            pattern: List of (duration_ms, intensity1, intensity2) tuples. Limits are applied later during playback,
+                so a changed limit affects a running pattern at once.
+            wraparound: Loop the pattern. If False, it plays once; then the intensities are 0.
+            reset_time: Start at the beginning. If False, keep the current pattern time.
 
         Returns:
-            True if the toy has to be stopped now (see :meth:`stop_output`), which is whenever the pattern was cleared.
-
-        Note:
-            Manual intensity commands automatically pause pattern playback to avoid conflicts. Resume with
-            :meth:`apply_paused`.
-
-        Note:
-            The pattern is stored exactly as given. Intensity limits are applied on every playback tick instead, so a
-            limit lowered while this pattern is running takes effect immediately, and one raised again restores the
-            pattern's own values.
+            Whether the toy has to be stopped now (see :meth:`stop_output`), which is when the pattern was cleared.
         """
         self._pattern_handler.set_pattern(pattern, wraparound, reset_time)
         if not pattern:  # ensure that intensities are 0 if pattern is cleared
@@ -268,18 +245,16 @@ class _ToyController:
 
     def apply_seek(self, pattern_time: float) -> bool:
         """
-        Move pattern playback to a position, e.g., to follow a video that was skipped forward or back.
-
-        Nothing has to be sent: the next playback tick plays the new position. A paused pattern stays paused at it.
+        Move playback to a position, e.g., to follow a video that jumped. A paused pattern stays paused there.
 
         Args:
-            pattern_time: The new position in milliseconds. Negative values count as 0.
+            pattern_time: The new pattern time in ms. Negative values count as 0.
 
         Raises:
-            ValueError: *pattern_time* is not a finite number. Nothing was changed.
+            ValueError: *pattern_time* is not a finite number. Nothing changed.
 
         Returns:
-            Always False: the toy does not have to be stopped.
+            Always False = No action is ever needed. The next playback tick plays the new position automatically.
         """
         self._pattern_handler.seek(pattern_time)
         return False
@@ -295,18 +270,17 @@ class _ToyController:
         """
         Convert a funscript into a pattern for this toy, to be set with :meth:`apply_funscript`.
 
-        The script is converted with the toy's :attr:`max_intensity` and recommended minimum interval, see
-        :func:`tikal.funscript.funscript_to_pattern`. This changes nothing, so it may run outside the event loop: a
-        long script takes a while to convert (around 0.1 s for a dense one-hour script).
+        Uses the toy's :attr:`max_intensity` and recommended minimum interval, see
+        :func:`tikal.funscript.funscript_to_pattern`. Changes nothing, so it may run outside the event loop.
 
         Args:
             script: The script for the primary capability.
             mode: ``"speed"`` (the intensity follows the stroke speed) or ``"position"``.
-            max_speed: Stroke speed (positions per second) that maps to the maximum intensity in ``"speed"`` mode.
-            secondary: An optional script for the secondary capability.
+            max_speed: Stroke speed in positions per second that maps to the maximum intensity in ``"speed"`` mode.
+            secondary: Optional script for the secondary capability.
 
         Raises:
-            ValueError: *max_speed* is not positive or *mode* is unknown.
+            ValueError: *max_speed* is not positive, or *mode* is unknown.
 
         Returns:
             The pattern.
@@ -324,22 +298,20 @@ class _ToyController:
         self, pattern: list[tuple[int, int, int]], start_ms: float = 0.0
     ) -> bool:
         """
-        Set a pattern converted from a funscript (see :meth:`convert_funscript`): played once, without wraparound.
+        Set a pattern from :meth:`convert_funscript`, played once from *start_ms*. The pause stays as it is.
 
-        The pattern and its start position are set in one step, so no playback tick plays the script from its beginning
-        first. Like :meth:`apply_pattern`, this leaves the pause as it is.
+        Pattern and position change together: no playback tick plays the script's start in between.
 
         Args:
             pattern: The converted script.
-            start_ms: Where in the script playback starts, in milliseconds (e.g., the current position of a video).
-                Negative values count as 0.
+            start_ms: Pattern time to start at in ms, e.g., the video's position. Negative values count as 0.
 
         Raises:
-            ValueError: *start_ms* is not a finite number. Nothing was changed.
+            ValueError: *start_ms* is not a finite number. Nothing changed.
 
         Returns:
-            True if the toy has to be stopped now (see :meth:`stop_output`): the pattern is empty (the script has no
-            action after 0 ms), which clears the pattern.
+            Whether the toy has to be stopped now (see :meth:`stop_output`), which is when the pattern is empty (no
+            action after 0 ms) and so clears the pattern.
         """
         if not math.isfinite(start_ms):
             raise ValueError(f"start_ms must be a finite number, got {start_ms}")
@@ -349,55 +321,57 @@ class _ToyController:
 
     def apply_stop(self) -> bool:
         """
-        Pause the pattern, as every stop does, so playback does not start the toy again.
-
-        Unlike :meth:`apply_paused`, this leaves the block alone.
+        Pause the pattern, so playback does not restart the toy after a stop. The block stays as it is.
 
         Returns:
-            Always True: the toy has to be stopped now (see :meth:`stop_output`).
+            Always True, as the toy has to be stopped now (see :meth:`stop_output`).
         """
         self._pattern_handler.set_paused(True)
         return True
 
     def accept_manual_intensity(self) -> bool:
         """
-        Decide whether a manual intensity command may be sent, and make way for it.
+        Prepare a manual intensity command (refuses it while blocked)
 
-        Refused while the toy is blocked. Accepting pauses the pattern, so playback does not override the
-        command, and tells playback that the toy is taken care of: without that, the next tick would send the one stop
-        it sends when a pattern gets paused, undoing the manual level right after it was set.
+        Pauses pattern playback if active, so it does not override the command.
 
         Returns:
-            True if the command may be sent (see :meth:`send_intensity`), False if the toy is blocked.
+            True if the command may be sent (see :meth:`send_intensity`), False while blocked.
         """
         if self._is_blocked:
             return False
         self._pattern_handler.set_paused(True)
         self._accepted_pause = True
-        # The toy runs at the manual level from now on, so a resumed pattern has to send its values again.
+        # The toy runs at the manual level from now on. A resumed pattern has to send its values again.
         self._invalidate_last_values()
         return True
 
     def _limited(self, channel: int, level: int) -> int:
-        """Clamp a level to the limit currently configured for *channel*."""
+        """*level*, capped at the limit of *channel*."""
         return min(level, self._intensity_limits[channel])
 
     async def _strict_intensity(self, channel: int, level: int) -> bool:
-        """Send a level to one capability of the toy via the strict toy method (raises on failure)."""
+        """
+        Send *level* to *channel* (0 or 1) through the toy's strict intensity method.
+
+        Raises:
+            ConnectionError: The command could not be delivered.
+            UnexpectedToyResponse: (a ConnectionError) The toy refused it.
+
+        Returns:
+            True, or False without that capability (nothing is sent).
+        """
         if channel == 0:
             return await self._toy.strict_intensity1(level)
         return await self._toy.strict_intensity2(level)
 
     def apply_limit(self, channel: int, level: int | None) -> bool:
         """
-        Set the upper limit for one intensity. All commands and pattern values for that channel are clamped to it.
-
-        A limit is a safety ceiling, so a toy already running above it has to come down right away rather than only
-        being clamped from the next command onwards: see :meth:`enforce_limit`.
+        Set the limit of one channel. Its manual levels and pattern values are capped at it.
 
         Args:
-            channel: 0 for the primary intensity, 1 for the secondary one.
-            level: Maximum allowed value (0 – max_intensity). Clamped to that range. None removes the limit.
+            channel: 0 for intensity1, 1 for intensity2.
+            level: The limit, clamped to 0 to :attr:`max_intensity`. None removes it.
 
         Returns:
             True if the toy runs above the new limit and has to be brought down now (see :meth:`enforce_limit`).
@@ -406,26 +380,21 @@ class _ToyController:
         return self._toy.current_intensities[channel] > self._intensity_limits[channel]
 
     def _normalize_limit(self, level: int | None) -> int:
-        """Turn a requested limit into a usable ceiling: ``None`` means "no limit", anything else is clamped to range."""
+        """Turn *level* into a usable limit: ``None`` means "no limit", anything else is clamped to range."""
         if level is None:
             return self._toy.max_intensity
         return max(0, min(level, self._toy.max_intensity))
 
     async def enforce_limit(self, channel: int) -> None:
         """
-        Bring the toy down now if one of its capabilities is running above its current limit.
-
-        Pattern playback would pick the change up on its own next tick; this also covers the cases where nothing else
-        is about to send an intensity (no active pattern, or a segment that lasts minutes). Does nothing if the toy is
-        not above the limit, so it is safe to retry.
+        Bring a channel down to its limit if it runs above, else does nothing.
 
         Args:
-            channel: 0 for the primary intensity, 1 for the secondary one.
+            channel: 0 for intensity1, 1 for intensity2.
 
         Raises:
-            ConnectionError: The corrective intensity command could not be delivered. The limit itself stays in force,
-                so every later command and playback tick respects it.
-            UnexpectedToyResponse: (subclass of ConnectionError) The toy replied unexpectedly to the corrective command.
+            ConnectionError: The command could not be delivered. The limit stays in force.
+            UnexpectedToyResponse: (a ConnectionError) The toy refused it.
         """
         limit = self._intensity_limits[channel]
         if self._toy.current_intensities[channel] <= limit:
@@ -436,21 +405,19 @@ class _ToyController:
 
     async def intensity(self, channel: int, level: int) -> bool:
         """
-        Set the intensity of one capability: :meth:`accept_manual_intensity`, then :meth:`send_intensity`.
-
-        If a pattern is active and not paused, calling this method pauses the pattern to avoid conflicts.
-        Safe to call for the secondary capability of a toy that has none (will return false and do nothing).
+        Set one capability manually: :meth:`accept_manual_intensity`, then :meth:`send_intensity`. Pauses the pattern.
 
         Args:
-            channel: 0 for the primary capability, 1 for the secondary one (e.g., rotation, air pump).
-            level: Intensity level. The Valid range depends on the toy type. Values outside the range are clamped.
+            channel: 0 for the primary capability, 1 for the secondary one.
+            level: The level, capped at the channel's limit. Values outside 0 to :attr:`max_intensity` are clamped.
 
         Raises:
-            ConnectionError: The command could not be sent to the toy
-            UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+            ConnectionError: The command could not be delivered.
+            UnexpectedToyResponse: (a ConnectionError) The toy refused it.
 
         Returns:
-            True if the command was accepted, False if the toy has no such capability or is blocked. See :meth:`apply_blocked`
+            True if the toy took the level. False while blocked (nothing changes), or without that capability (nothing
+            is sent, but the pattern is paused).
         """
         if not self.accept_manual_intensity():
             return False
@@ -458,21 +425,21 @@ class _ToyController:
 
     async def send_intensity(self, channel: int, level: int) -> bool:
         """
-        Send a level to one capability, clamped to its limit, without touching the pattern.
+        Send a manual level to one capability, capped at its limit. Leaves the pattern alone.
 
-        The second half of a manual intensity command (see :meth:`accept_manual_intensity`). The block is checked
-        again, because it can have come in between the two halves.
+        The second half of a manual intensity command (see :meth:`accept_manual_intensity`).
+        Checks the block again, as it can have come in between.
 
         Args:
             channel: 0 for the primary capability, 1 for the secondary one.
-            level: Intensity level. Values outside the valid range are clamped.
+            level: The level. Values outside 0 to :attr:`max_intensity` are clamped.
 
         Raises:
-            ConnectionError: The command could not be sent to the toy.
-            UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+            ConnectionError: The command could not be delivered.
+            UnexpectedToyResponse: (a ConnectionError) The toy refused it.
 
         Returns:
-            True if the toy took the command, False if it is blocked (nothing is sent) or has no such capability.
+            True if the toy took the level. False while blocked or without that capability (nothing is sent).
         """
         if self._output_suppressed():
             return False
@@ -480,32 +447,27 @@ class _ToyController:
 
     async def change_rotation_direction(self) -> bool:
         """
-        Change rotation direction (if supported).
-
-        This method toggles the rotation direction for toys with rotation capability.
-        Safe to call on all toys. Does nothing and returns False if rotation is not supported.
+        Reverse the rotation direction.
 
         Raises:
-            ConnectionError: The command could not be sent to the toy.
-            UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+            ConnectionError: The command could not be delivered.
+            UnexpectedToyResponse: (a ConnectionError) The toy refused it.
 
         Returns:
-             True if the command was accepted, False if the toy does not support changing the rotation direction.
+            True, or False without rotation support (nothing is sent).
         """
         return await self._toy.strict_change_rotation_direction()
 
     async def stop(self) -> bool:
         """
-        Stop all toy actions (set all intensities to zero).
-
-        If a pattern is active and not paused, this method pauses the pattern: :meth:`apply_stop`, then :meth:`stop_output`.
+        Set both intensities to 0 and pause the pattern: :meth:`apply_stop`, then :meth:`stop_output`.
 
         Raises:
-            ConnectionError: The command could not be sent to the toy.
-            UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+            ConnectionError: The command could not be delivered.
+            UnexpectedToyResponse: (a ConnectionError) The toy refused it.
 
         Returns:
-            Always true
+            Always True.
         """
         self.apply_stop()
         return await self.stop_output()
@@ -515,11 +477,11 @@ class _ToyController:
         Ask the toy for its battery level and remember it (see :attr:`battery`).
 
         Raises:
-            ConnectionError: The command could not be sent to the toy. The last known level is kept.
-            UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+            ConnectionError: The query could not be delivered. The last known level stays.
+            UnexpectedToyResponse: (a ConnectionError) The reply is not a battery level.
 
         Returns:
-            Battery level (0-100) or None if the toy has no battery.
+            The level in percent, or None if the toy has no battery.
         """
         self._battery = await self._toy.strict_get_battery_level()
         return self._battery
@@ -528,32 +490,24 @@ class _ToyController:
         self, full: bool
     ) -> dict[str, str | list[str] | bool | int | None]:
         """
-        Gather information about the toy.
+        Information about the toy (in-memory, no BLE communication):
 
-        Info gathered (always):
-
-        -  `toy_id` (str) unique identifier of the toy, e.g., Bluetooth address
-        -  `name` (str) human-readable identifier of the toy, e.g., Bluetooth advertisement name
-        -  `model_name` (str) model name of the toy. Typically, not retrieved from the toy itself but set by you when adding the toy. This returns this set name.
-        -  `brand` (str) brand of the toy, e.g., Lovense
-        -  `intensity_names` (list of str). Two human-readable strings. The second string is empty if the toy only has one intensity.
-        -  `supports_rotation` (bool) whether the toy supports changing the rotation direction
-        -  `max_intensity` (int) maximum intensity value possible for the toy. (Keep in mind that self._intensity_limits can apply stricter thresholds)
-        -  `recommended_min_interval` (int) The recommended minimum interval between intensity commands (in ms). Especially useful for pattern playback.
+        - `toy_id` (str) unique identifier of the toy, e.g., Bluetooth address.
+        - `name` (str) human-readable identifier of the toy, e.g., Bluetooth advertisement name.
+        - `model_name` (str) model name of the toy.
+        - `brand` (str) brand of the toy, e.g., Lovense.
+        - `intensity_names` (list of str). Two human-readable strings.
+            The second string is empty if the toy only has one intensity.
+        - `supports_rotation` (bool) whether the toy supports changing the rotation direction.
+        - `max_intensity` (int) maximum intensity value possible for the toy.
+            (self._intensity_limits can apply stricter thresholds).
+        - `recommended_min_interval` (int) The recommended minimum interval between intensity commands (in ms).
 
         Args:
-            full: If True, returns all available info (making requests to the toy). Otherwise, returns only the "cheap" info described above.
-            Cheap in the sense that the info is retrieved solely from the software representation.
-
-        Raises:
-            ConnectionError: The command could not be sent to the toy.
-            UnexpectedToyResponse: (subclass of ConnectionError): The command was sent to the toy, but the reply was not as excepted.
+            full: Ignored. Brand subclasses ask the toy for more information if True.
 
         Returns:
-            dict: dictionary containing the gathered info.
-
-        Note:
-            Can only raise exceptions if full=True.
+            The information.
         """
         intensity1, intensity2 = self._toy.intensity_names
         if intensity2 is None:
@@ -576,18 +530,20 @@ class _ToyController:
 
         State information contains:
 
-        -  `toy_id` (str) Unique identifier of the toy
-        -  `current_intensity` (list[int, int]) Current intensity values. The second value is always zero if the toy only has one intensity.
-        -  `intensity_limits` (list[int, int]) Current set intensity limits.
-        -  `is_blocked` (bool) Whether the toy is currently blocked (toy's intensities are forced to zero)
-        -  `pattern_version` (int) Each time the pattern state changes, the version number is incremented
-        -  `pattern` (list[tuple[int, int, int]]) List of tuples (duration, intensity1, intensity2) defining the pattern segment
-        -  `wraparound` (bool)  Whether the pattern repeats from the beginning after completing the last segment. If False, both Intensities are 0 after the last segment
-        -  `is_paused` (bool) Whether the toy is currently paused (patterns do not advance)
-        -  `elapsed` (float) Time elapsed since the start of the pattern or last wraparound in ms
+        - `toy_id` (str) Unique identifier of the toy.
+        - `current_intensity` (list[int, int]) Current intensity values.
+            The second value is always 0 if the toy only has one intensity.
+        - `intensity_limits` (list[int, int]) Current set intensity limits.
+        - `is_blocked` (bool) Whether the toy is currently blocked (toy's intensities are forced to zero).
+        - `pattern_version` (int) Each time the pattern state changes, the version number is incremented.
+        - `pattern` (list[tuple[int, int, int]]) List of tuples (duration, intensity1, intensity2) defining the pattern.
+        - `wraparound` (bool) Whether the pattern repeats from the beginning after completing the last segment.
+            If False, both Intensities are 0 after the last segment.
+        - `is_paused` (bool) Whether the toy is currently paused (patterns do not advance).
+        - `elapsed` (float) Time elapsed since the start of the pattern or last wraparound in ms
 
         Returns:
-            dict with keys as described above
+            The state.
         """
         pattern, wraparound, is_paused, elapsed = (
             self._pattern_handler.get_pattern_data()
@@ -607,34 +563,34 @@ class _ToyController:
 
     async def direct_command(self, command: str) -> str:
         """
-        Send a raw command directly to the toy.
+        Send a raw command.
 
         Use this for accessing toy features not exposed by the library. Requires knowledge of the toy's protocol.
 
         Args:
-            command: Command string in the toy's protocol format (e.g., "DeviceType").
+            command: The command in the toy's protocol, e.g., ``"DeviceType"``.
 
         Raises:
-            ConnectionError: The command could not be sent to the toy.
+            ConnectionError: The command could not be delivered, or no reply came in time.
 
         Returns:
-            toy response (str)
+            The toy's reply.
         """
         return str(await self._toy.strict_direct_command(command))
 
     async def process_communication(self) -> None:
         """
-        Advance pattern playback by one tick. Called periodically by the _ToyHub.
+        Advance pattern playback by one tick. The hub calls it periodically.
 
-        On the first tick after entering a paused or blocked state, sends a single stop and latches it (no
-        repeated stops). While active, sends an intensity only when its *limited* target value changed since the last
-        successful send. Tracking state is updated only after each send's ``await`` returns, so a send that raises
-        leaves the state unchanged and the command is retried next tick.
+        - Paused or blocked: stop the toy once, on the first tick in that state.
+        - Playing: send each channel's pattern value, capped at its limit, if it differs from the last value sent.
+
+        A send that fails changes nothing. The next tick tries again.
+        Does nothing without a pattern, or after :meth:`disconnect` has been called.
 
         Raises:
-            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
-                ``_ToyHub`` retries and reconnects.
+            ConnectionError: A command could not be delivered.
+            UnexpectedToyResponse: (a ConnectionError) The toy refused a command.
         """
         if self._closed or not self._pattern_handler.has_active_pattern:
             return
@@ -659,10 +615,8 @@ class _ToyController:
 
     def _invalidate_last_values(self) -> None:
         """
-        Forget which intensities were last sent, so the next playback tick re-sends both.
-
-        Call this after anything that changes the toy's actual level behind the playback engine's back
-        (e.g., a model switch stops the toy, a manual command sets its own level).
+        Forget the levels playback last sent, so it resends them on the next tick.
+        Use when the toy's level changed behind playback's back, e.g., a model switch or a manual command.
         """
         self._last_values = [None, None]
 
@@ -670,11 +624,11 @@ class _ToyController:
         """
         Fetch the current battery level from the toy.
 
-        Updates internal _battery attribute (see :meth:`refresh_battery`) and returns the new value if it changed.
-        If the fetch fails (exception), return None and keep the old value.
+        Updates internal _battery attribute (see :meth:`refresh_battery`). Returns the new value if it changed.
+        If the fetch fails, returns None and keeps the old value.
 
         Returns:
-            battery level (0-100) if it changed, else None (unchanged, no battery, or the fetch failed).
+            The new level if it changed, else None (unchanged, no battery, or the query failed).
         """
         old_battery = self._battery
         try:
@@ -685,15 +639,11 @@ class _ToyController:
 
     async def disconnect(self) -> None:
         """
-        Disconnect from the device.
-
-        Stops all toy actions, disables notifications, and closes the connection.
-        This method should always be called before the toy object is destroyed to ensure proper cleanup.
-        Any exception raised is only for logging. The toy is still disconnected in the error case.
+        Stop the toy and close the connection. Playback sends nothing afterward.
+        The toy is disconnected even if this raises.
 
         Raises:
-            - ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
-            - UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK"
+            ConnectionError: Stopping the toy or closing the connection failed.
         """
         # A playback tick scheduled before the hub dropped this toy can still run; it must not send anything any more.
         self._closed = True
@@ -701,20 +651,18 @@ class _ToyController:
 
     async def reconnect(self) -> None:
         """
-        Attempts to reconnect to the toy.
+        Reopen the connection after an unexpected disconnect.
 
         Raises:
-            - ConnectionError: The reconnection failed.
-            - RuntimeError: The reconnection was attempted after intentionally disconnecting the toy
+            ConnectionError: Reconnecting failed.
+            RuntimeError: Called after :meth:`disconnect`.
         """
         await self._toy.strict_reconnect()
 
 
 class _LovenseController(_ToyController):
     """
-    High-level controller for Lovense toys.
-
-    Extends the low-level Lovense class with additional methods mostly related to pattern playback capabilities.
+    Controller of Lovense toys. :meth:`get_info` adds Lovense information.
 
     Args:
         toy: Low-level Lovense instance.
@@ -729,37 +677,20 @@ class _LovenseController(_ToyController):
         self, full: bool
     ) -> dict[str, str | list[str] | bool | int | None]:
         """
-        Gather information about the toy.
+        Information about the toy, see :meth:`_ToyController.get_info`. With *full*, the toy is additionally asked for:
+
+        - ``status`` (int or None): 2 means normal. None if the toy does not report it.
+        - ``batch_number`` (str or None): e.g., ``"241015"``. None if the toy does not report it.
+        - ``device_type`` (str): e.g., ``"C:11:0082059AD3BD"``.
 
         Args:
-            full: if false, only 'cheap' info is gathered (= info from the software representation, not the toy).
-                If true, several requests are made to the toy, retrieving additional information
-
-        Info gathered (always):
-
-        -  `toy_id` (str) unique identifier of the toy, e.g., Bluetooth address
-        -  `name` (str) human-readable identifier of the toy, e.g., Bluetooth advertisement name
-        -  `model_name` (str) model name of the toy. Typically, not retrieved from the toy itself but set by you when adding the toy. This returns this set name.
-        -  `brand` (str) brand of the toy, e.g., Lovense
-        -  `intensity_names` (list of str). Two human-readable strings. The second string is empty if the toy only has one intensity.
-        -  `supports_rotation` (bool) whether the toy supports changing the rotation direction
-        -  `max_intensity` (int) maximum intensity value
-        -  `recommended_min_interval` (int) The recommended minimum interval between intensity commands (in ms). Especially useful for pattern playback.
-
-        Additional info if `full` is true:
-
-        - 'status' (int | None): Status code (2 for normal). None if the toy does not report one.
-        - 'batch_number' (str | None): Manufacturing batch (e.g., "241015"). None if the toy does not report one.
-        - 'device_type' (str): Device info (e.g., "C:11:ADDRESS")
+            full: Ask the toy for the information above in addition to the information asked by _ToyController.get_info
 
         Raises:
-            - ConnectionError: A request could not be sent to the toy, or the toy did not answer it.
+            ConnectionError: With *full*: a query could not be delivered, or no reply came in time.
 
         Returns:
-            dict: dictionary containing the gathered info.
-
-        Note:
-            can only raise exceptions if full=True.
+            The information.
         """
         info = await super().get_info(full)
 
@@ -781,7 +712,7 @@ class _LovenseController(_ToyController):
             query: The strict request to send (e.g., ``strict_get_status``).
 
         Raises:
-            ConnectionError: The request could not be sent, or the toy did not answer at all.
+            ConnectionError: The query could not be delivered, or no reply came in time.
 
         Returns:
             The value, or None if the toy answered with something else.
@@ -794,10 +725,7 @@ class _LovenseController(_ToyController):
 
 class _MockEstimController(_ToyController):
     """
-    High-level controller for the fictional MockEstimToys brand (WebSocket variant).
-
-    The MockEstimToys brand exposes no extra ``full`` info beyond the generic fields, so the base ``get_info`` is reused
-    as-is. This subclass exists only to type the wrapped toy and to register the brand.
+    High-level controller for the fictional MockEstimToys brand.
 
     Args:
         toy: Low-level ``MockEstimToy`` instance.
@@ -809,8 +737,7 @@ class _MockEstimController(_ToyController):
         super().__init__(toy, initial_battery)
 
 
-#: Maps a toy's brand (``toy.brand``) to its websocket controller class.
-#: Register a brand's controller here when adding support for a new brand.
+#: Brand (``Toy.brand``) -> its controller class. Register a new brand's controller here.
 _CONTROLLER_BY_BRAND: dict[str, type[_ToyController]] = {
     "Lovense": _LovenseController,
     "MockEstimToys": _MockEstimController,

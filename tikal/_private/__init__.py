@@ -1,3 +1,5 @@
+"""Private helpers: timing constants, the reconnect policy, pattern playback, and a background event loop."""
+
 from .async_runner import AsyncRunner
 from .constants import (
     BATTERY_UPDATE_INTERVAL,

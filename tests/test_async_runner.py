@@ -6,22 +6,20 @@ from tikal._private import AsyncRunner
 
 
 class TestAsyncRunner(unittest.TestCase):
-    """Test suite for AsyncRunner class"""
+    """Tests of AsyncRunner."""
 
     def setUp(self):
-        """Set up a fresh AsyncRunner instance for each test"""
         self.runner = AsyncRunner()
         # Give the event loop time to initialize
         time.sleep(0.15)
 
     def tearDown(self):
-        """Clean up the AsyncRunner after each test"""
         self.runner.shutdown()
         time.sleep(0.1)
 
     # Test run_async method
     def test_run_async_simple_coroutine(self):
-        """Test running a simple async coroutine"""
+        """run_async returns the coroutine's result."""
 
         async def simple_coro():
             return 42
@@ -30,7 +28,7 @@ class TestAsyncRunner(unittest.TestCase):
         self.assertEqual(result, 42)
 
     def test_run_async_with_delay(self):
-        """Test running a coroutine with asyncio.sleep"""
+        """run_async waits for a coroutine that sleeps."""
 
         async def delayed_coro():
             await asyncio.sleep(0.1)
@@ -40,7 +38,7 @@ class TestAsyncRunner(unittest.TestCase):
         self.assertEqual(result, "completed")
 
     def test_run_async_with_exception(self):
-        """Test that exceptions are propagated correctly"""
+        """run_async raises what the coroutine raises."""
 
         async def failing_coro():
             raise ValueError("Test error")
@@ -50,7 +48,7 @@ class TestAsyncRunner(unittest.TestCase):
         self.assertEqual(str(context.exception), "Test error")
 
     def test_run_async_timeout(self):
-        """Test that timeout is enforced"""
+        """run_async raises TimeoutError once the timeout has passed."""
 
         async def long_running_coro():
             await asyncio.sleep(10)
@@ -60,7 +58,7 @@ class TestAsyncRunner(unittest.TestCase):
             self.runner.run_async(long_running_coro(), timeout=0.2)
 
     def test_run_async_no_timeout(self):
-        """Test running with no timeout (None)"""
+        """timeout=None waits for the result."""
 
         async def quick_coro():
             await asyncio.sleep(0.05)
@@ -133,41 +131,40 @@ class TestAsyncRunner(unittest.TestCase):
 
     # Test initialization and shutdown
     def test_initialization_creates_event_loop(self):
-        """Test that initialization creates a running event loop"""
+        """The constructor starts the loop on its thread."""
         self.assertIsNotNone(self.runner.loop)
         self.assertTrue(self.runner.loop.is_running())
         self.assertIsNotNone(self.runner.loop_thread)
         self.assertTrue(self.runner.loop_thread.is_alive())
 
     def test_shutdown_stops_event_loop(self):
-        """Test that shutdown properly stops the event loop"""
+        """shutdown stops the loop."""
         self.runner.shutdown()
         time.sleep(0.2)
 
         self.assertFalse(self.runner.loop.is_running())
 
     def test_operations_after_shutdown_fail(self):
-        """Test that operations fail after shutdown"""
+        """run_async does not succeed after shutdown."""
         self.runner.shutdown()
         time.sleep(0.2)
 
         async def simple_coro():
             return 42
 
-        # Scheduled on the stopped loop but never awaited; close it so it doesn't emit a "coroutine was never awaited" RuntimeWarning
+        # Never awaited on the stopped loop: close it, so it does not warn that it was never awaited
         c = simple_coro()
         self.addCleanup(c.close)
 
-        # The loop is stopped but still exists, so this might raise different errors
-        # depending on timing. We just verify it doesn't succeed normally.
+        # Which error is raised depends on timing; it must not succeed.
         with self.assertRaises(Exception):
             self.runner.run_async(c, timeout=0.5)
 
     # Test error conditions
     def test_run_async_with_none_loop_raises_error(self):
-        """Test that RuntimeError is raised if the loop is None"""
+        """run_async raises RuntimeError without a loop."""
         runner = AsyncRunner()
-        runner.shutdown()  # we don't need its background loop/thread here
+        runner.shutdown()  # Its loop and thread are not needed
         runner.loop = None
 
         async def coro():
@@ -182,7 +179,7 @@ class TestAsyncRunner(unittest.TestCase):
 
     # Integration tests
     def test_multiple_sequential_runs(self):
-        """Test running multiple coroutines sequentially"""
+        """Coroutines can run one after the other."""
 
         async def coro(value):
             await asyncio.sleep(0.05)

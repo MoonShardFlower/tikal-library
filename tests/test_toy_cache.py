@@ -8,33 +8,31 @@ from tikal.high_level import ToyCache
 
 
 class TestToyCache(unittest.TestCase):
-    """Test suite for ToyCache class."""
+    """Tests of ToyCache."""
 
     def setUp(self):
-        """Set up test fixtures before each test method."""
         # Create a temporary directory for test cache files
         self.test_dir = Path(tempfile.mkdtemp())
         self.cache_path = self.test_dir / "test_cache.json"
         self.default_model = "DefaultModel"
 
     def tearDown(self):
-        """Clean up after each test method."""
         if self.test_dir.exists():
             shutil.rmtree(self.test_dir)
 
     def test_init_creates_cache_file(self):
-        """Test that __init__ creates a cache file if it doesn't exist."""
+        """The constructor creates a missing cache file."""
         _ = ToyCache(self.cache_path, self.default_model, "")
         self.assertTrue(self.cache_path.exists())
 
     def test_init_creates_directory(self):
-        """Test that __init__ creates the directory structure if it doesn't exist."""
+        """The constructor creates missing directories."""
         nested_path = self.test_dir / "subdir" / "cache.json"
         _ = ToyCache(nested_path, self.default_model, "")
         self.assertTrue(nested_path.exists())
 
     def test_init_reads_existing_cache(self):
-        """Test that __init__ reads an existing cache file."""
+        """The constructor loads an existing cache file."""
         test_data = {"LVS-A123": "Gush", "LVS-B456": "Edge"}
         self.cache_path.write_text(json.dumps(test_data), encoding="utf-8")
 
@@ -43,12 +41,12 @@ class TestToyCache(unittest.TestCase):
         self.assertEqual(cache.get_model_name("LVS-B456"), "Edge")
 
     def test_init_with_empty_cache_path(self):
-        """Test initialization with an empty cache path."""
+        """Without a file (Path()), unknown names give the default model."""
         cache = ToyCache(Path(), self.default_model, "")
         self.assertEqual(cache.get_model_name("any_name"), self.default_model)
 
     def test_get_model_name_returns_cached_value(self):
-        """Test that get_model_name returns a cached value when it exists."""
+        """get_model_name returns the cached model."""
         test_data = {"LVS-A123": "Gush"}
         self.cache_path.write_text(json.dumps(test_data), encoding="utf-8")
 
@@ -56,18 +54,18 @@ class TestToyCache(unittest.TestCase):
         self.assertEqual(cache.get_model_name("LVS-A123"), "Gush")
 
     def test_get_model_name_returns_default_when_not_cached(self):
-        """Test that get_model_name returns a default model when name not cached."""
+        """get_model_name returns the default model for an unknown name."""
         cache = ToyCache(self.cache_path, self.default_model, "")
         self.assertEqual(cache.get_model_name("LVS-UNKNOWN"), self.default_model)
 
     def test_update_adds_new_entry(self):
-        """Test that update adds new entries to the cache."""
+        """update adds an entry."""
         cache = ToyCache(self.cache_path, self.default_model, "")
         cache.update({"LVS-A123": "Gush"})
         self.assertEqual(cache.get_model_name("LVS-A123"), "Gush")
 
     def test_update_overwrites_existing_entry(self):
-        """Test that update overwrites existing entries."""
+        """update replaces the model of a known name."""
         test_data = {"LVS-A123": "OldModel"}
         self.cache_path.write_text(json.dumps(test_data), encoding="utf-8")
 
@@ -76,7 +74,7 @@ class TestToyCache(unittest.TestCase):
         self.assertEqual(cache.get_model_name("LVS-A123"), "NewModel")
 
     def test_update_multiple_entries(self):
-        """Test that update handles multiple entries at once."""
+        """update takes several entries at once."""
         cache = ToyCache(self.cache_path, self.default_model, "")
         updates = {"LVS-A123": "Gush", "LVS-B456": "Edge", "LVS-C789": "Hush"}
         cache.update(updates)
@@ -86,22 +84,21 @@ class TestToyCache(unittest.TestCase):
         self.assertEqual(cache.get_model_name("LVS-C789"), "Hush")
 
     def test_update_with_empty_cache_path(self):
-        """Test that update with empty cache_path doesn't raise an error."""
+        """update works without a file (Path())."""
         cache = ToyCache(Path(), self.default_model, "")
         cache.update({"LVS-A123": "Gush"})
-        # Should not raise an exception
+        # must not raise
 
     def test_read_handles_corrupted_json(self):
-        """Test that _read handles corrupted JSON gracefully."""
+        """A file with invalid JSON gives an empty cache, without raising."""
         # Write invalid JSON
         self.cache_path.write_text("{invalid json", encoding="utf-8")
 
-        # Should not raise exception, should initialize empty cache
         cache = ToyCache(self.cache_path, self.default_model, "")
         self.assertEqual(cache.get_model_name("any_name"), self.default_model)
 
     def test_read_handles_non_dict_json(self):
-        """Test that _read handles non-dict JSON gracefully."""
+        """A file that holds no JSON object gives an empty cache."""
         # Write valid JSON but not a dict
         self.cache_path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
 
@@ -110,10 +107,10 @@ class TestToyCache(unittest.TestCase):
 
     def test_read_drops_non_string_values(self):
         """
-        A cached model name that is not a str must never reach the caller.
+        A cached model name that is not a str never reaches the caller.
 
-        It would be assigned to ToyData.model_name during discovery (inside a Bluetooth callback), where the
-        resulting TypeError is far away from the bad cache entry that caused it.
+        It would be assigned to ToyData.model_name during discovery (in a Bluetooth callback), where the TypeError would
+        be far from the bad entry that caused it.
         """
         self.cache_path.write_text(
             json.dumps(
@@ -167,7 +164,7 @@ class TestToyCache(unittest.TestCase):
         self.assertEqual(cache.get_model_name("LVS-UNKNOWN"), "")
 
     def test_cache_persistence(self):
-        """Test that a cache persists between instances."""
+        """A new ToyCache on the same file sees earlier updates."""
         cache1 = ToyCache(self.cache_path, self.default_model, "")
         cache1.update({"LVS-A123": "Gush"})
 
@@ -176,12 +173,12 @@ class TestToyCache(unittest.TestCase):
         self.assertEqual(cache2.get_model_name("LVS-A123"), "Gush")
 
     def test_empty_bluetooth_name(self):
-        """Test behavior with an empty bluetooth name."""
+        """An empty Bluetooth name gives the default model."""
         cache = ToyCache(self.cache_path, self.default_model, "")
         self.assertEqual(cache.get_model_name(""), self.default_model)
 
     def test_special_characters_in_names(self):
-        """Test handling of special characters in names."""
+        """Names with special characters work like any other."""
         cache = ToyCache(self.cache_path, self.default_model, "")
         special_name = "LVS-A123!@#$%"
         cache.update({special_name: "SpecialModel"})
