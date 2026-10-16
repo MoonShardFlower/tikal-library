@@ -1,18 +1,21 @@
-The TIKAL Library provides two different APIs for communicating with the toys
+Examples of the three TIKAL APIs. They use mock toys, so they run without hardware.
 
-## High-Level API
-The 'High Level' API uses a ToyHub to scan for toys, establish connections, and disconnecting toys.
-The ToyHub also handles the synchronization of async operations (Either blocking code execution until the operation is
-complete or executing the operation in a different thread and delivering the results via callbacks).
-For each connected Toy the ToyHub hands over a ToyController to control the toy, whatever its brand.
-ToyHub runs the same engine as the WebSocket server, so both APIs behave the same way.
+## High-Level API (synchronous; start here)
+A ToyHub discovers and connects toys, and hands out a ToyController for each. Its methods either block until done or
+return at once and pass their result to a callback. It runs the same engine as the WebSocket server.
+- HighLevelAPI/part1_toy_hub.py: discovering, connecting and disconnecting toys; the toy cache; callbacks
+- HighLevelAPI/part2_lovense_controller.py: controlling a toy: intensities, patterns, pause, block, limits
+- HighLevelAPI/part3_funscript.py: playing funscripts, and following a video
 
-## Low-Level API
-The 'Low Level' API provides ConnectionBuilder to scan and connect to toys. ConnectionBuilder produces and hands over an
-Implementation of the abstract Toy (currently just Lovense) to control the toy. Both classes are mostly async.
-You can use ToyCache to remember toy model names in-between sessions.
+## Low-Level API (async)
+A ConnectionBuilder discovers and connects toys. Each connected toy is a Toy (e.g., a LovenseToy) that you command
+directly.
+- LowLevelAPI/part1_connection_builder.py: discovering and connecting toys
+- LowLevelAPI/part2_lovense_toy.py: controlling a toy
+- ToyCache/part3_toy_cache.py: remembering each toy's model name between sessions
 
 ## WebSocket API
-The 'WebSocket' API provides ToyServer, which you should access via a WebSocket connection. It's the best tested API, as
-the Tikal APP relies on it. Besides the Python files, I provide Windows executables for it (GitHub Releases).
-As the docstring-based documentation is not very useful for this API, I instead provide Markdown files in docs/websocket.
+The ToyServer (tikal-server) lets any language control the toys over a WebSocket. The Tikal App uses it, which makes it
+the best-tested API. Windows executables are available on GitHub Releases. The protocol is documented in docs/websocket.
+- Websocket/toy_server_example.py: a walkthrough of the protocol against a server with mock toys
+- Websocket/reverse-proxy/: reaching the server beyond localhost, safely
