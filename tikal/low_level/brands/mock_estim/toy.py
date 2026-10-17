@@ -9,7 +9,7 @@ import asyncio
 import traceback
 from typing import Any, Callable, Optional
 
-from ...toy import Toy, UnexpectedToyResponse
+from ...toy import Toy, UnexpectedToyResponse, _checked_level
 from ...toy_data import BadModelError, InvalidModelError, carried_over_capabilities
 from ...transport import MockTransport
 from .data import MAX_INTENSITY, MIN_SEGMENT_LENGTH, MOCK_ESTIM_TOY_NAMES
@@ -197,13 +197,15 @@ class MockEstimToy(Toy):
             await self.stop()
         except Exception as e:
             log_disconnect_error(e)
-        try:
-            await self._transport.disconnect()
-            self._log.info(
-                f"Disconnected from '{self._model_name}' at '{self._toy_id}'"
-            )
-        except Exception as e:
-            log_disconnect_error(e)
+        finally:
+            # Also when the stop was canceled: the connection must not stay open.
+            try:
+                await asyncio.shield(self._transport.disconnect())
+                self._log.info(
+                    f"Disconnected from '{self._model_name}' at '{self._toy_id}'"
+                )
+            except Exception as e:
+                log_disconnect_error(e)
 
     async def intensity1(self, level: int) -> bool:
         """
@@ -211,7 +213,7 @@ class MockEstimToy(Toy):
 
         ``current_intensities`` is only updated on acknowledgement, so it reports the level the device is actually at.
         """
-        level = max(0, min(self._MAX_INTENSITY, level))
+        level = max(0, min(self._MAX_INTENSITY, _checked_level(level)))
         command = MOCK_ESTIM_TOY_NAMES[self._model_name].intensity1_command
         acknowledged = await self._execute_level_command(command, level)
         if acknowledged:
@@ -224,10 +226,10 @@ class MockEstimToy(Toy):
 
         ``current_intensities`` is only updated on acknowledgement, so it reports the level the device is actually at.
         """
+        level = max(0, min(self._MAX_INTENSITY, _checked_level(level)))
         command = MOCK_ESTIM_TOY_NAMES[self._model_name].intensity2_command
         if not command:
             return True
-        level = max(0, min(self._MAX_INTENSITY, level))
         acknowledged = await self._execute_level_command(command, level)
         if acknowledged:
             self._intensity2 = level
@@ -280,10 +282,12 @@ class MockEstimToy(Toy):
             await self.strict_stop()
         except Exception as e:
             exc = e
-        try:
-            await self._transport.disconnect()
-        except Exception as e:
-            exc = e
+        finally:
+            # Also when the stop was canceled: the connection must not stay open.
+            try:
+                await asyncio.shield(self._transport.disconnect())
+            except Exception as e:
+                exc = e
         if isinstance(exc, Exception):
             raise ConnectionError(
                 f"Failed to cleanly disconnect from '{self._model_name}' at '{self._toy_id}'."
@@ -291,7 +295,7 @@ class MockEstimToy(Toy):
 
     async def strict_intensity1(self, level: int) -> bool:
         """Like :meth:`intensity1`, but raises on failure. Always returns True."""
-        level = max(0, min(self._MAX_INTENSITY, level))
+        level = max(0, min(self._MAX_INTENSITY, _checked_level(level)))
         command = MOCK_ESTIM_TOY_NAMES[self._model_name].intensity1_command
         await self._strict_execute_level_command(command, level)
         self._intensity1 = level
@@ -299,10 +303,10 @@ class MockEstimToy(Toy):
 
     async def strict_intensity2(self, level: int) -> bool:
         """Like :meth:`intensity2`, but raises on failure. Returns False for single-channel models."""
+        level = max(0, min(self._MAX_INTENSITY, _checked_level(level)))
         command = MOCK_ESTIM_TOY_NAMES[self._model_name].intensity2_command
         if not command:
             return False
-        level = max(0, min(self._MAX_INTENSITY, level))
         await self._strict_execute_level_command(command, level)
         self._intensity2 = level
         return True

@@ -32,6 +32,13 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     - High-Level API: `set_pattern` now checks every segment and raises `TypeError` or `ValueError` if one is malformed.
     - Pattern playback follows the monotonic clock: a change of the system time no longer makes it jump.
     - Pattern playback of one toy no longer waits for the others, ensuring one toy cannot stall the others.
+    - High-Level API: A limit set while an intensity command is pending is now enforced. The toy no longer stays above it.
+    - High-Level API: A `disconnect_toys_callback` timeout no longer cancels the disconnects. It's still finished in the background if possible.
+    - Bluetooth toys notifications are re-subscribed after a reconnection, ensuring that responses from the toy arrive again.
+    - A canceled connect closes a link it opened already, allowing the toy to be connected again.
+    - `shutdown()` cancels the connects in flight. A toy that finished connecting afterward used to stay connected.
+    - Starting a scan that is running already keeps the toys found so far. The Bluetooth toys found so far used to disappear from the list.
+    - Intensity levels and limits of Lovense toys must be ints. A float such as `7.5` raises `TypeError` instead of being sent to the toy as `Vibrate:7.5`.
 
 ## [2.0.0] - 2026-10-06
 

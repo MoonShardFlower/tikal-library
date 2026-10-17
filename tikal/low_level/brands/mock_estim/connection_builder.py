@@ -70,12 +70,16 @@ class MockConnectionBuilder:
         self, on_update: Callable[[list[ToyData] | Exception], Any] | None = None
     ) -> None:
         """
-        Start "continuous" discovery. The fake devices are reported immediately and then never change.
+        Start "continuous" discovery. The fake devices are reported immediately and then never change. If discovery is
+        running already, it continues, and *on_update* replaces the callback.
 
         Args:
             on_update: Optional callback. Called once with an empty list (to clear any cache) and then with the fake
                 devices, mirroring the contract of the real builders.
         """
+        if self._scanning:
+            self._on_update = on_update
+            return
         self._scanning = True
         self._on_update = on_update
         if on_update:
@@ -147,6 +151,10 @@ class MockConnectionBuilder:
         except Exception as e:
             await transport.disconnect()
             return e
+        except BaseException:
+            # Canceled: close the connection again, and pass the cancellation on.
+            await asyncio.shield(transport.disconnect())
+            raise
 
     # -----------------------------------------------------------------------
     # Private helpers

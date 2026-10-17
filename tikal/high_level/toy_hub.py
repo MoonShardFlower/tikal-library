@@ -232,10 +232,14 @@ class ToyHub:
         """
         Start scanning for toys in the background, until :meth:`stop_discovery`. Blocks until the scan started.
 
+        If a scan started by an earlier call is running, it continues with the toys it found so far, and *on_update*
+        replaces that call's callback.
+
         Args:
-            on_update: Called with all available toys whenever they change, first with an empty list. Model names come
-                from the toy cache. Already connected toys are not discovered. If the scan fails, it ends:
-                *on_update* receives an empty list, and *on_error* the :class:`~tikal.high_level.DiscoveryError`.
+            on_update: Called with all available toys whenever they change: first with an empty list, or with the toys
+                found so far if the scan was running already. Model names come from the toy cache. Already connected
+                toys are not discovered. If the scan fails, it ends: *on_update* receives an empty list, and *on_error*
+                the :class:`~tikal.high_level.DiscoveryError`.
 
         Raises:
             DiscoveryStartError: The scan could not start, e.g., Bluetooth is off.
@@ -348,7 +352,8 @@ class ToyHub:
             to_connect: Discovered toys, each with its model name set (case-insensitive).
             on_connected: Called with the results (see :meth:`connect_toys_blocking`), or with a TimeoutError if the
                 connections took longer than *timeout*.
-            timeout: Seconds to wait for all connections. Connections still running then are canceled.
+            timeout: Seconds to wait for all connections. Connections still running then are canceled, and a link they
+                opened already is closed again.
         """
         self._log.info(f"Connecting to {len(to_connect)} toy(s) (callback)...")
         self._submit_with_result(
@@ -392,11 +397,15 @@ class ToyHub:
             to_disconnect: The toy ids.
             on_disconnected: Called with the results (see :meth:`disconnect_toys_blocking`), or with a TimeoutError if
                 the disconnections took longer than *timeout*.
-            timeout: Seconds to wait for all disconnections. Disconnections still running then are canceled.
+            timeout: Seconds to wait for all disconnections. Disconnections still running then keep going in the
+                background.
         """
         self._log.info(f"Disconnecting from {len(to_disconnect)} toy(s) (callback)...")
+        # Shielded: a timeout only stops the waiting. Canceling a disconnect halfway could leave the toy running.
         self._submit_with_result(
-            lambda: self._disconnect(to_disconnect), on_disconnected, timeout
+            lambda: asyncio.shield(self._disconnect(to_disconnect)),
+            on_disconnected,
+            timeout,
         )
 
     def update_model_name(

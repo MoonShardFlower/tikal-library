@@ -163,12 +163,14 @@ class BLEConnectionBuilder:
         """
         Start continuous background discovery of Toys.
 
-        Continuously scan for new toys and remove stale toys. The method is idempotent.
+        Continuously scan for new toys and remove stale toys. If the scan is running already, it continues with the
+        toys found so far, and *on_update* replaces the callback.
         Use meth: ``retrieve_continuous`` to get the current snapshot.
         Use meth: stop_continuous to stop the background scan.
 
         Args:
-            on_update: **Optional** callback. Called with a snapshot of all discovered Toys whenever a change occurs.
+            on_update: **Optional** callback. Called with a snapshot of all discovered Toys whenever a change occurs,
+                first with an empty list when the scan starts.
                 Called with an exception if the continuous scan encounters an error.
                 Can be seen as a push version of :meth:`retrieve_continuous`.
 
@@ -176,6 +178,7 @@ class BLEConnectionBuilder:
             Exception: Any exception raised by the BLE scanner (e.g., permission errors).
         """
         if self._continuous_task and not self._continuous_task.done():
+            self._on_update = on_update
             return
         self._on_update = on_update
         if self._on_update:
@@ -305,6 +308,10 @@ class BLEConnectionBuilder:
             )
             await toy.disconnect()
             return e
+        except BaseException:
+            # Canceled: close the link again, and pass the cancellation on.
+            await asyncio.shield(toy.disconnect())
+            raise
         self._log.info(f"Connected to {to_connect.toy_id} as {to_connect.model_name}")
         return toy
 
@@ -427,6 +434,7 @@ class ConnectionBuilder:
         # The latest snapshot of each builder's continuous scan, merged for on_update.
         self._on_update: Callable[[list[ToyData] | Exception], Any] | None = None
         self._snapshots: list[list[ToyData]] = [[] for _ in self._builders]
+        self._scanning = False
 
     # -----------------------------------------------------------------------
     # Public API
@@ -455,21 +463,29 @@ class ConnectionBuilder:
         self, on_update: Callable[[list[ToyData] | Exception], Any] | None = None
     ) -> None:
         """
-        Start a background scan. Does nothing if already scanning.
+        Start a background scan. If a scan is running already, it continues with the toys found so far: *on_update*
+        replaces the callback, and receives the current snapshot at once.
 
         - Toys are added to the snapshot when found and removed when gone (BLE: not seen for 5 seconds).
         - Read the snapshot with :meth:`retrieve_continuous`, or get it pushed to *on_update*.
         - A failing BLE scanner, e.g., Bluetooth off, ends the BLE scan. :meth:`retrieve_continuous` raises its
-          exception once.
+          exception once. Calling this method again starts it anew.
 
         Args:
-            on_update: Called with the merged snapshot whenever a transport's snapshot changes, first with an empty
-                list. Called with the exception if a transport reports one.
+            on_update: Called with the merged snapshot whenever a transport's snapshot changes: first with an empty
+                list when the scan starts, or with the current snapshot when it was running already. Called with the
+                exception if a transport reports one.
         """
+        running = self._scanning
         self._on_update = on_update
-        self._snapshots = [[] for _ in self._builders]
+        if not running:
+            self._snapshots = [[] for _ in self._builders]
+            self._scanning = True
+        # A transport whose scan still runs keeps it, and its snapshot. One whose scan ended starts it again.
         for index, builder in enumerate(self._builders):
             await builder.start_continuous(self._make_continuous_callback(index))
+        if running and on_update is not None:
+            on_update(self._merged_snapshot())
         self._log.debug(
             "Continuous discovery started across %d transport(s)", len(self._builders)
         )
@@ -480,6 +496,7 @@ class ConnectionBuilder:
             await builder.stop_continuous()
         self._snapshots = [[] for _ in self._builders]
         self._on_update = None
+        self._scanning = False
 
     async def retrieve_continuous(self) -> list[ToyData]:
         """
@@ -555,7 +572,10 @@ class ConnectionBuilder:
                 self._on_update(update)
                 return
             self._snapshots[index] = update
-            merged = [toy_data for snapshot in self._snapshots for toy_data in snapshot]
-            self._on_update(merged)
+            self._on_update(self._merged_snapshot())
 
         return callback
+
+    def _merged_snapshot(self) -> list[ToyData]:
+        """The latest snapshot of every transport's continuous scan, in one list."""
+        return [toy_data for snapshot in self._snapshots for toy_data in snapshot]

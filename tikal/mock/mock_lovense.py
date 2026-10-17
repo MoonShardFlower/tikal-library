@@ -237,6 +237,13 @@ class MockBleakClient:
         # Unregister this device so it will appear in future scans
         MockBleakScanner.unregister_connection(self.address)
 
+    def simulate_link_loss(self) -> None:
+        self._is_connected = False
+        self._notification_callback = None
+        MockBleakScanner.unregister_connection(self.address)
+        if self._disconnected_callback is not None:
+            self._disconnected_callback(self)
+
     @property
     def is_connected(self) -> bool:
         """Check connection status"""

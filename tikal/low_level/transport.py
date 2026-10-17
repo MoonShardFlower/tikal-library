@@ -121,8 +121,12 @@ class BleTransport(Transport):
         self._on_disconnect = on_disconnect
         self._tx_uuid: str | None = None
         self._rx_uuid: str | None = None
+        # The callback given to start_notify, to subscribe again after a reconnect: the subscription ends with the link.
+        self._notify_callback: Callable[[bytes], None] | None = None
+        self._subscribed = False
 
         def _bleak_disconnect_cb(_: BleakClient) -> None:
+            self._subscribed = False
             if not self._intentional_disconnect and on_disconnect:
                 on_disconnect(self.toy_id)
 
@@ -156,7 +160,8 @@ class BleTransport(Transport):
 
     async def reconnect(self) -> None:
         """
-        Attempts to reconnect to the toy. Does nothing if already connected.
+        Attempts to reconnect to the toy, and to receive its replies again: the subscription of :meth:`start_notify`
+        ends with the link. Does nothing if already connected and receiving.
         Use only after an unintended disconnect (``ConnectionError``).
         If you disconnected via :meth:`disconnect`, use the ``ConnectionBuilder`` instead.
 
@@ -164,17 +169,21 @@ class BleTransport(Transport):
             RuntimeError: If called after an intentional disconnect.
             ConnectionError: If the reconnection attempt fails.
         """
-        if self.is_connected:
+        if self.is_connected and (self._subscribed or self._notify_callback is None):
             return
         if self._intentional_disconnect:
             raise RuntimeError("Cannot reconnect after intentional disconnect")
         assert self._client is not None
-        try:
-            await self._client.connect()
-        except Exception as e:
-            raise ConnectionError(
-                f"Error connecting to toy at {self.toy_id}: {e!r}"
-            ) from e
+        if not self.is_connected:
+            self._subscribed = False
+            try:
+                await self._client.connect()
+            except Exception as e:
+                raise ConnectionError(
+                    f"Error connecting to toy at {self.toy_id}: {e!r}"
+                ) from e
+        if self._notify_callback is not None:
+            await self.start_notify(self._notify_callback)
 
     async def send(self, data: bytes) -> None:
         """
@@ -210,12 +219,14 @@ class BleTransport(Transport):
             callback(bytes(data))
 
         assert self._client is not None and self._rx_uuid is not None
+        self._notify_callback = callback
         try:
             await self._client.start_notify(self._rx_uuid, _bleak_cb)
         except Exception as e:
             raise ConnectionError(
                 f"Error starting notifications for toy at {self.toy_id}: {e!r}"
             ) from e
+        self._subscribed = True
 
     async def disconnect(self) -> None:
         """

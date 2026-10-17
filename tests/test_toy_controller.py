@@ -101,6 +101,36 @@ def test_set_pattern_is_visible_at_once_and_clearing_stops_the_toy(mock_hub):
     assert wait_until(lambda: toy.current_intensities == (30, 0))
 
 
+def test_clearing_the_list_given_to_set_pattern_does_not_clear_the_pattern(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+    segments = [(60_000, 30, 0)]
+    toy.set_pattern(segments)
+
+    segments.clear()  # e.g., reused to build the next pattern
+
+    assert toy.get_pattern_data()[0] == [(60_000, 30, 0)]
+    assert wait_until(lambda: toy.current_intensities == (30, 0))
+
+
+def test_a_malformed_pattern_raises_and_the_old_one_keeps_playing(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+    toy.set_pattern([(60_000, 30, 0)])
+    assert wait_until(lambda: toy.current_intensities == (30, 0))
+    version = toy.pattern_version
+
+    with pytest.raises(ValueError):
+        toy.set_pattern([(500, 10)])
+    with pytest.raises(TypeError):
+        toy.set_pattern([(500, 7.5, 0)])
+
+    assert toy.get_pattern_data()[0] == [(60_000, 30, 0)]
+    assert toy.pattern_version == version
+    toy.set_pattern([(60_000, 12, 0)])  # playback still works
+    assert wait_until(lambda: toy.current_intensities == (12, 0))
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -189,6 +219,43 @@ def test_intensity_limits_cap_commands_and_the_pattern(mock_hub):
 
     toy.set_intensity1_limit(None)
     assert wait_until(lambda: toy.current_intensities == (90, 0))
+
+
+def test_a_level_that_is_not_an_int_raises_and_changes_nothing(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+    toy.set_pattern([(60_000, 30, 0)])
+    assert wait_until(lambda: toy.current_intensities == (30, 0))
+    called: list = []
+
+    with pytest.raises(TypeError):
+        toy.intensity1(toy.max_intensity * 0.5, callback=called.append)
+    with pytest.raises(TypeError):
+        toy.intensity2(7.5)
+    with pytest.raises(TypeError):
+        toy.set_intensity1_limit(7.5)
+
+    assert toy.is_paused is False  # the pattern was not paused for a refused command
+    assert toy.intensity_limits == (toy.max_intensity, toy.max_intensity)
+    assert not wait_until(lambda: called or toy.current_intensities != (30, 0), 0.3)
+
+
+def test_a_limit_set_while_an_intensity_command_is_in_flight_is_enforced(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+    low_level = _core_toy(hub)._toy
+    original = low_level.strict_intensity1
+
+    async def slow_intensity1(level):
+        await asyncio.sleep(0.05)
+        return await original(level)
+
+    low_level.strict_intensity1 = slow_intensity1
+    toy.intensity1(80)
+    toy.set_intensity1_limit(25)  # while the 80 is still on its way to the toy
+
+    assert wait_until(lambda: toy.current_intensities == (25, 0))
+    assert not wait_until(lambda: toy.current_intensities[0] > 25, timeout=0.3)
 
 
 def test_queries_report_through_their_callbacks(mock_hub):

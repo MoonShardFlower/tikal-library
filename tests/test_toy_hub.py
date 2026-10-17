@@ -5,6 +5,7 @@ Driven end to end with MockEstimToys. Scans, reconnects and power-offs are start
 Bluetooth layer would start them.
 """
 
+import asyncio
 import gc
 import json
 import threading
@@ -202,6 +203,26 @@ def test_disconnect_toys_callback_disconnects(mock_hub):
     hub.disconnect_toys_callback([toy.toy_id], results.append)
     assert wait_until(lambda: results)
     assert results == [[None]] and toy.is_connected is False
+
+
+def test_a_disconnect_that_times_out_still_closes_the_connection(mock_hub):
+    hub = mock_hub()
+    toy = connect_mock_toy(hub)
+    low_level = hub._core.get_controller(toy.toy_id)._toy
+    original_stop = low_level.strict_stop
+
+    async def slow_stop():
+        await asyncio.sleep(0.3)
+        return await original_stop()
+
+    low_level.strict_stop = slow_stop
+    results: list = []
+    hub.disconnect_toys_callback([toy.toy_id], results.append, timeout=0.05)
+
+    assert wait_until(lambda: results)
+    assert isinstance(results[0], TimeoutError)
+    assert wait_until(lambda: not low_level.is_connected)  # the disconnect kept going
+    assert low_level.current_intensities == (0, 0)
 
 
 def test_update_model_name(mock_hub, tmp_path):

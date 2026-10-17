@@ -10,7 +10,7 @@ import asyncio
 import traceback
 from typing import Any, Callable, Optional
 
-from ...toy import Toy, UnexpectedToyResponse
+from ...toy import Toy, UnexpectedToyResponse, _checked_level
 from ...toy_data import BadModelError, InvalidModelError, carried_over_capabilities
 from ...transport import BleTransport
 from .data import LOVENSE_TOY_NAMES, MIN_SEGMENT_LENGTH, ROTATION_TOY_NAMES
@@ -234,11 +234,8 @@ class LovenseToy(Toy):
         """
         self._log.info(f"Reconnecting to '{self._model_name}' at '{self._toy_id}'")
 
-        # The connection may recover by itself.
+        # The connection may recover by itself. The transport then only subscribes to the replies again.
         await asyncio.sleep(1.0)
-        if self._transport.is_connected:
-            return True
-
         try:
             await self._transport.reconnect()
             self._log.info(f"Connected to '{self._model_name}' at '{self._toy_id}'")
@@ -270,13 +267,15 @@ class LovenseToy(Toy):
             await self.stop()
         except Exception as e:
             log_disconnect_error(e)
-        try:
-            await self._transport.disconnect()
-            self._log.info(
-                f"Disconnected from '{self._model_name}' at '{self._toy_id}'"
-            )
-        except Exception as e:
-            log_disconnect_error(e)
+        finally:
+            # Also when the stop was canceled: the link must not stay open.
+            try:
+                await asyncio.shield(self._transport.disconnect())
+                self._log.info(
+                    f"Disconnected from '{self._model_name}' at '{self._toy_id}'"
+                )
+            except Exception as e:
+                log_disconnect_error(e)
 
     async def intensity1(self, level: int) -> bool:
         """
@@ -290,6 +289,9 @@ class LovenseToy(Toy):
         Returns:
             True if the toy acknowledged the command, False otherwise.
 
+        Raises:
+            TypeError: *level* is not an int. Nothing is sent.
+
         Example::
 
                 await toy.intensity1(20)  # Set primary capability to maximum
@@ -298,7 +300,7 @@ class LovenseToy(Toy):
             :attr:`current_intensities` is updated only once the toy acknowledges the command.
             It always reports the level the toy is actually at.
         """
-        level = max(0, min(self._MAX_INTENSITY, level))
+        level = max(0, min(self._MAX_INTENSITY, _checked_level(level)))
         intensity1_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity1_command
         acknowledged = await self._execute_level_command(intensity1_cmd, level)
         if acknowledged:
@@ -319,6 +321,9 @@ class LovenseToy(Toy):
         Returns:
             True if the toy acknowledged the command or if no secondary capability exists, False otherwise
 
+        Raises:
+            TypeError: *level* is not an int. Nothing is sent.
+
         Example::
 
                 await toy.intensity2(10)  # Set secondary capability to medium intensity
@@ -329,7 +334,7 @@ class LovenseToy(Toy):
             It always reports the level the toy is actually at.
         """
         intensity2_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity2_command
-        level = max(0, min(self._MAX_INTENSITY, level))
+        level = max(0, min(self._MAX_INTENSITY, _checked_level(level)))
 
         if not intensity2_cmd:
             return True  # No secondary capability, return success
@@ -522,11 +527,8 @@ class LovenseToy(Toy):
         try:
             self._log.info(f"Reconnecting to '{self._model_name}' at '{self._toy_id}'")
 
-            # The connection may recover by itself.
+            # The connection may recover by itself. The transport then only subscribes to the replies again.
             await asyncio.sleep(1.0)
-            if self._transport.is_connected:
-                return True
-
             await self._transport.reconnect()
             self._log.info(f"Connected to '{self._model_name}' at '{self._toy_id}'")
             return True
@@ -549,16 +551,18 @@ class LovenseToy(Toy):
             await self.strict_stop()
         except Exception as e:
             exc = e
-        try:
-            await self._transport.disconnect()
-            self._log.info(
-                f"Disconnected from '{self._model_name}' at '{self._toy_id}'."
-            )
-        except Exception as e:
-            self._log.exception(
-                f"Failed to disconnect from '{self._model_name}' at '{self._toy_id}': {type(e)} with details {traceback.format_exc()}"
-            )
-            exc = e
+        finally:
+            # Also when the stop was canceled: the link must not stay open.
+            try:
+                await asyncio.shield(self._transport.disconnect())
+                self._log.info(
+                    f"Disconnected from '{self._model_name}' at '{self._toy_id}'."
+                )
+            except Exception as e:
+                self._log.exception(
+                    f"Failed to disconnect from '{self._model_name}' at '{self._toy_id}': {type(e)} with details {traceback.format_exc()}"
+                )
+                exc = e
         if isinstance(exc, Exception):
             raise ConnectionError(
                 f"Failed to cleanly disconnect from '{self._model_name}' at '{self._toy_id}'. Toy is still disconnected."
@@ -569,13 +573,14 @@ class LovenseToy(Toy):
         Similar to :meth: intensity1, but this method raises an exception if the intensity command fails.
 
         Raises:
+            TypeError: *level* is not an int. Nothing is sent.
             ConnectionError: Command could not be sent, or the toy did not respond.
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
 
         Returns:
             Always true
         """
-        level = max(0, min(self._MAX_INTENSITY, level))
+        level = max(0, min(self._MAX_INTENSITY, _checked_level(level)))
         intensity1_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity1_command
         await self._strict_execute_level_command(intensity1_cmd, level)
         self._intensity1 = level
@@ -586,13 +591,14 @@ class LovenseToy(Toy):
         Similar to :meth: intensity2, but this method raises an exception if the intensity command fails.
 
         Raises:
+            TypeError: *level* is not an int. Nothing is sent.
             ConnectionError: Command could not be sent, or the toy did not respond.
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
 
         Returns:
             True if the toy supports a secondary capability, False otherwise.
         """
-        level = max(0, min(self._MAX_INTENSITY, level))
+        level = max(0, min(self._MAX_INTENSITY, _checked_level(level)))
         intensity2_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity2_command
         if not intensity2_cmd:
             return False

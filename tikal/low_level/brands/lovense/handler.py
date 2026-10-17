@@ -1,5 +1,8 @@
 """Low-Level API: :class:`LovenseHandler`, the BLE brand handler of Lovense toys."""
 
+import asyncio
+import contextlib
+
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
 
@@ -86,6 +89,11 @@ class LovenseHandler(BLEBrandHandler):
             raise ConnectionError(
                 f"Error connecting to {toy_data.model_name} at {device.address}: {e}."
             )
+        except BaseException:
+            # Canceled: the link may be open already. Close it, and pass the cancellation on.
+            with contextlib.suppress(Exception):
+                await asyncio.shield(transport.disconnect())
+            raise
         return toy
 
     async def _resolve_uuids(self, client: BleakClient) -> tuple[str, str]:

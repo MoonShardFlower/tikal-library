@@ -198,6 +198,44 @@ async def test_ble_reconnect_reopens_after_unexpected_drop():
 
 
 @pytest.mark.asyncio
+async def test_ble_reconnect_subscribes_to_the_replies_again():
+    transport, holder = _make_ble_transport()
+    await transport.connect()
+    received: list[bytes] = []
+    await transport.start_notify(received.append)
+    client = holder["client"]
+    client.is_connected = False  # the link drops, and the subscription with it
+    client.notify_cb = None
+    client.fire_unexpected_disconnect()
+
+    await transport.reconnect()
+
+    client.notify_cb("char", bytearray(b"OK;"))
+    assert received == [b"OK;"]
+
+
+@pytest.mark.asyncio
+async def test_ble_reconnect_retries_a_failed_subscription_on_an_open_link():
+    transport, holder = _make_ble_transport()
+    await transport.connect()
+    received: list[bytes] = []
+    await transport.start_notify(received.append)
+    client = holder["client"]
+    client.is_connected = False
+    client.fire_unexpected_disconnect()
+    client.notify_should_fail = True
+    with pytest.raises(ConnectionError):
+        await transport.reconnect()  # the link is back, the subscription is not
+
+    client.notify_should_fail = False
+    await transport.reconnect()
+
+    assert client.connect_calls == 2  # the open link was kept
+    client.notify_cb("char", bytearray(b"OK;"))
+    assert received == [b"OK;"]
+
+
+@pytest.mark.asyncio
 async def test_ble_reconnect_after_intentional_disconnect_raises_runtime_error():
     transport, holder = _make_ble_transport()
     await transport.connect()

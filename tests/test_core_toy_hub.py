@@ -15,6 +15,7 @@ import pytest
 import pytest_asyncio
 
 from tikal._core import (
+    AddConnectionError,
     DiscoveryError,
     DiscoveryStartError,
     InvalidModelError,
@@ -30,7 +31,8 @@ from tikal._core import (
 )
 from tikal._private import COMMUNICATION_INTERVAL
 from tikal.funscript import Funscript, funscript_to_pattern
-from tikal.low_level import ToyData, UnexpectedToyResponse
+from tikal.low_level import LovenseToy, ToyData, UnexpectedToyResponse
+from tikal.mock import MockBleakScanner
 
 pytestmark = pytest.mark.asyncio
 
@@ -510,6 +512,21 @@ async def test_poll_batteries_reports_changes(hub):
     assert updates == [{"Thunder_ID": 55}]
 
 
+async def test_starting_a_running_scan_again_keeps_the_toys_found(hub):
+    gush_id = "00:00:00:00:00:02"
+    assert await _wait_until(lambda: gush_id in hub._toy_data)
+    updates: list = []
+
+    await hub.start_scan(updates.append)  # e.g., a discovery view opened again
+
+    assert await _wait_until(lambda: updates)
+    await asyncio.sleep(0.3)  # several scan intervals of the mock
+    first = {d.toy_id for d in updates[0]}
+    assert {gush_id, "Thunder_ID", "Lightning_ID"} <= first
+    assert all({d.toy_id for d in update} == first for update in updates)
+    assert gush_id in hub._toy_data
+
+
 # ---------------------------------------------------------------------------
 # Discovery without a scan, and adding a toy from its ToyData
 # ---------------------------------------------------------------------------
@@ -847,12 +864,140 @@ async def test_the_battery_poll_waits_for_a_command_in_flight(hub):
     controller.fetch_and_update_battery.assert_awaited_once()
 
 
+async def test_a_level_that_is_not_an_int_is_refused_without_a_reconnect(hub):
+    await _add_thunder(hub)
+    await hub.set_pattern("Thunder_ID", [(60_000, 10, 0)])
+    statuses: list = []
+    hub._on_status_change = lambda toy_id, status: statuses.append(status)
+
+    with pytest.raises(TypeError):
+        await hub.intensity("Thunder_ID", 0, 7.5)
+    with pytest.raises(TypeError):
+        await hub.set_intensity_limit("Thunder_ID", 0, 7.5)
+
+    state = await hub.get_state("Thunder_ID")
+    assert state["is_paused"] is False and state["intensity_limits"] == [100, 100]
+    assert statuses == [] and not hub._reconnect_tasks
+
+
 async def test_a_command_in_flight_on_one_toy_does_not_delay_another(hub):
     thunder = await _add_thunder(hub)
     await hub.add("Lightning_ID", "Lightning")
 
     async with thunder.cmd_lock:
         assert await asyncio.wait_for(hub.intensity("Lightning_ID", 0, 30), 1) is True
+
+
+# ---------------------------------------------------------------------------
+# Canceled connects and disconnects
+# ---------------------------------------------------------------------------
+
+_GUSH_ID = "00:00:00:00:00:02"
+
+
+async def _hang_in(monkeypatch, method: str) -> list:
+    """Make a LovenseToy method hang forever. Returns the toys it was called on."""
+    called_on: list = []
+
+    async def hang(self, *args):
+        called_on.append(self)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(LovenseToy, method, hang)
+    return called_on
+
+
+async def test_a_canceled_add_can_be_tried_again(hub):
+    assert await _wait_until(lambda: _GUSH_ID in hub._toy_data)
+    adding = asyncio.create_task(hub.add(_GUSH_ID, "Gush"))
+    await asyncio.sleep(0.2)  # the mock takes 1 s to connect
+
+    adding.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await adding
+
+    assert not hub._connect_tasks
+    await hub.add(_GUSH_ID, "Gush")  # not ToyAlreadyAddedError
+    assert hub.is_connected(_GUSH_ID)
+
+
+@pytest.mark.parametrize("step", ["set_model_name", "strict_get_battery_level"])
+async def test_a_connect_canceled_after_the_link_opened_closes_it(
+    hub, monkeypatch, step
+):
+    assert await _wait_until(lambda: _GUSH_ID in hub._toy_data)
+    called_on = await _hang_in(monkeypatch, step)
+    adding = asyncio.create_task(hub.add(_GUSH_ID, "Gush"))
+    assert await _wait_until(lambda: called_on)
+
+    adding.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await adding
+
+    assert not called_on[0].is_connected
+    assert (
+        _GUSH_ID not in MockBleakScanner._connected_addresses
+    )  # visible to scans again
+
+
+async def test_a_failed_first_battery_query_closes_the_link(hub, monkeypatch):
+    assert await _wait_until(lambda: _GUSH_ID in hub._toy_data)
+    toys: list = []
+
+    async def fail(self):
+        toys.append(self)
+        raise ConnectionError("no reply")
+
+    monkeypatch.setattr(LovenseToy, "strict_get_battery_level", fail)
+
+    with pytest.raises(AddConnectionError):
+        await hub.add(_GUSH_ID, "Gush")
+    assert not toys[0].is_connected
+
+
+async def test_shutdown_cancels_a_connect_in_flight(hub, monkeypatch):
+    assert await _wait_until(lambda: _GUSH_ID in hub._toy_data)
+    called_on = await _hang_in(monkeypatch, "strict_get_battery_level")
+    adding = asyncio.create_task(hub.add(_GUSH_ID, "Gush"))
+    assert await _wait_until(lambda: called_on)
+
+    await asyncio.wait_for(hub.shutdown(), 5)
+
+    with pytest.raises(AddConnectionError):
+        await adding
+    assert not called_on[0].is_connected and not hub._toys
+
+
+async def test_a_canceled_remove_still_closes_the_link(hub, monkeypatch):
+    assert await _wait_until(lambda: _GUSH_ID in hub._toy_data)
+    await hub.add(_GUSH_ID, "Gush")
+    toy = hub._toys[_GUSH_ID]._toy
+    called_on = await _hang_in(monkeypatch, "strict_stop")
+    removing = asyncio.create_task(hub.remove(_GUSH_ID))
+    assert await _wait_until(lambda: called_on)
+
+    removing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await removing
+
+    assert not toy.is_connected
+
+
+async def test_a_toy_whose_link_dropped_is_reconnected_and_answers_again(
+    hub, short_reconnect_pause
+):
+    assert await _wait_until(lambda: _GUSH_ID in hub._toy_data)
+    await hub.add(_GUSH_ID, "Gush")
+    client = hub._toys[_GUSH_ID]._toy._transport._client
+    statuses: list = []
+    hub._on_status_change = lambda toy_id, status: statuses.append(status)
+
+    client.simulate_link_loss()  # the subscription to the toy's replies ends with the link
+
+    assert await _wait_until(
+        lambda: statuses == [ToyStatus.RECONNECTING, ToyStatus.CONNECTED], timeout=10
+    )
+    assert await hub.intensity(_GUSH_ID, 0, 7) is True
 
 
 # ---------------------------------------------------------------------------

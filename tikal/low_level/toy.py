@@ -18,6 +18,7 @@ Example::
 import asyncio
 from abc import ABC, abstractmethod
 from logging import getLogger
+from numbers import Integral
 from typing import Optional
 
 from .transport import Transport
@@ -25,6 +26,26 @@ from .transport import Transport
 
 class UnexpectedToyResponse(ConnectionError):
     """The toy replied, but not as expected, e.g., ``ERROR`` instead of ``OK``."""
+
+
+def _checked_level(level: object, name: str = "level") -> int:
+    """
+    An intensity level as a built-in int, e.g., a numpy int converted.
+
+    Args:
+        level: The level as given.
+        name: What the level is, for the error message, e.g., ``"intensity1"``.
+
+    Raises:
+        TypeError: *level* is not an int. Neither a bool nor a float is one, not even ``10.0``: a toy takes whole
+            levels, and ``Vibrate:10.0`` is not a command it understands.
+
+    Returns:
+        *level* as an int.
+    """
+    if isinstance(level, bool) or not isinstance(level, Integral):
+        raise TypeError(f"{name} must be an int, got {level!r}")
+    return int(level)
 
 
 class Toy(ABC):
@@ -173,10 +194,13 @@ class Toy(ABC):
         :attr:`current_intensities` changes once the toy acknowledges.
 
         Args:
-            level: 0 to :attr:`max_intensity`. Values outside are clamped.
+            level: 0 to :attr:`max_intensity`, an int. Values outside are clamped.
 
         Returns:
             True if the toy acknowledged the command, False otherwise.
+
+        Raises:
+            TypeError: *level* is not an int. Nothing is sent.
 
         Example::
 
@@ -196,10 +220,13 @@ class Toy(ABC):
         - :attr:`current_intensities` changes once the toy acknowledges.
 
         Args:
-            level: 0 to :attr:`max_intensity`. Values outside are clamped.
+            level: 0 to :attr:`max_intensity`, an int. Values outside are clamped.
 
         Returns:
             True if the toy acknowledged the command or the toy does not have a secondary capability, False otherwise.
+
+        Raises:
+            TypeError: *level* is not an int. Nothing is sent.
 
         Example::
 
@@ -306,9 +333,10 @@ class Toy(ABC):
         Like :meth:`intensity1`, but raises on failure.
 
         Args:
-            level: 0 to :attr:`max_intensity`. Values outside are clamped.
+            level: 0 to :attr:`max_intensity`, an int. Values outside are clamped.
 
         Raises:
+            TypeError: *level* is not an int. Nothing is sent.
             ConnectionError: The command could not be sent, or no reply came in time.
             UnexpectedToyResponse: The toy refused the command, e.g., ``ERROR`` instead of ``OK``.
 
@@ -323,9 +351,10 @@ class Toy(ABC):
         Like :meth:`intensity2`, but raises on failure.
 
         Args:
-            level: 0 to :attr:`max_intensity`. Values outside are clamped.
+            level: 0 to :attr:`max_intensity`, an int. Values outside are clamped.
 
         Raises:
+            TypeError: *level* is not an int. Nothing is sent.
             ConnectionError: The command could not be sent, or no reply came in time.
             UnexpectedToyResponse: The toy refused the command, e.g., ``ERROR`` instead of ``OK``.
 

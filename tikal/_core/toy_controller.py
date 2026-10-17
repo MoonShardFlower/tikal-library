@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable, Sequence, TypeVar
 from .._private import PatternHandler
 from ..funscript import Funscript, FunscriptMode, funscript_to_pattern
 from ..low_level import LovenseToy, MockEstimToy, Toy, UnexpectedToyResponse
+from ..low_level.toy import _checked_level
 
 T = TypeVar("T")
 
@@ -378,7 +379,10 @@ class _ToyController:
 
         Args:
             channel: 0 for intensity1, 1 for intensity2.
-            level: The limit, clamped to 0 to :attr:`max_intensity`. None removes it.
+            level: The limit, an int clamped to 0 to :attr:`max_intensity`. None removes it.
+
+        Raises:
+            TypeError: *level* is neither an int nor None. Nothing changed.
 
         Returns:
             True if the toy runs above the new limit and has to be brought down now (see :meth:`enforce_limit`).
@@ -387,10 +391,15 @@ class _ToyController:
         return self._toy.current_intensities[channel] > self._intensity_limits[channel]
 
     def _normalize_limit(self, level: int | None) -> int:
-        """Turn *level* into a usable limit: ``None`` means "no limit", anything else is clamped to range."""
+        """
+        Turn *level* into a usable limit: ``None`` means "no limit", an int is clamped to range.
+
+        Raises:
+            TypeError: *level* is neither an int nor None.
+        """
         if level is None:
             return self._toy.max_intensity
-        return max(0, min(level, self._toy.max_intensity))
+        return max(0, min(_checked_level(level, "limit"), self._toy.max_intensity))
 
     async def enforce_limit(self, channel: int) -> None:
         """

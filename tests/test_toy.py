@@ -516,6 +516,19 @@ class TestLovenseIntensityCommands(unittest.IsolatedAsyncioTestCase):
             await toy.intensity1(-5)
             mock_exec.assert_called_once_with("Vibrate", 0)  # Clamped to min
 
+    async def test_a_level_that_is_not_an_int_is_refused_and_nothing_is_sent(self):
+        """Every intensity method refuses a float, a bool or a str, before sending anything."""
+        toy = Lovense(self.transport, "Nora", self.on_power_off, "")
+        await toy.start_notifications()
+        methods = ("intensity1", "intensity2", "strict_intensity1", "strict_intensity2")
+        for method in methods:
+            for level in (10.0, 7.5, True, "10"):
+                with self.subTest(method=method, level=level):
+                    with self.assertRaises(TypeError):
+                        await getattr(toy, method)(level)
+        self.transport.send.assert_not_called()
+        self.assertEqual(toy.current_intensities, (0, 0))
+
 
 class TestLovenseQueryCommands(unittest.IsolatedAsyncioTestCase):
     """Tests for query commands (battery, status, etc.)."""
@@ -1197,11 +1210,11 @@ class TestLovenseReconnectAndDisconnect(unittest.IsolatedAsyncioTestCase):
         self.toy = Lovense(self.transport, "Gush", self.on_power_off, "")
 
     async def test_reconnect_already_connected(self):
-        """reconnect returns True and does nothing when already connected."""
+        """reconnect leaves an open link to the transport, which only subscribes to the replies again if needed."""
         self.transport.is_connected = True
         with patch(self._SLEEP, new_callable=AsyncMock):
             self.assertTrue(await self.toy.reconnect())
-        self.transport.reconnect.assert_not_called()
+        self.transport.reconnect.assert_called_once()
 
     async def test_reconnect_success(self):
         """reconnect returns True after the transport reconnects."""
@@ -1218,11 +1231,11 @@ class TestLovenseReconnectAndDisconnect(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await self.toy.reconnect())
 
     async def test_strict_reconnect_already_connected(self):
-        """strict_reconnect returns True without reconnecting when already connected."""
+        """strict_reconnect leaves an open link to the transport, which only subscribes again if needed."""
         self.transport.is_connected = True
         with patch(self._SLEEP, new_callable=AsyncMock):
             self.assertTrue(await self.toy.strict_reconnect())
-        self.transport.reconnect.assert_not_called()
+        self.transport.reconnect.assert_called_once()
 
     async def test_strict_reconnect_success(self):
         """strict_reconnect returns True after the transport reconnects."""

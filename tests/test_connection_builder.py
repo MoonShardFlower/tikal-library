@@ -186,17 +186,22 @@ class FakeBuilder:
         self._handles = handles
         self._on_update = None
         self.stopped = False
+        self.scanning = False
 
     async def discover_toys(self, _=None):
         return list(self._toy_data)
 
     async def start_continuous(self, on_update=None):
         self._on_update = on_update
+        if self.scanning:
+            return  # like the real builders: a running scan continues, with the new callback
+        self.scanning = True
         if on_update:
             on_update([])  # mirror real builders clearing their cache on start
 
     async def stop_continuous(self):
         self.stopped = True
+        self.scanning = False
 
     async def retrieve_continuous(self):
         return list(self._toy_data)
@@ -260,6 +265,29 @@ async def test_connection_builder_continuous_merges_snapshots(callbacks):
 
     await builder.stop_continuous()
     assert first.stopped and second.stopped
+
+
+@pytest.mark.asyncio
+async def test_connection_builder_start_while_scanning_keeps_the_toys_found(callbacks):
+    builder = ConnectionBuilder(*callbacks, logger_name="test")
+    first, second = FakeBuilder(), FakeBuilder()
+    builder._builders = [first, second]
+    earlier: list = []
+    await builder.start_continuous(earlier.append)
+    a = ToyData("LVS-A", "a", "", "Lovense")
+    b = ToyData("LVS-B", "b", "", "Lovense")
+    first.emit([a])
+    second.emit([b])
+
+    updates: list = []
+    await builder.start_continuous(updates.append)
+
+    assert updates == [[a, b]]  # at once, and without a leading empty list
+    first.emit([])
+    assert updates[-1] == [b] and earlier[-1] == [
+        a,
+        b,
+    ]  # later changes go to the new callback only
 
 
 # ---------------------------------------------------------------------------

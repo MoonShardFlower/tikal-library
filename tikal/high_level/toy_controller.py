@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Sequence, 
 
 from .._core import UnknownToyError, _ToyController
 from ..funscript import Funscript, FunscriptMode
+from ..low_level.toy import _checked_level
 
 if TYPE_CHECKING:
     from .toy_hub import ToyHub
@@ -249,8 +250,9 @@ class ToyController:
         Set a pattern for automatic toy control. An empty list clears it and stops the toy. The pause stays as it is.
 
         Args:
-            pattern: Segments as ``(duration_ms, intensity1, intensity2)``, levels from 0 to :attr:`max_intensity`.
-                Stored as given: limits are applied during playback.
+            pattern: Segments as ``(duration_ms, intensity1, intensity2)``: a finite duration (int or float), and int
+                levels from 0 to :attr:`max_intensity`. A copy is stored as given: changing *pattern* afterward does
+                not affect playback, and limits are applied during playback.
             wraparound: Loop the pattern. If False, it plays once, then the intensities are 0.
             reset_time: Start at the beginning. If False, keep the current pattern time.
 
@@ -353,7 +355,10 @@ class ToyController:
         A toy already running above the new limit is brought down to it right away.
 
         Args:
-            level: The limit, clamped to 0 to :attr:`max_intensity`. None removes it.
+            level: The limit, an int clamped to 0 to :attr:`max_intensity`. None removes it.
+
+        Raises:
+            TypeError: *level* is neither an int nor None. Nothing changed.
         """
         self._set_limit(0, level)
 
@@ -362,7 +367,10 @@ class ToyController:
         Set the upper limit for the secondary intensity. Behaves like :meth:`set_intensity1_limit`.
 
         Args:
-            level: The limit, clamped to 0 to :attr:`max_intensity`. None removes it.
+            level: The limit, an int clamped to 0 to :attr:`max_intensity`. None removes it.
+
+        Raises:
+            TypeError: *level* is neither an int nor None. Nothing changed.
         """
         self._set_limit(1, level)
 
@@ -377,9 +385,12 @@ class ToyController:
         Set the primary capability, e.g., Gush: vibration, Solace: thrust. Pauses the pattern.
 
         Args:
-            level: 0 to :attr:`max_intensity`. Values outside are clamped. The intensity1 limit applies.
+            level: 0 to :attr:`max_intensity`, an int. Values outside are clamped. The intensity1 limit applies.
             callback: Called with True if the toy took the level, False if the toy is blocked (nothing changes), or
-            None if the command could not be delivered (nothing changes).
+                None if the command could not be delivered (nothing changes).
+
+        Raises:
+            TypeError: *level* is not an int. Nothing changes, and *callback* is not called.
 
         Example::
 
@@ -402,8 +413,11 @@ class ToyController:
         that case.
 
         Args:
-            level: 0 to :attr:`max_intensity`. Values outside are clamped. The intensity2 limit applies.
+            level: 0 to :attr:`max_intensity`, an int. Values outside are clamped. The intensity2 limit applies.
             callback: Optional callback, see :meth:`intensity1`.
+
+        Raises:
+            TypeError: *level* is not an int. Nothing changes, and *callback* is not called.
 
         Example::
 
@@ -617,7 +631,7 @@ class ToyController:
             callback: Called with True, False (blocked or no such capability), or None (not delivered). Optional.
         """
         command = f"intensity{channel + 1}"
-        level = max(0, min(level, self.max_intensity))
+        level = max(0, min(_checked_level(level, command), self.max_intensity))
 
         def accept(toy: _ToyController) -> bool | None:
             if not self._core.is_connected(self._toy_id):
@@ -638,11 +652,13 @@ class ToyController:
             channel: 0 for intensity1, 1 for intensity2.
             level: The limit, clamped to 0 to :attr:`max_intensity`. None removes it.
         """
-        if self._apply(lambda toy: toy.apply_limit(channel, level)):
-            self._send(
-                f"set_intensity{channel + 1}_limit",
-                lambda toy: toy.enforce_limit(channel),
-            )
+        self._apply(lambda toy: toy.apply_limit(channel, level))
+        # Always queued: an intensity command still on its way was capped with the old limit, and only takes effect
+        # once acknowledged. The enforcement runs after it and checks the acknowledged level.
+        self._send(
+            f"set_intensity{channel + 1}_limit",
+            lambda toy: toy.enforce_limit(channel),
+        )
 
     def _send_stop(
         self, command: str, callback: Optional[Callable[[Any], Any]] = None

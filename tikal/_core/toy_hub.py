@@ -28,6 +28,7 @@ from ..low_level import BadModelError as LowLevelBadModelError
 from ..low_level import ConnectionBuilder
 from ..low_level import InvalidModelError as LowLevelInvalidModelError
 from ..low_level import Toy, ToyData, UnexpectedToyResponse
+from ..low_level.toy import _checked_level
 from ..mock import MockBleakClient, MockBleakScanner
 from .toy_cache import ToyCache
 from .toy_controller import _CONTROLLER_BY_BRAND, _ToyController
@@ -236,7 +237,8 @@ class _ToyHub:
         self._toys: dict[str, _ToyController] = {}
         self._toy_data: dict[str, ToyData] = {}
         self._all_seen_toy_ids: set[str] = set()
-        self._pending_toy_ids: set[str] = set()
+        # The connects in flight, at most one per toy, so that shutdown() can cancel them. Keyed by toy_id.
+        self._connect_tasks: dict[str, asyncio.Task[_ToyController]] = {}
 
         # Status tracking
         self._on_status_change = on_status_change or (lambda a, b: None)
@@ -304,8 +306,8 @@ class _ToyHub:
 
     async def shutdown(self) -> None:
         """
-        Stop the scan and the background loops, and disconnect every toy. Errors are logged. No callbacks are called.
-        Idempotent.
+        Stop the scan and the background loops, cancel the connects in flight, and disconnect every toy. Errors are
+        logged. No callbacks are called. Idempotent.
         """
         self._log.info("Shutting down _ToyHub.")
 
@@ -329,6 +331,14 @@ class _ToyHub:
             task.cancel()
         await asyncio.gather(*tick_tasks, return_exceptions=True)
 
+        # Cancel the connects in flight: they close a link they opened already. A connect that finished meanwhile has
+        # added its toy before the gather returns, so the toy is disconnected below.
+        connect_tasks = list(self._connect_tasks.values())
+        self._connect_tasks.clear()
+        for connecting in connect_tasks:
+            connecting.cancel()
+        await asyncio.gather(*connect_tasks, return_exceptions=True)
+
         # Cancel any in-flight reconnect tasks before disconnecting toys.
         reconnect_tasks = list(self._reconnect_tasks.values())
         self._reconnect_tasks.clear()
@@ -338,7 +348,6 @@ class _ToyHub:
 
         snapshot = list(self._toys.values())
         self._toys.clear()
-        self._pending_toy_ids.clear()
 
         results = await asyncio.gather(
             *[toy.disconnect() for toy in snapshot],
@@ -376,11 +385,13 @@ class _ToyHub:
         self, callback: Callable[[Exception | list[ToyData]], Any]
     ) -> None:
         """
-        Start scanning in the background. Toys it finds can be added with :meth:`add`.
+        Start scanning in the background. Toys it finds can be added with :meth:`add`. If a scan is running already, it
+        continues with the toys found so far, and *callback* replaces the earlier one.
 
         Args:
-            callback: Called with all toys found whenever they change, with model names from the toy cache.
-                Called with a :class:`DiscoveryError` if the scan fails. May be sync or async.
+            callback: Called with all toys found whenever they change, with model names from the toy cache: first with
+                an empty list, or with the toys found so far if the scan was running already. Called with a
+                :class:`DiscoveryError` if the scan fails. May be sync or async.
 
         Raises:
             DiscoveryStartError: The scan could not start, e.g., Bluetooth is off.
@@ -791,8 +802,14 @@ class _ToyHub:
             try:
                 # Unstable connection if the first command already fails. Treat as unable to connect.
                 battery = await result.strict_get_battery_level()
-            except Exception as e:
-                raise AddConnectionError(toy_data.toy_id, toy_data.model_name) from e
+            except BaseException as e:
+                # The link is open: close it again, also when canceled.
+                await asyncio.shield(result.disconnect())
+                if isinstance(e, Exception):
+                    raise AddConnectionError(
+                        toy_data.toy_id, toy_data.model_name
+                    ) from e
+                raise
             controller_cls = _CONTROLLER_BY_BRAND[result.brand]
             return controller_cls(result, battery)
         if isinstance(result, LowLevelInvalidModelError):
@@ -827,7 +844,7 @@ class _ToyHub:
             RuntimeError: Any other failure.
         """
         self._log.info(f"Adding toy at {toy_id} as {model_name}.")
-        if toy_id in self._toys or toy_id in self._pending_toy_ids:
+        if toy_id in self._toys or toy_id in self._connect_tasks:
             raise ToyAlreadyAddedError(toy_id, model_name)
         if toy_id not in self._all_seen_toy_ids:
             raise UndiscoveredToyError(toy_id, model_name)
@@ -852,23 +869,32 @@ class _ToyHub:
             ToyAlreadyAddedError: The toy is added already, or being added.
             InvalidModelError: The model name is not a model of the toy's brand.
             BadModelError: The toy refused or did not answer the model's commands.
-            AddConnectionError: Connecting failed.
+            AddConnectionError: Connecting failed, or :meth:`shutdown` canceled it.
             RuntimeError: Any other failure, e.g., *toy_data* was never discovered.
         """
         toy_id = toy_data.toy_id
         # Our own copy, so a caller changing its ToyData while we connect cannot affect the toy we add.
         toy_data = copy.copy(toy_data)
-        if toy_id in self._toys or toy_id in self._pending_toy_ids:
+        if toy_id in self._toys or toy_id in self._connect_tasks:
             raise ToyAlreadyAddedError(toy_id, toy_data.model_name)
-        self._pending_toy_ids.add(toy_id)
 
+        # A task of its own, so that shutdown() can cancel the connect without canceling the caller.
+        connecting = asyncio.get_running_loop().create_task(
+            self._create_toy(self._connection_builder, toy_data),
+            name=f"toy-connect-{toy_id}",
+        )
+        self._connect_tasks[toy_id] = connecting
         try:
-            toy = await self._create_toy(self._connection_builder, toy_data)
-        except Exception as e:
-            self._pending_toy_ids.discard(toy_id)
-            raise e
+            toy = await connecting
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise  # The caller was canceled: pass it on.
+            raise AddConnectionError(toy_id, toy_data.model_name) from None
+        finally:
+            if self._connect_tasks.get(toy_id) is connecting:
+                del self._connect_tasks[toy_id]
 
-        self._pending_toy_ids.discard(toy_id)
         self._toys[toy_id] = toy
         self._toy_status[toy_id] = ToyStatus.CONNECTED
         self._toy_cache.update({toy.name: toy.model_name})
@@ -971,9 +997,10 @@ class _ToyHub:
         Args:
             toy_id: Unique identifier of the toy.
             channel: 0 for intensity1, 1 for intensity2.
-            intensity: The level, clamped to 0 to max_intensity and capped at the channel's limit.
+            intensity: The level, an int clamped to 0 to max_intensity and capped at the channel's limit.
 
         Raises:
+            TypeError: *intensity* is not an int. Nothing changed.
             UnknownToyError: The toy is not added.
             ToyNotConnectedError: The toy is not connected. Nothing was sent, and the pattern keeps playing.
             ToyConnectionError: The command failed twice. Reconnecting has started.
@@ -984,6 +1011,7 @@ class _ToyHub:
         """
         name = f"intensity{channel + 1}"
         self._log.info(f"Setting {name} of {toy_id} to {intensity}")
+        intensity = _checked_level(intensity, name)
 
         def command(toy: _ToyController) -> Awaitable[bool]:
             return toy.intensity(channel, max(0, min(intensity, toy.max_intensity)))
@@ -1106,9 +1134,10 @@ class _ToyHub:
         Args:
             toy_id: Unique identifier of the toy.
             channel: 0 for intensity1, 1 for intensity2.
-            level: The limit, clamped to 0 to max_intensity. Set to None to remove it.
+            level: The limit, an int clamped to 0 to max_intensity. Set to None to remove it.
 
         Raises:
+            TypeError: *level* is neither an int nor None. Nothing changed.
             UnknownToyError: The toy is not added.
             ToyNotConnectedError: The toy runs above the limit but is not connected, so it was not brought down. The
                 limit is still in force.
