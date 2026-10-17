@@ -1,9 +1,8 @@
 """
-MockEstimToys brand subpackage: a fictional brand used to explore the architecture without real hardware.
+MockEstimToys: a fictional brand on an in-memory transport, for working without hardware. Not part of the public API.
 
-Unlike the BLE brands (which plug into ``BLEConnectionBuilder`` via a ``BLEBrandHandler``), MockEstimToys speaks its own
-in-memory transport, so it ships its own connection builder (:class:`MockConnectionBuilder`) that the composite
-``ConnectionBuilder`` holds alongside ``BLEConnectionBuilder``.
+Brings its own connection builder, :class:`MockConnectionBuilder`, which
+:class:`~tikal.low_level.ConnectionBuilder` includes when created with ``mock_toys=True``.
 """
 
 from .connection_builder import MockConnectionBuilder

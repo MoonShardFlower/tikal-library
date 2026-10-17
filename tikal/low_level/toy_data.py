@@ -1,7 +1,11 @@
 """
-Part of both the Low-Level and High-Level API: brand-agnostic data structures for toy device management.
+Low-Level API: brand-agnostic data types, also used by the High-Level API.
 
-This module defines the shared data classes used throughout the toy control system:
+- :class:`ToyData`: a discovered toy.
+- :class:`ToyCommands`: a model's capabilities and the commands that drive them.
+- :class:`ToySpecification`: everything a brand defines per model.
+- :func:`carried_over_capabilities`: which capabilities keep working across a model change.
+- :class:`ValidationError`, :class:`InvalidModelError`, :class:`BadModelError`: a model name was rejected.
 
 - Exception classes for validation errors (raised if model_name is invalid)
 - :class:`ToyData` returned by the connection builder after discovery
@@ -55,12 +59,11 @@ class InvalidModelError(ValidationError):
 
 class BadModelError(ValidationError):
     """
-    Exception raised when a model_name is valid, but its associated commands are not accepted by the toy.
-
-    This exception can mean two things:
+    The model name is valid, but the toy refused the model's commands.
 
     1) A valid, but wrong model_name is being set
-    2) the commands being incorrect -> the Library does not handle this model correctly. Please contact the library maintainer in this case.
+    2) the commands being incorrect -> the Library does not handle this model correctly.
+        Please contact the library maintainer in this case.
 
     Can be raised during toy initialization or when setting a toy's model name.
     """
@@ -78,8 +81,8 @@ class ToyData:
     this class for you.
 
     Properties:
-        name: Read-only human-readable identifier for the toy. For Bluetooth toys, this is the Bluetooth name (e.g., "LVS-B12").
-        toy_id: Read-only unique identifier for the toy. For Bluetooth toys, this is the Bluetooth address (e.g., "DC:F5:05:A3:6D:1E").
+        name: Read-only human-readable identifier for the toy, e.g., the Bluetooth name "LVS-B12".
+        toy_id: Read-only unique identifier for the toy, e.g., the Bluetooth address "DC:F5:05:A3:6D:1E".
         model_name: Model name of the toy (e.g., "Lush"). For Lovense toys, this is empty and must be set manually.
         brand: Read-only brand name of the toy (e.g., "Lovense").
 
@@ -112,14 +115,17 @@ class ToyData:
 
     @property
     def name(self) -> str:
+        """Human-readable name, e.g., the Bluetooth name ``"LVS-Z36D"``. Read-only."""
         return self._name
 
     @property
     def toy_id(self) -> str:
+        """Unique identifier, e.g., the Bluetooth address ``"DC:F5:05:A3:6D:1E"``. Read-only."""
         return self._toy_id
 
     @property
     def model_name(self) -> str:
+        """Model name, e.g., ``"Nora"``. Empty if unknown. Assigning a non-str raises TypeError."""
         return self._model_name
 
     @model_name.setter
@@ -130,20 +136,18 @@ class ToyData:
 
     @property
     def brand(self) -> str:
+        """Brand, e.g., ``"Lovense"``. Read-only."""
         return self._brand
 
 
 @dataclass
 class ToyCommands:
     """
-    Command configuration for a toy model.
+    A model's capabilities: their display names and the commands that drive them.
 
-    Defines the available capabilities for a specific toy model. Provides names for user display and commands for
-    protocol communication. You shouldn't need to instantiate this class, but if you use LOVENSE_TOY_NAMES you will
-    use instances of this class.
+    Every model has a primary capability (``intensity1``), some have a secondary one (``intensity2``).
 
-    Example:
-        ::
+    Example::
 
             # Check capabilities
             commands = LOVENSE_TOY_NAMES["Nora"]
@@ -152,32 +156,25 @@ class ToyCommands:
                 print(f"{commands.intensity2_name}: {commands.intensity2_command}")
     """
 
-    #: Display name for the primary capability shown to users (e.g., "Vibration", "Thrust").
+    #: Display name of the primary capability, e.g., ``"Vibration"``, ``"Thrust"``.
     intensity1_name: str
-    #: Command string for the primary capability sent to the toy (e.g., "Vibrate", "Thrusting").
+    #: Command of the primary capability, e.g., ``"Vibrate"``, ``"Thrusting"``.
     intensity1_command: str
     #: Display name for the secondary capability, or None if the toy has only one capability (e.g., "Rotation", "Air").
     intensity2_name: str | None = None
-    #: Command string for the secondary capability, or None if the toy has no secondary capability (e.g., "Rotate", "Air:Level").
+    #: Command for the secondary capability, or None if the toy has only one capability (e.g., "Rotate", "Air:Level").
     intensity2_command: str | None = None
 
 
 def carried_over_capabilities(old: ToyCommands, new: ToyCommands) -> tuple[bool, bool]:
     """
-    Work out which of a toy's capabilities survive a change of model name.
+    Which capabilities keep working across a change of model name.
 
-    A capability is carried over iff both models drive it with the same command. In these cases the change is just a
-    relabeling (e.g., switching Solace to Sex Machine interrupts nothing, because they share every command).
-
-    A capability whose command the new model replaces (Lush's ``Vibrate`` vs. Solace's ``Thrusting``) or drops
-    (Nora has ``Rotate``, Lush has none) cannot be carried over: after the change nothing addresses the old command.
-
-    Whether a non-carried-over capability needs a command sent to it needs to be answered by the tracked level:
-
-    - A capability that was running could be stuck on after the change with no way to switch it off, so the caller
-      has to release it through the old command.
-    - A capability that was not running needs no action. That is the ordinary case when the previous model was simply
-      wrong: its commands were refused. Sending the old command would push a command the toy has already rejected.
+    - A capability carries over if both models drive it with the same command. The change only relabels it (e.g.,
+      Solace to Sex Machine).
+    - Otherwise, the new model replaces its command (Lush ``Vibrate``, Solace ``Thrusting``) or drops it (Nora's
+      ``Rotate`` has no Lush counterpart). If it is running, it has to be switched off through the old command:
+      nothing addresses it after the change.
 
     Args:
         old: Command mapping of the model the toy currently has.
@@ -187,14 +184,9 @@ def carried_over_capabilities(old: ToyCommands, new: ToyCommands) -> tuple[bool,
         tuple[bool, bool]: ``(keeps_intensity1, keeps_intensity2)``. ``True`` means the capability keeps its level.
         ``False`` means the new model has different capabilities.
 
-    Example:
-        ::
+    Example::
 
-            keeps1, keeps2 = carried_over_capabilities(
-                LOVENSE_TOY_NAMES["Nora"], LOVENSE_TOY_NAMES["Lush"]
-            )
-            # keeps1 is True  (both use "Vibrate")
-            # keeps2 is False (Nora rotates, Lush has no second capability)
+        carried_over_capabilities(LOVENSE_TOY_NAMES["Nora"], LOVENSE_TOY_NAMES["Lush"])  # (True, False)
     """
     return (
         old.intensity1_command == new.intensity1_command,
@@ -205,24 +197,19 @@ def carried_over_capabilities(old: ToyCommands, new: ToyCommands) -> tuple[bool,
 @dataclass(frozen=True)
 class ToySpecification:
     """
-    The complete per-model definition of a toy: its capabilities plus behavior hints.
+    Everything a brand defines per model.
+    A brand derives its lookup tables from one ``model name -> ToySpecification`` mapping.
 
-    Lets a brand keep its per-model data in **one** place. The brand's public lookup tables (command mapping,
-    recommended interval, rotation support) are then derived from a mapping of ``model_name -> ToySpecification``
+    Example::
 
-    Example:
-        ::
-
-            spec = ToySpecification(
-                ToyCommands("Vibration", "Vibrate", "Rotation", "Rotate"),
-                min_interval=200,
-                supports_rotation=True,
-            )
+        ToySpecification(
+            ToyCommands("Vibration", "Vibrate", "Rotation", "Rotate"), min_interval=200, supports_rotation=True
+        )
     """
 
     #: The model's capability/command mapping (see :class:`ToyCommands`).
     commands: ToyCommands
-    #: Recommended minimum interval between intensity changes, in milliseconds. Callers are free to ignore it.
+    #: Recommended minimum interval between intensity changes in ms, e.g., for pattern segments. Only a suggestion.
     min_interval: int
     #: Whether the model can change its rotation direction. Defaults to ``False``.
     supports_rotation: bool = False

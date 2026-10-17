@@ -1,13 +1,12 @@
 """
-Brand registry for the Low-Level API.
+Low-Level API: the brand registry.
 
-Each supported BLE brand lives in its own subpackage (e.g. ``brands/lovense``) and is registered here. ``BLEConnectionBuilder``
-builds its handler list from this registry, and the public ``BRANDS`` mapping (brand -> supported model names) is derived from it.
+- :data:`BRANDS`: every supported brand and its model names.
+- :data:`BRAND_REGISTRATIONS`: the BLE brands. :class:`~tikal.low_level.BLEConnectionBuilder` creates one handler per
+  registration.
 
-Adding a new BLE brand:
-
-1. Create a subpackage ``brands/<brand>/`` with a ``BLEBrandHandler`` subclass (and its toy class + model data).
-2. Append one ``BrandRegistration`` entry to ``BRAND_REGISTRATIONS`` below.
+To add a BLE brand, create ``brands/<brand>/`` (a :class:`~tikal.low_level.BLEBrandHandler` subclass, its
+:class:`~tikal.low_level.Toy` subclass, and its model data) and append a :class:`BrandRegistration` here.
 """
 
 from dataclasses import dataclass
@@ -22,7 +21,14 @@ from .mock_estim import MOCK_ESTIM_TOY_NAMES
 
 @dataclass(frozen=True)
 class BrandRegistration:
-    """One registered BLE brand: its display name, handler class, and supported model names."""
+    """
+    One BLE brand.
+
+    Attributes:
+        name: Brand name, e.g., ``"Lovense"``.
+        handler_cls: Its brand handler.
+        model_names: Its model names.
+    """
 
     name: str
     handler_cls: Type[BLEBrandHandler]
@@ -62,10 +68,16 @@ def build_handlers(
     client_class: Type[BleakClient] = BleakClient,
 ) -> list[BLEBrandHandler]:
     """
-    Instantiate one handler per registered brand.
+    Create one handler per registered BLE brand. The arguments go to every handler, see :class:`BLEBrandHandler`.
 
-    Called by ``BLEConnectionBuilder`` to populate its handler list.
-    Every registered handler is constructed with the same signature (see :class:`BLEBrandHandler`).
+    Args:
+        on_disconnect: Called with the toy id when a toy's connection drops unexpectedly.
+        on_power_off: Called with the toy id when a toy reports a power-off.
+        logger_name: Name of the logger.
+        client_class: BleakClient (sub)class to connect with.
+
+    Returns:
+        The handlers, in registration order.
     """
     return [
         reg.handler_cls(on_disconnect, on_power_off, logger_name, client_class)

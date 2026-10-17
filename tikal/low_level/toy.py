@@ -1,30 +1,18 @@
 """
-Part of the Low Level API: the abstract :class:`Toy` interface.
+Low-Level API: :class:`Toy`, the command interface of a connected toy.
 
-This module defines the brand-agnostic base class for communicating with toy devices:
+Brands implement it, e.g., :class:`~tikal.low_level.LovenseToy`. :class:`~tikal.low_level.ConnectionBuilder` connects
+toys and returns them as :class:`Toy` instances.
 
-- :class:`Toy`: Abstract base class defining the toy communication interface
-- :class:`UnexpectedToyResponse`: raised when a toy returns an unexpected reply
-
-Concrete, brand-specific implementations live in ``tikal/low_level/brands/`` (e.g. :class:`tikal.low_level.brands.lovense.LovenseToy`).
-You are not meant to instantiate these classes directly.
-:class:`ConnectionBuilder` establishes connections to toys and returns instances of :class:`Toy`
+- Methods report a failed command through their return value.
+- Their ``strict_*`` variants raise :class:`ConnectionError` or :class:`UnexpectedToyResponse` instead.
 
 Example::
 
-        # After connecting via BLEConnectionBuilder
-        toy = connected_toys[0]
-
-        # Control the toy
-        await toy.intensity1(15)  # Set primary capability to level 15
-        await toy.intensity2(10)  # Set secondary capability to level 10
-
-        # Check battery
-        battery = await toy.get_battery_level()
-        print(f"Battery: {battery}%")
-
-        # Disconnect when done
-        await toy.disconnect()
+    toy = await builder.create_toy(toy_data)  # or the exception that prevented connecting
+    await toy.intensity1(15)
+    print(await toy.get_battery_level())
+    await toy.disconnect()
 """
 
 import asyncio
@@ -36,23 +24,20 @@ from .transport import Transport
 
 
 class UnexpectedToyResponse(ConnectionError):
-    """Raised when the toy responds with an unexpected message."""
+    """The toy replied, but not as expected, e.g., ``ERROR`` instead of ``OK``."""
 
 
 class Toy(ABC):
     """
-    Abstract base class representing a low-level toy.
+    A connected toy. Brands implement this interface; :class:`~tikal.low_level.ConnectionBuilder` creates instances.
 
-    Responsible for handling the communication with physical toys.
-    Provides functions for sending commands to the toy and handles its responses.
-    Each toy brand implements this interface with brand-specific protocol details.
-    You are not meant to instantiate these classes directly. :class:`ConnectionBuilder` establishes connections to toys
-    and returns instances of :class:`Toy`
+    A toy has a primary capability (:meth:`intensity1`) and may have a secondary one (:meth:`intensity2`), depending
+    on its model (see :attr:`intensity_names`).
 
     Args:
-        transport: Connected Transport instance.
-        model_name: Model name of the toy (e.g., "Gush", "Nora").
-        logger_name: Name of the logger to use. Use empty string for root logger.
+        transport: The connected transport.
+        model_name: Model name, e.g., ``"Nora"``.
+        logger_name: Name of the logger. Empty string for the root logger.
     """
 
     def __init__(
@@ -94,107 +79,63 @@ class Toy(ABC):
 
     @property
     def is_connected(self) -> bool:
-        """
-        Check if the toy is currently connected.
-
-        Returns:
-            True if connected, False otherwise.
-        """
+        """Whether the connection to the toy is open."""
         return self._transport.is_connected
 
     @property
     @abstractmethod
     def change_rotation_direction_available(self) -> bool:
-        """
-        Check if the toy supports changing the rotation direction.
-
-        Returns:
-            bool: True if the rotation direction can be changed, False otherwise.
-
-        Example::
-
-                if toy.change_rotation_direction_available:
-                    await toy.change_rotation_direction()
-        """
+        """Whether the model can change its rotation direction (see :meth:`change_rotation_direction`)."""
         raise NotImplementedError
 
     @property
     @abstractmethod
     def intensity_names(self) -> tuple[str, str | None]:
         """
-        Get the display names for the toy's capabilities.
+        Display names of the capabilities as ``(primary, secondary)``, e.g., ``("Vibration", "Rotation")``.
 
-        Returns:
-            tuple[str, str | None]: A tuple of (primary_name, secondary_name). The secondary name is None if the toy has only one capability.
-
-        Example::
-
-                names = toy.intensity_names
-                print(f"Primary: {names[0]}")  # example: Vibration
-                if names[1]:
-                    print(f"Secondary: {names[1]}")  # example: Rotation
+        The secondary name is None without a secondary capability.
         """
         raise NotImplementedError
 
     @property
     @abstractmethod
     def max_intensity(self) -> int:
-        """
-        Get the maximum intensity value for this toy.
-
-        Returns:
-            int: Maximum intensity value (e.g., 20 for Lovense toys).
-
-        Example::
-
-                max_val = toy.intensity_max_value
-                await toy.intensity1(max_val)  # Set to maximum
-        """
+        """Highest intensity level of both capabilities, e.g., 20 for Lovense toys. The lowest is 0."""
         raise NotImplementedError
 
     @property
     @abstractmethod
     def recommended_min_interval(self) -> int:
-        """
-        Get the recommended minimum interval between intensity changes, in milliseconds.
-
-        This is a per-model suggestion, primarily useful for pattern playback (the smallest sensible segment length).
-        This is a recommendation, and you are free to ignore it.
-
-        Returns:
-            int: Recommended minimum interval between intensity changes in milliseconds.
-        """
+        """Recommended minimum interval between intensity changes in ms. Only a suggestion."""
         raise NotImplementedError
 
     @property
     def current_intensities(self) -> tuple[int, int]:
         """
-        Get the current intensity values for the toy's capabilities.
+        ``(intensity1, intensity2)``: the levels the toy last acknowledged.
 
-        Returns:
-            tuple[int, int]: A tuple of (primary_intensity, secondary_intensity). The secondary intensity is always 0 if the toy has only one capability.
-
-        Example::
-
-            intensity1, intensity2 = toy.current_intensities
-            print(f"Primary intensity: {intensity1}, Secondary intensity: {intensity2}")")
+        intensity2 is always 0 without a secondary capability.
         """
         return self._intensity1, self._intensity2
 
     @abstractmethod
     async def set_model_name(self, model_name: str) -> None:
         """
-        Set the model name of the toy.
+        Change the model name. The toy has to accept the new model's commands first.
 
-        This method validates and updates the toy's model name.
-        The model name determines which commands are available and how they're interpreted.
+        - Capabilities both models drive with the same command keep running (e.g., Solace to Sex Machine).
+        - The others are switched off through the old command (see
+          :func:`~tikal.low_level.carried_over_capabilities`). If the toy refuses that, the change still happens.
 
         Args:
-            model_name: New model name. Must be a valid model for this toy brand.
+            model_name: New model name, case-insensitive. Must be a model of the toy's brand (see
+                :data:`~tikal.low_level.BRANDS`).
 
         Raises:
-            ~tikal.low_level.InvalidModelError: If model_name is not valid for this toy brand.
-            ~tikal.low_level.BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details.
+            ~tikal.low_level.InvalidModelError: *model_name* is not a model of the brand. Nothing changed.
+            ~tikal.low_level.BadModelError: The toy refused or did not answer the new model's commands. Nothing changed.
+            ConnectionError: A command switching off a replaced capability could not be delivered. Nothing changed.
         """
         raise NotImplementedError
 
@@ -205,21 +146,19 @@ class Toy(ABC):
     @abstractmethod
     async def disconnect(self) -> None:
         """
-        Disconnect from the device.
+        Stop the toy and close the connection. Never raises: errors are logged.
 
-        Stops all toy actions, disables notifications, and closes the BLE connection.
-        This method should always be called before the toy object is destroyed to ensure proper cleanup.
-        The method does not raise any exceptions.
+        A deliberate disconnect: *on_disconnect* is not called, and :meth:`reconnect` refuses afterwards. To use the
+        toy again, connect it through the connection builder.
         """
         raise NotImplementedError
 
     @abstractmethod
     async def reconnect(self) -> bool:
         """
-        Attempts to reconnect to the toy to after an unintentional disconnect.
+        Reopen the connection after an unexpected disconnect. Does nothing while connected.
 
-        Does nothing if already connected. Use only after an unintended disconnect (ConnectionError).
-        If you disconnected via disconnect, use the ConnectionBuilder instead.
+        After :meth:`disconnect`, connect through the connection builder instead.
 
         Returns:
             True if the reconnection was successful, False otherwise.
@@ -229,12 +168,12 @@ class Toy(ABC):
     @abstractmethod
     async def intensity1(self, level: int) -> bool:
         """
-        Set the primary capability of the toy to a specified level.
+        Set the primary capability, e.g., Gush: vibration, Solace: thrust.
 
-        The primary capability varies by toy model (e.g., vibration for Gush, thrusting for Solace).
+        :attr:`current_intensities` changes once the toy acknowledges.
 
         Args:
-            level: Intensity level. The valid range is 0 - self.max_intensity. Values outside this range are clamped.
+            level: 0 to :attr:`max_intensity`. Values outside are clamped.
 
         Returns:
             True if the toy acknowledged the command, False otherwise.
@@ -251,13 +190,13 @@ class Toy(ABC):
     @abstractmethod
     async def intensity2(self, level: int) -> bool:
         """
-        Set the secondary capability of the toy to a specified level.
+        Set the secondary capability, e.g., Solace: depth, Max: air pump.
 
-        The secondary capability varies by toy model (e.g., Depth for Solace, air pump for Max).
-        Not all toys have a secondary capability. Returns true and does nothing if the toy has no secondary capability.
+        - Without a secondary capability, nothing is sent.
+        - :attr:`current_intensities` changes once the toy acknowledges.
 
         Args:
-            level: Intensity level. The valid range is 0 - self.max_intensity. Values outside this range are clamped.
+            level: 0 to :attr:`max_intensity`. Values outside are clamped.
 
         Returns:
             True if the toy acknowledged the command or the toy does not have a secondary capability, False otherwise.
@@ -272,7 +211,7 @@ class Toy(ABC):
     @abstractmethod
     async def stop(self) -> bool:
         """
-        Stop all toy actions by setting all intensities to zero.
+        Set both capabilities to 0.
 
         Returns:
             True if successful, False if either intensity command failed.
@@ -286,10 +225,8 @@ class Toy(ABC):
     @abstractmethod
     async def change_rotation_direction(self) -> bool:
         """
-        Change rotation direction.
-
-        For toys with rotation capability (e.g., Nora, Ridge), this toggles the rotation direction.
-        Returns True and does nothing if the toy does not support rotation.
+        Reverse the rotation direction. Without rotation support (:attr:`change_rotation_direction_available`),
+        nothing is sent.
 
         Returns:
             True if the toy acknowledged the command or if rotation is not supported, False if the command failed.
@@ -304,10 +241,10 @@ class Toy(ABC):
     @abstractmethod
     async def get_battery_level(self) -> Optional[int]:
         """
-        Retrieve the battery level of the connected device.
+        Ask the toy for its battery level.
 
         Returns:
-            Battery level as a percentage (0-100), or None if an error occurred, the command timed out, or the toy has no battery.
+            Battery level as a percentage (0-100). None if an error or timeout occurred, or the toy has no battery.
 
         Example::
 
@@ -322,13 +259,12 @@ class Toy(ABC):
     @abstractmethod
     async def direct_command(self, command: str, timeout: float = 3.0) -> str | None:
         """
-        Send any command directly to the toy.
-
-        This method allows sending commands that are not implemented by the library.
+        Send a raw command, e.g., one the library does not implement. The tracked state (e.g.,
+        :attr:`current_intensities`) does not change.
 
         Args:
-            command: Command string in UTF-8 format
-            timeout: Response timeout in seconds. Defaults to 3.0.
+            command: The command in the toy's protocol, e.g., ``"DeviceType"``.
+            timeout: Seconds to wait for the reply.
 
         Returns:
             Response string from the toy, or None if timeout or error occurred.
@@ -342,11 +278,11 @@ class Toy(ABC):
     @abstractmethod
     async def strict_reconnect(self) -> bool:
         """
-        Similar to :meth: reconnect, but this methode does raise an exception if the reconnection fails.
+        Like :meth:`reconnect`, but raises on failure.
 
         Raises:
-            ConnectionError: The reconnection failed.
-            RuntimeError: The reconnection was attempted after intentionally disconnecting the toy.
+            ConnectionError: Reconnecting failed.
+            RuntimeError: Called after :meth:`disconnect`.
 
         Returns:
             Always True.
@@ -356,36 +292,42 @@ class Toy(ABC):
     @abstractmethod
     async def strict_disconnect(self) -> None:
         """
-        Similar to :meth: disconnect, but this methode does raise an exception if the disconnect fails.
-        The exception is only for logging. The toy is still disconnected in the error case.
+        Like :meth:`disconnect`, but raises if stopping the toy or closing the connection failed. The toy is
+        disconnected either way.
 
         Raises:
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
-            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+            ConnectionError: Stopping the toy or closing the connection failed.
         """
         raise NotImplementedError
 
     @abstractmethod
     async def strict_intensity1(self, level: int) -> bool:
         """
-        Similar to :meth: intensity1, but this method raises an exception if the intensity command fails.
+        Like :meth:`intensity1`, but raises on failure.
+
+        Args:
+            level: 0 to :attr:`max_intensity`. Values outside are clamped.
 
         Raises:
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
-            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+            ConnectionError: The command could not be sent, or no reply came in time.
+            UnexpectedToyResponse: The toy refused the command, e.g., ``ERROR`` instead of ``OK``.
+
         Returns:
-            Always true
+            Always True.
         """
         raise NotImplementedError
 
     @abstractmethod
     async def strict_intensity2(self, level: int) -> bool:
         """
-        Similar to :meth: intensity2, but this method raises an exception if the intensity command fails.
+        Like :meth:`intensity2`, but raises on failure.
+
+        Args:
+            level: 0 to :attr:`max_intensity`. Values outside are clamped.
 
         Raises:
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
-            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
+            ConnectionError: The command could not be sent, or no reply came in time.
+            UnexpectedToyResponse: The toy refused the command, e.g., ``ERROR`` instead of ``OK``.
 
         Returns:
             True if the toy supports a secondary capability, False otherwise.
@@ -395,24 +337,26 @@ class Toy(ABC):
     @abstractmethod
     async def strict_stop(self) -> bool:
         """
-        Similar to :meth: stop, but this method raises an exception if the stop command fails.
+        Like :meth:`stop`, but raises on failure.
 
         Raises:
-            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            ConnectionError: A command could not be sent, or no reply came in time.
+            UnexpectedToyResponse: The toy refused a command, e.g., ``ERROR`` instead of ``OK``.
 
         Returns:
-            always True
+            Always True.
         """
         raise NotImplementedError
 
     @abstractmethod
     async def strict_change_rotation_direction(self) -> bool:
         """
-        Similar to :meth: rotate_change_direction, but this method raises an exception if the command fails.
+        Like :meth:`change_rotation_direction`, but raises on failure.
+
         Raises:
-            UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            ConnectionError: The command could not be sent, or no reply came in time.
+            UnexpectedToyResponse: The toy refused the command, e.g., ``ERROR`` instead of ``OK``.
+
         Returns:
             True if the toy supports rotation, False otherwise.
         """
@@ -421,11 +365,11 @@ class Toy(ABC):
     @abstractmethod
     async def strict_get_battery_level(self) -> Optional[int]:
         """
-        Similar to :meth: get_battery_level, but this method raises an exception if the command fails.
+        Like :meth:`get_battery_level`, but raises on failure.
 
         Raises:
-            UnexpectedToyResponse: The toys' response was unexpected.
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            ConnectionError: The query could not be sent, or no reply came in time.
+            UnexpectedToyResponse: The reply is not a battery level.
 
         Returns:
             Battery level as a percentage (0-100), or None if the toy has no battery.
@@ -435,7 +379,11 @@ class Toy(ABC):
     @abstractmethod
     async def strict_direct_command(self, command: str, timeout: float = 3.0) -> str:
         """
-        Similar to :meth: direct_command, but this method raises an exception if the command fails.
+        Like :meth:`direct_command`, but raises on failure.
+
+        Args:
+            command: The command in the toy's protocol, e.g., ``"DeviceType"``.
+            timeout: Seconds to wait for the reply.
 
         Raises:
             ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
@@ -465,9 +413,7 @@ class Toy(ABC):
 
     async def _wait_for_response(self, timeout: float = 3.0) -> Optional[str]:
         """
-        Wait for a response from the toy.
-
-        This internal method waits for the toy to send a response via the notification callback. Responses are queued as they arrive.
+        Wait for the toy's next reply.
 
         Args:
             timeout: Maximum time to wait in seconds. Defaults to 3.0.
@@ -482,9 +428,7 @@ class Toy(ABC):
 
     async def _strict_wait_for_response(self, timeout: float = 3.0) -> str:
         """
-        Wait for a response from the toy.
-
-        This internal method waits for the toy to send a response via the notification callback. Responses are queued as they arrive.
+        Wait for the toy's next reply.
 
         Args:
             timeout: Maximum time to wait in seconds. Defaults to 3.0.

@@ -1,14 +1,8 @@
 """
-Part of the Low-Level API: the MockEstimToys concrete :class:`Toy` implementation.
+Low-Level API: :class:`MockEstimToy`, the :class:`~tikal.low_level.Toy` of the fictional MockEstimToys brand.
 
-``MockEstimToys`` is a fictional brand used to explore the architecture. :class:`MockEstimToy` implements the abstract
-:class:`Toy` interface on top of :class:`tikal.low_level.transport.MockTransport`, using a tiny line protocol:
-
-- ``Channel1:<level>`` / ``Channel2:<level>`` set the primary / secondary stimulation channels (response ``OK``)
-- ``Battery`` returns an integer percentage
-
-You are not meant to instantiate :class:`MockEstimToy` directly. The ``MockConnectionBuilder`` establishes connections
-and returns ready-to-use instances.
+Protocol over :class:`~tikal.low_level.MockTransport`: ``Channel1:<level>`` and ``Channel2:<level>`` set the channels
+(reply ``OK``), ``Battery`` returns the battery level in percent.
 """
 
 import asyncio
@@ -23,16 +17,16 @@ from .data import MAX_INTENSITY, MIN_SEGMENT_LENGTH, MOCK_ESTIM_TOY_NAMES
 
 class MockEstimToy(Toy):
     """
-    Low-level representation of a fictional MockEstimToys device.
+    A connected device of the fictional MockEstimToys brand. Created by the mock connection builder.
 
     Implements the brand's simple channel-based protocol over :class:`MockTransport`. ``Thunder`` is a single-channel
     model; ``Lightning`` is a dual-channel model. You are not meant to instantiate this class directly.
 
     Args:
-        transport: Connected ``MockTransport`` instance.
-        model_name: Model name. Must be a key in ``MOCK_ESTIM_TOY_NAMES`` ("Thunder" or "Lightning").
-        on_power_off: Callback invoked when the device reports a power-off. Receives the toy id.
-        logger_name: Name of the logger to use. Use empty string for root logger.
+        transport: The connected transport.
+        model_name: ``"Thunder"`` or ``"Lightning"``.
+        on_power_off: Called with :attr:`toy_id` when the device reports a power-off.
+        logger_name: Name of the logger. Empty string for the root logger.
     """
 
     _MAX_INTENSITY = MAX_INTENSITY
@@ -55,7 +49,7 @@ class MockEstimToy(Toy):
 
     @property
     def change_rotation_direction_available(self) -> bool:
-        """MockEstimToys have no rotation capability."""
+        """MockEstimToys have no rotation capability, so this is always False."""
         return False
 
     @property
@@ -66,12 +60,12 @@ class MockEstimToy(Toy):
 
     @property
     def max_intensity(self) -> int:
-        """Maximum intensity value for MockEstimToys (0 - MAX_INTENSITY)."""
+        """Maximum intensity value for MockEstimToys."""
         return self._MAX_INTENSITY
 
     @property
     def recommended_min_interval(self) -> int:
-        """Recommended minimum interval between intensity changes (milliseconds)."""
+        """Recommended minimum interval between intensity changes in ms: the model's entry in ``MIN_SEGMENT_LENGTH``."""
         return MIN_SEGMENT_LENGTH[self._model_name]
 
     async def set_model_name(self, model_name: str) -> None:
@@ -89,9 +83,9 @@ class MockEstimToy(Toy):
                 device *refuses* does not raise: see the note below.
 
         Note:
-            A running device is interrupted only as far as the change forces it to be. ``Thunder`` and ``Lightning``
-            share ``Channel1``, so that channel keeps its level across the switch. ``Lightning``'s ``Channel2`` has no
-            counterpart on ``Thunder``, so it is switched off as part of the change.
+            A running device is interrupted only as far as needed. ``Thunder`` and ``Lightning`` share ``Channel1``, so
+            that channel keeps its level. ``Lightning``'s ``Channel2`` has no counterpart on ``Thunder``, so it is
+            switched off as part of the change.
         """
         normalized_name = model_name.title()
         if normalized_name not in MOCK_ESTIM_TOY_NAMES:
@@ -371,7 +365,12 @@ class MockEstimToy(Toy):
             )
 
     async def _send_command(self, command: str) -> None:
-        """Encode and send a command, adding the ``;`` terminator if needed."""
+        """
+        Send a command, adding the ``;`` terminator if missing.
+
+        Raises:
+            ConnectionError: Not connected.
+        """
         if not self._transport.is_connected:
             raise ConnectionError(
                 f"Failed to send '{command}' to '{self._toy_id}': Currently disconnected."
@@ -382,14 +381,22 @@ class MockEstimToy(Toy):
     async def _execute_command(
         self, command: str, timeout: float = 3.0
     ) -> Optional[str]:
-        """Execute a command and wait for the response, returning None on connection failure."""
+        """Execute a command and wait for the response. Returns None on connection failure."""
         try:
             return await self._strict_execute_command(command, timeout)
         except ConnectionError:
             return None
 
     async def _strict_execute_command(self, command: str, timeout: float = 3.0) -> str:
-        """Execute a command and wait for the response, raising on connection failure or timeout."""
+        """
+        Send a command and wait for its reply, one command at a time.
+
+        Raises:
+            ConnectionError: Sending failed, or no reply came within *timeout*.
+
+        Returns:
+            The reply without its ``;``.
+        """
         async with self._command_lock:
             self._clear_response_queue()
             await self._send_command(command)
@@ -401,7 +408,13 @@ class MockEstimToy(Toy):
         return response == "OK"
 
     async def _strict_execute_level_command(self, channel: str, level: int) -> None:
-        """Execute a ``<channel>:<level>`` command, raising if the response is not "OK"."""
+        """
+        Send ``<channel>:<level>``.
+
+        Raises:
+            ConnectionError: Sending failed, or no reply came in time.
+            UnexpectedToyResponse: The reply is not ``OK``.
+        """
         command = f"{channel}:{level}"
         response = await self._strict_execute_command(command)
         if response != "OK":

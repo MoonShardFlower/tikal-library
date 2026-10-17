@@ -1,32 +1,21 @@
 """
-Part of the Low-Level API: Provides connection management for toy devices.
+Low-Level API: discovering and connecting toys.
 
-This module provides:
-
-- :class:`ConnectionBuilder`: The transport-agnostic entry point. Composes every per-transport connection builder
-  (:class:`BLEConnectionBuilder` and the fictional ``MockConnectionBuilder``) and presents a single, unified
-  discovery/connection API. This is the class the higher layers (and new code) should use.
-- :class:`BLEConnectionBuilder`: Entry point for all BLE toys. Manages BLE scanning (one‑shot and continuous) and creation of Toys.
-
-Brand-specific logic lives behind :class:`BLEBrandHandler` (``brand_handler.py``); concrete handlers and their
-registration live under ``tikal/low_level/brands/``. The builder gets its handlers from that registry via ``build_handlers``.
-
-Adding a brand that speaks a new transport (e.g., USB) only requires writing the transport's own connection builder and
-adding it to :class:`ConnectionBuilder`'s internal list; every consumer keeps using ``ConnectionBuilder`` unchanged.
+- :class:`ConnectionBuilder`: the entry point. Discovers toys on every transport and connects them.
+- :class:`BLEConnectionBuilder`: discovery and connection of BLE toys. Brand specifics come from the registered
+  :class:`~tikal.low_level.BLEBrandHandler` subclasses.
+- :class:`StaleDeviceError`: a toy discovered earlier is not available anymore.
 
 Example::
 
-        def handle_disconnect(transport: Transport):
-            print(f"Toy at {transport.toy_id} disconnected unexpectedly")
-
-        def handle_power_off(address: str):
-            print(f"Toy at {address} was powered off")
-
-        builder = ConnectionBuilder(
-            on_disconnect=handle_disconnect,
-            on_power_off=handle_power_off,
-            logger_name="tikal"
-        )
+    builder = ConnectionBuilder(
+        on_disconnect=lambda toy_id: print(f"{toy_id} disconnected unexpectedly"),
+        on_power_off=lambda toy_id: print(f"{toy_id} was powered off"),
+        logger_name="tikal",
+    )
+    toys = await builder.discover_toys(timeout=5.0)
+    toys[0].model_name = "Nora"
+    toy = await builder.create_toy(toys[0])
 """
 
 import asyncio
@@ -45,11 +34,10 @@ from .toy_data import ToyData
 
 class _TransportConnectionBuilder(Protocol):
     """
-    The interface every per-transport connection builder must satisfy to be composed by :class:`ConnectionBuilder`.
+    Interface of a per-transport connection builder, as :class:`ConnectionBuilder` uses it.
 
-    :class:`BLEConnectionBuilder` and
-    :class:`tikal.low_level.brands.mock_estim.MockConnectionBuilder` both implement it. To add a brand on a new
-    transport, write a builder with these methods and append it to ``ConnectionBuilder``'s internal list.
+    Implemented by :class:`BLEConnectionBuilder` and the mock brand's ``MockConnectionBuilder``; the methods behave
+    like theirs. A brand on a new transport implements it and is appended to ``ConnectionBuilder._builders``.
     """
 
     async def discover_toys(self, timeout: float = ...) -> list[ToyData]: ...
@@ -68,12 +56,26 @@ class _TransportConnectionBuilder(Protocol):
 
 
 class StaleDeviceError(ConnectionError):
-    """Raised when attempting to connect to a device that was at one point discovered but is no longer available."""
+    """The toy was discovered earlier, but is not in the latest discovery result. Discover again."""
 
     pass
 
 
 class BLEConnectionBuilder:
+    """
+    Discovers and connects BLE toys, via bleak. Brand specifics come from the registered brand handlers.
+
+    Prefer :class:`ConnectionBuilder`, which includes it. Lovense toys are recognized by a Bluetooth name starting with
+    ``LVS-``: a renamed toy is not found.
+
+    Args:
+        on_disconnect: Called with the toy id when a toy's connection drops unexpectedly. Not called after a deliberate
+            disconnect.
+        on_power_off: Called with the toy id when a toy reports a power-off (its button was pressed).
+        logger_name: Name of the logger. Empty string for the root logger.
+        scanner_class: BleakScanner (sub)class to scan with, e.g., a mock for tests.
+        client_class: BleakClient (sub)class to connect with, e.g., a mock for tests.
+    """
 
     def __init__(
         self,
@@ -83,34 +85,18 @@ class BLEConnectionBuilder:
         scanner_class: Type[BleakScanner] = BleakScanner,
         client_class: Type[BleakClient] = BleakClient,
     ):
-        """
-        Connection builder for Bluetooth Low Energy (BLE) toys using the Bleak library.
-
-        Part of the Low-Level API: Handles discovery and connection for Toys using Bluetooth Low Energy.
-        Delegates brand-specific handling to instances of BLEBrandHandler.
-
-        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives the toy's toy_id. Not called for intentional disconnects.
-        on_power_off: Callback invoked when the user powers off a toy via the physical power button. Receives the toy id.
-        logger_name: Name of the logger to use. Use empty string for root logger.
-        scanner_class: BLE scanner class to use. Defaults to BleakScanner. Can be overridden for testing.
-        client_class: BLE client class to use. Defaults to BleakClient. Can be overridden for testing.
-
-        Note:
-            Lovense Toys:   toys of this brand are identified by their bluetooth name starting with "LVS-".
-                            If the user configured the bluetooth name to be different, the builder will not find the toy.
-        """
         self._handlers = build_handlers(
             on_disconnect, on_power_off, logger_name, client_class
         )
         self._log = getLogger(logger_name)
         self._scanner_class = scanner_class
 
-        # One‑shot and continuous scan caches
+        # Address -> device, from the latest one-shot scan and from the continuous scan. Only these can connect.
         self._ble_devices: dict[str, BLEDevice] = dict()
-        self._discovered: dict[str, tuple[ToyData, float]] = (
-            dict()
-        )  # address -> (ToyData, last_seen)
-        self._all_seen_addresses: set[str] = set()  # address
+        # The continuous scan's snapshot: address -> (ToyData, time last seen).
+        self._discovered: dict[str, tuple[ToyData, float]] = dict()
+        # Every address ever seen, to tell a stale toy from an undiscovered one.
+        self._all_seen_addresses: set[str] = set()
 
         # Continuous scan state
         self._continuous_task: asyncio.Task[None] | None = None
@@ -123,27 +109,22 @@ class BLEConnectionBuilder:
     # -----------------------------------------------------------------------
 
     def handles_toy(self, toy_data: ToyData) -> bool:
-        """Return ``True`` if one of this builder's brand handlers recognizes ``toy_data``.
-
-        Used by :class:`ConnectionBuilder` to route a ``ToyData`` to the builder that can connect it.
-        """
+        """Whether a brand handler recognizes *toy_data*, i.e., whether this builder can connect it."""
         return any(h.handles_toy(toy_data) for h in self._handlers)
 
     async def discover_toys(self, timeout: float = 10.0) -> list[ToyData]:
         """
-        Scan for all available BLE toys.
-
-        This method caches discovered BLE devices internally. You should call this method before calling :meth:`create_toys`.
+        Scan for BLE toys once.
 
         Args:
-            timeout: Scan time in seconds. Longer timeouts increase the chance of finding all nearby devices. Default is 10 seconds.
+            timeout: Scan duration in seconds. Longer scans find more toys.
 
         Raises:
-            Exception: Any exception from BleakScanner.discover(), such as permission errors or Bluetooth adapter issues
-            RuntimeError: If a continuous scan is in progress. See meth: start_continuous_scan and meth: stop_continuous_scan.
+            RuntimeError: A continuous scan is running (see :meth:`start_continuous`).
+            Exception: Whatever the scanner raises, e.g., Bluetooth is off or the permission is missing.
 
         Returns:
-            List of ``ToyData`` objects with brand‑appropriate types. This is a snapshot, not a continuous stream of updates.
+            List of ``ToyData`` objects with brand‑appropriate types. This is a snapshot and not updated.
 
         Examples::
 
@@ -182,16 +163,14 @@ class BLEConnectionBuilder:
         """
         Start continuous background discovery of Toys.
 
-        Continuously scan for new toys. New toys are added to the internal cache and stale toys removed.
-        Use meth: ``retrieve_continuous`` to get the current snapshot. Use meth: stop_continuous to stop the background scan.
-        The method is idempotent. Calls to this method will be ignored if a continuous scan is already running.
+        Continuously scan for new toys and remove stale toys. The method is idempotent.
+        Use meth: ``retrieve_continuous`` to get the current snapshot.
+        Use meth: stop_continuous to stop the background scan.
 
         Args:
-            on_update: **Optional** callback. Called with a snapshot of all discovered Toys whenever the internal cache changes.
+            on_update: **Optional** callback. Called with a snapshot of all discovered Toys whenever a change occurs.
                 Called with an exception if the continuous scan encounters an error.
                 Can be seen as a push version of :meth:`retrieve_continuous`.
-                The first call to on_update reflects the clearing of the internal cache, meaning you'll always get an empty list first.
-                This serves to ensure any cache you might have made is cleaned too.
 
         Raises:
             Exception: Any exception raised by the BLE scanner (e.g., permission errors).
@@ -215,9 +194,8 @@ class BLEConnectionBuilder:
         """
         Stop the continuous background discovery.
 
-        Use :meth: start_continuous to start continuous background discover.
-        After stopping, :meth:`retrieve_continuous` will return an empty tuple.
-        The method is idempotent. Does nothing if continuous discovery is not running.
+        Use :meth: start_continuous to start continuous background discover. After stopping,
+        :meth:`retrieve_continuous` will return an empty tuple. The method is idempotent.
         """
         if self._continuous_task is None or self._continuous_task.done():
             return
@@ -232,7 +210,7 @@ class BLEConnectionBuilder:
 
     async def retrieve_continuous(self) -> list[ToyData]:
         """
-        Retrieve the current snapshot of discovered Toys. Needs a continuous scan to be running (else always return the empty list)
+        Retrieve the current snapshot of discovered Toys. Needs a continuous scan (else returns the empty list).
         Use :meth:`start_continuous` to start the continuous scan.
 
         If an error occurred during continuous scanning and is still relevant (=no call to :meth:`stop_continuous`
@@ -240,14 +218,13 @@ class BLEConnectionBuilder:
         Note that such exceptions stop the continuous scan.
 
         Raises:
-            Any exception that occurred during continuous scanning as described above.
+            Exception: The scan failed: its exception, raised once (until the next :meth:`start_continuous`.
 
         Returns:
-            List of ``ToyData`` objects with brand‑appropriate types. The list is empty if continuous discovery is not running.
-            This is a snapshot, not a continuous stream of updates.
+            The toys currently found. Empty while no scan runs.
         """
         self._log.debug("Retrieving snapshot of discovered Toys.")
-        # If an exception is pending and the user hasn't stopped the scan, raise it once
+        # A pending exception is raised once
         if self._continuous_exception is not None:
             exc = self._continuous_exception
             self._continuous_exception = None
@@ -259,34 +236,13 @@ class BLEConnectionBuilder:
 
     async def create_toys(self, to_connect: list[ToyData]) -> list[Toy | BaseException]:
         """
-        Create Toy instances from discovery data.
+        Connect several BLE toys concurrently. See :meth:`create_toy`.
 
         Args:
-            to_connect: List of ToyData objects with valid model_names. For Lovense valid model names are in LOVENSE_TOY_NAMES.keys() of module toy_data
-                Instances of ToyData are created by :meth:`discover_toys` or :meth:`retrieve_continuous` and model_names must be set by you.
+            to_connect: The toys, from discovery, each with its model name set.
 
         Returns:
-            List where each element is either a connected Toy instance or a BaseException for failed connections. Possible exceptions per element:
-
-            - ``KeyError``: toy address was not found in the cache (i.e., :meth:`discover_toys` was not called first)
-            - ``StaleDeviceError``: Subclass of ConnectionError: Device was discovered, but has since become stale. Retrieve a new snapshot i.e., via :meth:`discover_toys`
-            - ``ConnectionError``: BLE connection or notification setup failed, e.g., the toy may have become unavailable
-            - ``InvalidModelError``: If model_name is not valid for this toy brand.
-            - ``BadModelError``: If the model_name is valid, but commands still fail. See BadModelError for details
-            - ``RuntimeError``: Developer error. I did not specify a handler for this subclass of ToyData. Should never happen.
-
-            The order of results matches the order of the input list.
-
-        Example::
-
-                toys = await builder.discover_toys(5.0)  # Discover toys
-                # Set model names (e.g., from user input)
-                toys[0].model_name = "Nora"
-                toys[1].model_name = "Lush"
-                results = await builder.create_toys(toys)  # Connect
-                # Process results
-                connected_toys = [r for r in results if isinstance(r, Toy)]
-                failed = [r for r in results if isinstance(r, BaseException)]
+            One result per toy, in input order. Each is the connected toy, or an exception (See  :meth:`create_toy`).
         """
         if not to_connect:
             return []
@@ -295,29 +251,23 @@ class BLEConnectionBuilder:
 
     async def create_toy(self, to_connect: ToyData) -> Toy | BaseException:
         """
-        Create a Toy instance from discovery data.
+        Connect a discovered BLE toy and validate its model. A toy whose model is rejected is disconnected again.
+
+        Failures are returned, not raised:
+
+        - ``KeyError``: The toy was never discovered.
+        - :class:`StaleDeviceError`: The toy is not in the latest discovery result.
+        - ``ConnectionError``: Connecting failed, e.g., the toy is off or connected elsewhere.
+        - :class:`~tikal.low_level.InvalidModelError`: The model name is not a model of the toy's brand.
+        - :class:`~tikal.low_level.BadModelError`: The toy refused or did not answer the model's commands.
+        - ``RuntimeError``: No brand handler handles the toy (a bug).
 
         Args:
-            to_connect: ToyData object with a valid model_name. For Lovense valid model names are in LOVENSE_TOY_NAMES.keys() of module toy_data
-                Instances of ToyData are created with a prior call to :meth:`discover_toys` and the model_name must be set by you.
+            to_connect: The toy, with its model name set (case-insensitive, see :data:`~tikal.low_level.BRANDS`). It
+                must be in the latest result of :meth:`discover_toys` or of the background scan.
 
         Returns:
-            connected Toy instance on success, or a BaseException on failure. Possible exceptions:
-
-            - ``KeyError``: toy address was not found in the cache (i.e., :meth:`discover_toys` was not called first)
-            - ``StaleDeviceError``: Subclass of ConnectionError: Device was discovered, but has since become stale. Retrieve a new snapshot i.e., via :meth:`discover_toys`
-            - ``ConnectionError``: BLE connection or notification setup failed, e.g., the toy may have become unavailable
-            - ``InvalidModelError``: If model_name is not valid for this toy brand.
-            - ``BadModelError``: If the model_name is valid, but commands still fail. See BadModelError for details
-            - ``RuntimeError``: Developer error. I did not specify a handler for this subclass of ToyData. Should never happen.
-
-        Example::
-
-                toys = await builder.discover_toys(5.0)  # Discover toys
-                # Set model names (e.g., from user input)
-                toys[0].model_name = "Nora"
-                result = await builder.create_toys(toys[0])  # Connect
-                print(f"Connected: {isinstance(result, Toy)}")
+            The connected toy, ready for commands, or the exception that prevented it (see above).
         """
         handler = next((h for h in self._handlers if h.handles_toy(to_connect)), None)
         if handler is None:
@@ -433,23 +383,19 @@ class BLEConnectionBuilder:
 
 class ConnectionBuilder:
     """
-    Transport-agnostic entry point of the Low-Level API.
+    Entry point of the Low-Level API: discovers toys on every transport and connects them.
 
-    A ``ConnectionBuilder`` composes one connection builder per supported transport (:class:`BLEConnectionBuilder` for
-    real BLE toys and ``MockConnectionBuilder`` for the fictional MockEstimToys brand) and exposes the exact same
-    discovery/connection API as a single builder. Discovery results from every transport are merged into one list, and
-    connection requests are routed to the builder that owns the relevant ``ToyData``.
-
-    Adding a brand on a new transport only means: write that transport's connection builder and append it to
-    ``self._builders`` below. Every consumer of ``ConnectionBuilder`` keeps working unchanged.
+    Combines one builder per transport: :class:`BLEConnectionBuilder`, plus the mock brand's builder with
+    *mock_toys*. Discovery merges their results; connecting goes to the builder that handles the toy.
 
     Args:
-        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives the toy's toy_id. Not called for intentional disconnects.
-        on_power_off: Callback invoked when the user powers off a toy via the physical power button. Receives the toy id.
-        logger_name: Name of the logger to use. Use empty string for root logger.
-        bluetooth_scanner: BLE scanner class to use. Defaults to BleakScanner. Can be overridden for testing.
-        bluetooth_client: BLE client class to use. Defaults to BleakClient. Can be overridden for testing.
-        mock_toys: If True, use the MockEstimToys brand. Not part of the public API. This parameter may be removed without notice.
+        on_disconnect: Called with the toy id when a toy's connection drops unexpectedly. Not called after a deliberate
+            disconnect.
+        on_power_off: Called with the toy id when a toy reports a power-off (its button was pressed).
+        logger_name: Name of the logger. Empty string for the root logger.
+        bluetooth_scanner: BleakScanner (sub)class to scan with, e.g., a mock for tests.
+        bluetooth_client: BleakClient (sub)class to connect with, e.g., a mock for tests.
+        mock_toys: Also offer the fictional MockEstimToys brand. Not part of the public API; may be removed.
     """
 
     def __init__(
@@ -478,8 +424,7 @@ class ConnectionBuilder:
                 MockConnectionBuilder(on_disconnect, on_power_off, logger_name)
             )
 
-        # Continuous-scan merge state: the latest snapshot emitted by each builder, kept so we can
-        # combine them into a single unified snapshot for the user callback.
+        # The latest snapshot of each builder's continuous scan, merged for on_update.
         self._on_update: Callable[[list[ToyData] | Exception], Any] | None = None
         self._snapshots: list[list[ToyData]] = [[] for _ in self._builders]
 
@@ -489,16 +434,17 @@ class ConnectionBuilder:
 
     async def discover_toys(self, timeout: float = 10.0) -> list[ToyData]:
         """
-        Scan every transport for available toys and return the combined result.
-
-        Delegates to each underlying connection builder and concatenates their results. See
-        :meth:`BLEConnectionBuilder.discover_toys` for the per-transport behavior, arguments, and raised exceptions.
+        Scan every transport once.
 
         Args:
-            timeout: Scan time in seconds, passed to every transport.
+            timeout: Scan duration in seconds. Longer scans find more toys.
+
+        Raises:
+            RuntimeError: A continuous scan is running (see :meth:`start_continuous`).
+            Exception: Whatever a scanner raises, e.g., Bluetooth is off or the permission is missing.
 
         Returns:
-            Combined list of ``ToyData`` across all transports. A snapshot, not a continuous stream.
+            The toys found. Lovense toys come without a model name.
         """
         results = await asyncio.gather(
             *(builder.discover_toys(timeout) for builder in self._builders)
@@ -509,14 +455,16 @@ class ConnectionBuilder:
         self, on_update: Callable[[list[ToyData] | Exception], Any] | None = None
     ) -> None:
         """
-        Start continuous background discovery across every transport.
+        Start a background scan. Does nothing if already scanning.
 
-        Each transport scans independently; their snapshots are merged so ``on_update`` always receives a single list
-        spanning all transports. See :meth:`BLEConnectionBuilder.start_continuous` for the general contract.
+        - Toys are added to the snapshot when found and removed when gone (BLE: not seen for 5 seconds).
+        - Read the snapshot with :meth:`retrieve_continuous`, or get it pushed to *on_update*.
+        - A failing BLE scanner, e.g., Bluetooth off, ends the BLE scan. :meth:`retrieve_continuous` raises its
+          exception once.
 
         Args:
-            on_update: **Optional** callback. Called with a merged snapshot of all discovered Toys whenever any
-                transport's view changes, or with an exception if a transport's scan errors.
+            on_update: Called with the merged snapshot whenever a transport's snapshot changes, first with an empty
+                list. Called with the exception if a transport reports one.
         """
         self._on_update = on_update
         self._snapshots = [[] for _ in self._builders]
@@ -527,11 +475,7 @@ class ConnectionBuilder:
         )
 
     async def stop_continuous(self) -> None:
-        """
-        Stop continuous background discovery on every transport.
-
-        Idempotent. Does nothing for transports that are not currently scanning.
-        """
+        """Stop the background scan. Does nothing if not scanning."""
         for builder in self._builders:
             await builder.stop_continuous()
         self._snapshots = [[] for _ in self._builders]
@@ -539,14 +483,13 @@ class ConnectionBuilder:
 
     async def retrieve_continuous(self) -> list[ToyData]:
         """
-        Retrieve the current merged snapshot of discovered Toys from every transport.
+        The merged snapshot of the background scan.
 
-        Needs a continuous scan to be running (see :meth:`start_continuous`); otherwise returns the empty list.
-        If a transport has a pending continuous-scan exception, the first call re-raises it (see
-        :meth:`BLEConnectionBuilder.retrieve_continuous`).
+        Raises:
+            Exception: A transport's scan failed: its exception, raised once.
 
         Returns:
-            Combined list of ``ToyData`` across all transports.
+            The toys currently found. Empty while no scan runs.
         """
         result: list[ToyData] = []
         for builder in self._builders:
@@ -568,13 +511,23 @@ class ConnectionBuilder:
 
     async def create_toy(self, to_connect: ToyData) -> Toy | BaseException:
         """
-        Create a single Toy instance from discovery data, routing it to the transport that owns it.
+        Connect a discovered toy and validate its model. A toy whose model is rejected is disconnected again.
 
-        See :meth:`BLEConnectionBuilder.create_toy` for arguments and the result/exception types.
+        Failures are returned, not raised:
+
+        - ``KeyError``: The toy was never discovered.
+        - :class:`StaleDeviceError`: The toy is not in the latest discovery result.
+        - ``ConnectionError``: Connecting failed, e.g., the toy is off or connected elsewhere.
+        - :class:`~tikal.low_level.InvalidModelError`: The model name is not a model of the toy's brand.
+        - :class:`~tikal.low_level.BadModelError`: The toy refused or did not answer the model's commands.
+        - ``RuntimeError``: No builder handles the toy (a bug).
+
+        Args:
+            to_connect: The toy, with its model name set (case-insensitive, see :data:`~tikal.low_level.BRANDS`). A BLE
+                toy must be in the latest result of :meth:`discover_toys` or of the background scan.
 
         Returns:
-            A connected ``Toy`` on success, or a ``BaseException`` on failure. Returns ``RuntimeError`` if no transport
-            recognizes the given ``ToyData`` (developer error; should never happen).
+            The connected toy, ready for commands, or the exception that prevented it (see above).
         """
         builder = next((b for b in self._builders if b.handles_toy(to_connect)), None)
         if builder is None:
@@ -593,7 +546,7 @@ class ConnectionBuilder:
     def _make_continuous_callback(
         self, index: int
     ) -> Callable[[list[ToyData] | Exception], None]:
-        """Build the per-builder callback that records that builder's snapshot and emits the merged result."""
+        """The callback for builder *index*: records its snapshot and passes the merged one to *on_update*."""
 
         def callback(update: list[ToyData] | Exception) -> None:
             if self._on_update is None:

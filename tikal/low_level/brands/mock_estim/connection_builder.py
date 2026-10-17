@@ -1,13 +1,4 @@
-"""
-Part of the Low-Level API: the MockEstimToys connection builder.
-
-``MockConnectionBuilder`` is the per-transport connection builder for the fictional ``MockEstimToys`` brand. It plays
-the same role for mock toys that ``BLEConnectionBuilder`` plays for BLE toys, and exposes the same interface so that the
-composite :class:`tikal.low_level.connection_builder.ConnectionBuilder` can hold both side by side.
-
-Because the toys are fake, "discovery" simply returns a fixed set of devices (see :data:`MOCK_ESTIM_DEVICES`) and
-"connecting" wires up a :class:`MockTransport` / :class:`MockEstimToy` pair in memory.
-"""
+"""Low-Level API: :class:`MockConnectionBuilder`, the connection builder of the fictional MockEstimToys brand."""
 
 import asyncio
 from logging import getLogger
@@ -24,17 +15,16 @@ _BRAND = "MockEstimToys"
 
 class MockConnectionBuilder:
     """
-    Connection builder for the fictional ``MockEstimToys`` brand.
+    Discovers and connects the fake MockEstimToys devices. Same interface as
+    :class:`~tikal.low_level.BLEConnectionBuilder`.
 
-    Discovers a fixed set of fake devices and connects them via in-memory transports. Implements the same surface the
-    composite ``ConnectionBuilder`` requires of every per-transport builder: ``discover_toys``, ``start_continuous``,
-    ``stop_continuous``, ``retrieve_continuous``, ``handles_toy``, and ``create_toy``.
+    - Discovery finds :data:`MOCK_ESTIM_DEVICES`, minus the connected ones, with their model names.
+    - Connecting creates an in-memory :class:`~tikal.low_level.MockTransport`. No prior discovery is needed.
 
     Args:
-        on_disconnect: Callback invoked when a toy disconnects unexpectedly. Receives the toy id. Unused by the mock
-            (the fake devices never drop on their own) but accepted for interface symmetry.
-        on_power_off: Callback invoked when a toy reports a power-off. Receives the toy id.
-        logger_name: Name of the logger to use. Use empty string for root logger.
+        on_disconnect: Accepted for the common interface. The fake devices never drop.
+        on_power_off: Called with the toy id when a device reports a power-off.
+        logger_name: Name of the logger. Empty string for the root logger.
     """
 
     def __init__(
@@ -47,9 +37,9 @@ class MockConnectionBuilder:
         self._on_power_off = on_power_off
         self._log = getLogger(logger_name)
         self._scanning = False
-        # toy_ids of currently connected toys. A connected device stops "advertising" and is excluded from discovery until it disconnects again.
+        # Connected devices. Like real toys, they are not discoverable until they disconnect.
         self._connected: set[str] = set()
-        # The active continuous-scan callback, kept so we can re-emit when connection state changes.
+        # The continuous scan's callback, to report connects and disconnects.
         self._on_update: Callable[[list[ToyData] | Exception], Any] | None = None
 
     # -----------------------------------------------------------------------
@@ -65,10 +55,10 @@ class MockConnectionBuilder:
         Return the fixed set of fake MockEstimToys devices.
 
         Args:
-            timeout: Ignored; there is no real scan. Present for interface compatibility.
+            timeout: Ignored: the mock does not scan.
 
         Returns:
-            A fresh list of ``ToyData`` (model name pre-filled, since the fake devices self-identify).
+            New :class:`~tikal.low_level.ToyData` objects.
         """
         await asyncio.sleep(0)  # yield, mirroring a real async scan
         self._log.info(
@@ -103,7 +93,14 @@ class MockConnectionBuilder:
 
     async def create_toy(self, to_connect: ToyData) -> Toy | BaseException:
         """
-        Connect to a fake MockEstimToys device.
+        Connect a fake device and validate its model. Failures are returned, not raised:
+
+        - ``KeyError``: *to_connect* is not one of :data:`MOCK_ESTIM_DEVICES`.
+        - :class:`~tikal.low_level.InvalidModelError`: The model name is not a MockEstimToys model.
+        - :class:`~tikal.low_level.BadModelError`: The device refused the model's commands.
+
+        Args:
+            to_connect: The device, with its model name set (case-insensitive).
 
         Returns:
             A connected ``MockEstimToy`` on success, or a ``BaseException`` on failure:
@@ -156,7 +153,7 @@ class MockConnectionBuilder:
     # -----------------------------------------------------------------------
 
     def _on_toy_disconnect(self, toy_id: str) -> None:
-        """A connected toy disconnected: make it discoverable again and re-emit the snapshot."""
+        """Make a disconnected device discoverable again, and report the new snapshot."""
         self._connected.discard(toy_id)
         self._emit()
 

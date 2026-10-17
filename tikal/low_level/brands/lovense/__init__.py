@@ -1,4 +1,4 @@
-"""Lovense brand subpackage: the Lovense toy class, BLE handler, and model data."""
+"""Low-Level API: the Lovense brand, with :class:`LovenseToy`, :class:`LovenseHandler`, and the model data."""
 
 from .data import (
     LOVENSE_TOY_NAMES,

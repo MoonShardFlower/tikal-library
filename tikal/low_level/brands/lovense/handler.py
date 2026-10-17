@@ -1,9 +1,4 @@
-"""
-Part of the Low-Level API: the Lovense :class:`BLEBrandHandler` implementation.
-
-Encapsulates all Lovense-specific BLE logic: identification (``LVS-`` name prefix), UUID resolution, connection, and
-notification setup. Instantiated by ``BLEConnectionBuilder`` via the brand registry; you are not meant to use it directly.
-"""
+"""Low-Level API: :class:`LovenseHandler`, the BLE brand handler of Lovense toys."""
 
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
@@ -21,7 +16,7 @@ class LovenseHandler(BLEBrandHandler):
     Brand handler for Lovense BLE toys.
 
     Encapsulates all Lovense-specific logic: identification, UUID resolution, connection, and notification setup.
-    The common construction signature (callbacks, logger, client class) is inherited from :class:`BLEBrandHandler`.
+    Recognizes Lovense toys by their Bluetooth name (``LVS-...``).
     """
 
     _LOVENSE_SERVICE_PATTERN = "-4bd4-bbd5-a6920e4c5653"
@@ -44,24 +39,24 @@ class LovenseHandler(BLEBrandHandler):
 
     @staticmethod
     def create_toy_data(device: BLEDevice) -> ToyData:
-        """Create a ``LovenseData`` instance (inherits from ``ToyData``) from a BLE device representing a Lovense toy."""
+        """Create a ``LovenseData`` instance (inherits from ``ToyData``) from a BLE device."""
         name = device.name if device.name else "unknown"
         return ToyData(name, device.address, "", "Lovense")
 
     async def create_toy(self, toy_data: ToyData, device: BLEDevice) -> Toy:
         """
-        Connect to a single Lovense toy.
+        Connect a Lovense toy and start receiving its replies. The model's commands are not validated here.
 
         Args:
-            toy_data: ``LovenseData`` object representing the toy to connect to.
-            device: ``BLEDevice`` object representing the toy to connect to.
-
-        Returns:
-            A connected, ready to use ``LovenseToy`` instance.
+            toy_data: The toy, with its model name set (case-insensitive).
+            device: Its BLE device.
 
         Raises:
-            ValidationError: The ``toy_data`` contains an invalid model name.
-            ConnectionError: The BLE connection, UUID resolution, or notification setup failed.
+            ~tikal.low_level.InvalidModelError: The model name is not a Lovense model.
+            ConnectionError: Connecting, finding the characteristics, or subscribing to replies failed.
+
+        Returns:
+            The connected :class:`LovenseToy`.
         """
         if toy_data.model_name.title() not in LOVENSE_TOY_NAMES:
             raise InvalidModelError(
@@ -95,18 +90,16 @@ class LovenseHandler(BLEBrandHandler):
 
     async def _resolve_uuids(self, client: BleakClient) -> tuple[str, str]:
         """
-        Resolve the TX and RX UUIDs for a Lovense device by inspecting its GATT services.
-
-        Passed as the ``uuid_resolver`` to ``BleTransport``, where it is called once the BLE link is open.
+        Find the TX and RX characteristics of a connected Lovense toy.
 
         Args:
-            client: The connected ``BleakClient`` to inspect.
-
-        Returns:
-            ``(tx_uuid, rx_uuid)`` as uppercase strings.
+            client: The connected client.
 
         Raises:
-            ConnectionError: If either UUID cannot be found in the device's GATT table.
+            ConnectionError: A characteristic is missing.
+
+        Returns:
+            ``(tx_uuid, rx_uuid)``, upper case.
         """
         tx_uuid = await self._find_uuid_by_type(client, "tx")
         rx_uuid = await self._find_uuid_by_type(client, "rx")
@@ -114,22 +107,18 @@ class LovenseHandler(BLEBrandHandler):
 
     async def _find_uuid_by_type(self, client: BleakClient, uuid_type: str) -> str:
         """
-        Find the TX or RX UUID for a Lovense device.
-
-        Searches through the device's GATT services to find the appropriate UUID based on the Lovense service pattern
-        and UUID replacement rules.
+        Find the TX or RX characteristic in the Lovense service.
 
         Args:
-            client: Connected BleakClient for the toy.
-            uuid_type: Either 'rx' (for receiving notifications) or 'tx' (for sending commands).
-
-        Returns:
-            UUID string in uppercase format for the specified characteristic type.
+            client: The connected client.
+            uuid_type: ``"tx"`` (commands) or ``"rx"`` (replies).
 
         Raises:
-            ValueError:         If uuid_type is not 'rx' or 'tx'.
-            ConnectionError:    If unable to find the UUID matching the Lovense service pattern.
-                                This can happen if the device is not a valid Lovense toy or if the connection is incomplete.
+            ValueError: *uuid_type* is neither.
+            ConnectionError: No matching characteristic, e.g., the device is not a Lovense toy.
+
+        Returns:
+            The UUID, upper case.
         """
         if uuid_type not in self._UUID_REPLACEMENTS:
             raise ValueError(f"Invalid UUID type: {uuid_type}")

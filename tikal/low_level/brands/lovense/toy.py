@@ -1,5 +1,5 @@
 """
-Part of the Low-Level API: the Lovense concrete :class:`Toy` implementation.
+Low-Level API: :class:`LovenseToy`, the :class:`~tikal.low_level.Toy` of Lovense toys.
 
 Implements the Lovense-specific BLE protocol: command formatting, response parsing, and Lovense-specific notifications
 (like power-off events). You are not meant to instantiate :class:`LovenseToy` directly.
@@ -18,27 +18,18 @@ from .data import LOVENSE_TOY_NAMES, MIN_SEGMENT_LENGTH, ROTATION_TOY_NAMES
 
 class LovenseToy(Toy):
     """
-    Low-level representation of a Lovense BLE toy.
+    A connected Lovense toy. Created by :class:`~tikal.low_level.ConnectionBuilder`.
 
-    Implements the Lovense-specific protocol for communication with Lovense toys over Bluetooth Low Energy.
-    Handles command formatting, response parsing, and Lovense-specific notifications (like power-off events).
-    You are not meant to instantiate these classes directly. :class:`BLEConnectionBuilder` establishes connections
-    to toys and returns instances of :class:`LovenseToy`
+    - Levels run from 0 to 20. The Max's air pump takes 0 to 5: its levels are divided by 4.
+    - Adds the Lovense queries :meth:`get_device_type`, :meth:`get_status`, :meth:`get_batch_number`, and
+        :meth:`power_off`.
 
     Args:
-        transport: Transport layer handling the BLE communication.
-        model_name: Model name (e.g., "Nora", "Lush"). Must be a key in LOVENSE_TOY_NAMES.
-        on_power_off: Callback invoked when the user powers off the toy via the physical power button. Receives the toy's Bluetooth address as a string argument.
-        logger_name: Name of the logger to use. Use empty string for root logger.
-
-    Example::
-
-            # Set intensity of the primary capability to maximum
-            await toy.intensity1(20)
-
-            # Send a custom command
-            response = await toy.direct_command("DeviceType")
-            print(f"Device info: {response}")
+        transport: The connected transport.
+        model_name: A key of :data:`~tikal.low_level.LOVENSE_TOY_NAMES`.
+        on_power_off: Called with :attr:`toy_id` when the toy reports a power-off (its button was pressed). May run
+            on a thread other than the event loop's.
+        logger_name: Name of the logger. Empty string for the root logger.
     """
 
     _MAX_INTENSITY = 20
@@ -122,33 +113,26 @@ class LovenseToy(Toy):
         Set the model name of the toy.
 
         Args:
-            model_name: New model name. Must be in LOVENSE_TOY_NAMES.keys() of module ToyData. Case Insensitive. Case Insensitive.
+            model_name: New model name. Must be in LOVENSE_TOY_NAMES.keys() of module ToyData. Case Insensitive.
 
         Raises:
-            ~tikal.low_level.InvalidModelError: If model_name is not valid for this toy brand.
-            ~tikal.low_level.BadModelError: If the model_name is valid, but commands still fail. See BadModelError for details.
-            ConnectionError: The new model was accepted, but a command releasing a replaced capability could not be
-                delivered. The model and the tracked levels are left unchanged, so the caller can retry. A command the
-                toy *refuses* does not raise: see the note below.
+            ~tikal.low_level.InvalidModelError: The model_name is not a lovense model.
+            ~tikal.low_level.BadModelError: The model_name is valid, but commands fail. See BadModelError for details.
+            ConnectionError: The new model was accepted, but a required command could not be delivered.
+                 The model is left unchanged. The caller can retry.
 
         Example::
 
-                # Update model name in case it was set incorrectly while building the connection via the ConnectionBuilder
+                # Update model name in case it was set incorrectly while building the connection
                 toy.set_model_name("Nora")
 
         Note:
-            A running toy is interrupted only as far as the change forces it to be:
+            A running toy is interrupted only as far as needed:
 
             - Capabilities both models drive with the same command keep their level. Switching a Solace to a Sex
               Machine (identical commands throughout) interrupts nothing.
             - A capability whose command the new model replaces or drops restarts at zero and is switched off through
               the old command as part of the change. Otherwise, it would keep running with nothing able to stop it.
-            - A capability that was not running is left alone: If the previous model's commands were being refused, nothing ever ran on them.
-            - The new model is validated *before* any of that. A rejected model leaves the toy running as it was on its old, working commands.
-
-        Note:
-            If the toy refuses a release command the change still goes through (Wrong Toy Model being corrected).
-            Only a command that cannot be delivered rolls the change back.
         """
         normalized_name = model_name.title()
         if normalized_name not in LOVENSE_TOY_NAMES:
@@ -228,9 +212,7 @@ class LovenseToy(Toy):
         """
         Roll back to the model name and tracked levels the toy had before a failed model change.
 
-        The levels have to be restored alongside the name: a partially applied change may already have recorded a
-        level that belongs to the *new* model's commands, which would misdescribe what the toy is doing once the old
-        model is back in force.
+        The levels are restored too: a partial change may have recorded a level sent with the new model's commands.
         """
         self._model_name = model_name
         self._intensity1 = intensity1
@@ -242,7 +224,7 @@ class LovenseToy(Toy):
 
     async def reconnect(self) -> bool:
         """
-        Attempts to reconnect to the toy to after an unintentional disconnect.
+        Reopen the connection after an unexpected disconnect.
 
         Does nothing if already connected. Use only after an unintended disconnect (ConnectionError).
         If you disconnected via disconnect, use the ConnectionBuilder instead.
@@ -252,7 +234,7 @@ class LovenseToy(Toy):
         """
         self._log.info(f"Reconnecting to '{self._model_name}' at '{self._toy_id}'")
 
-        # Give some time in hopes of the connection failure resolving itself
+        # The connection may recover by itself.
         await asyncio.sleep(1.0)
         if self._transport.is_connected:
             return True
@@ -271,9 +253,8 @@ class LovenseToy(Toy):
         """
         Disconnect from the device.
 
-        Stops all toy actions, disables notifications, and closes the BLE connection. This is regarded as intentional
-        disconnect and does not trigger an on_disconnect callback even if an on_disconnect callback was set
-        (either during initialization or via set_on_disconnect). The method does not raise any exceptions.
+        This is regarded as an intentional disconnect and does not trigger an on_disconnect callback!
+        The method does not raise any exceptions.
 
         Note:
             After calling this method, the toy object is unusable. To connect again, you will need to re-scan and
@@ -314,7 +295,8 @@ class LovenseToy(Toy):
                 await toy.intensity1(20)  # Set primary capability to maximum
 
         Note:
-            :attr:`current_intensities` is updated once the toy acknowledges the command, so it reports the level the toy is actually at.
+            :attr:`current_intensities` is updated only once the toy acknowledges the command.
+            It always reports the level the toy is actually at.
         """
         level = max(0, min(self._MAX_INTENSITY, level))
         intensity1_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity1_command
@@ -343,9 +325,8 @@ class LovenseToy(Toy):
 
         Note:
             For Max's air pump, the level is automatically divided by 4 to convert from 0-20 scale to 0-5 scale.
-
-        Note:
-            :attr:`current_intensities` is updated once the toy acknowledges the command, so it reports the level the toy is actually at.
+            :attr:`current_intensities` is updated only once the toy acknowledges the command.
+            It always reports the level the toy is actually at.
         """
         intensity2_cmd = LOVENSE_TOY_NAMES[self._model_name].intensity2_command
         level = max(0, min(self._MAX_INTENSITY, level))
@@ -365,9 +346,7 @@ class LovenseToy(Toy):
 
     async def stop(self) -> bool:
         """
-        Stop all toy actions by setting all intensities to zero.
-
-        This method is a shortcut for intensity1(0) and intensity2(0)
+        Stop all toy actions by setting all intensities to zero. Shortcut for intensity1(0) and intensity2(0)
 
         Returns:
             True if both commands succeeded, False if either failed.
@@ -417,7 +396,7 @@ class LovenseToy(Toy):
 
         Note:
             Lovense toys have a quirk where they prefix 's' before the value if the toy was recently reconnected.
-            This method strips the 's' when present
+            This method strips the 's' when present.
         """
         response = await self._execute_command("Battery")
         if not response:
@@ -437,9 +416,7 @@ class LovenseToy(Toy):
 
     async def direct_command(self, command: str, timeout: float = 3.0) -> str | None:
         """
-        Send any command directly to the toy.
-
-        This method allows sending commands that are not implemented by the library.
+        Send any command directly to the toy. Use to send commands that are not implemented by the library.
 
         Args:
             command: Command string in UTF-8 format. A semicolon terminator will be added if not present.
@@ -506,26 +483,16 @@ class LovenseToy(Toy):
 
     async def get_batch_number(self) -> Optional[str]:
         """
-        Retrieve the production batch number.
-
-        The batch number appears to be in YYMMDD format, indicating the manufacturing date.
+        Ask the toy for its production batch indicating the manufacturing date (YYMMDD).
 
         Returns:
-            Batch number string (e.g., "241015" for October 15, 2024), or None if an error occurred.
-
-        Example::
-
-                batch = await toy.get_batch_number()
-                if batch:
-                    print(f"Manufactured: 20{batch[:2]}/{batch[2:4]}/{batch[4:6]}")
+            Batch number string (e.g., "241015" for October 15, 2024) or None if the query failed.
         """
         return await self._execute_command("GetBatch")
 
     async def power_off(self) -> bool:
         """
-        Turn off power to the toy.
-
-        This sends the PowerOff command which turns off the toy. The toy can then only be turned back on via the physical power button.
+        Switch the toy off. Only its power button switches it on again.
 
         Returns:
             True if successful, False otherwise.
@@ -543,7 +510,7 @@ class LovenseToy(Toy):
 
     async def strict_reconnect(self) -> bool:
         """
-        Similar to :meth: reconnect, but this methode does raise an exception if the reconnection fails.
+        Similar to :meth: reconnect, but raises an exception if the reconnection fails.
 
         Raises:
             ConnectionError: The reconnection failed.
@@ -555,7 +522,7 @@ class LovenseToy(Toy):
         try:
             self._log.info(f"Reconnecting to '{self._model_name}' at '{self._toy_id}'")
 
-            # Give some time in hopes of the connection failure resolving itself
+            # The connection may recover by itself.
             await asyncio.sleep(1.0)
             if self._transport.is_connected:
                 return True
@@ -575,7 +542,7 @@ class LovenseToy(Toy):
         The exception is only for logging. The toy is still disconnected in the error case.
 
         Raises:
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            ConnectionError: Command could not be sent, or the toy did not respond.
         """
         exc = None
         try:
@@ -602,7 +569,7 @@ class LovenseToy(Toy):
         Similar to :meth: intensity1, but this method raises an exception if the intensity command fails.
 
         Raises:
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            ConnectionError: Command could not be sent, or the toy did not respond.
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
 
         Returns:
@@ -619,7 +586,7 @@ class LovenseToy(Toy):
         Similar to :meth: intensity2, but this method raises an exception if the intensity command fails.
 
         Raises:
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            ConnectionError: Command could not be sent, or the toy did not respond.
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
 
         Returns:
@@ -645,7 +612,7 @@ class LovenseToy(Toy):
 
         Raises:
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            ConnectionError: Command could not be sent, or the toy did not respond.
 
         Returns:
             Always True.
@@ -660,7 +627,7 @@ class LovenseToy(Toy):
 
         Raises:
             UnexpectedToyResponse: The toys' response was unexpected, e.g. "ERROR" instead of "OK".
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            ConnectionError: Command could not be sent, or the toy did not respond.
 
         Returns:
             True if the toy supports rotation, False otherwise. Does not raise if the toy does not support rotation.
@@ -679,18 +646,18 @@ class LovenseToy(Toy):
 
     async def strict_get_battery_level(self) -> int:
         """
-        Similar to :meth: get_battery_level, but this method raises an exception if the command fails.
+        Like :meth:`get_battery_level`, but raises on failure.
 
         Raises:
-            UnexpectedToyResponse: The toys' response was unexpected.
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
+            ConnectionError: The query could not be sent, or no reply came in time.
+            UnexpectedToyResponse: The reply is not a battery level.
 
         Returns:
-            Battery level as a percentage (0-100).
+            The level in percent.
         """
         response = await self._strict_execute_command("Battery")
         try:
-            # Quirk: If reconnected after disconnect, the battery reports as "s<value>"
+            # Quirk: after a reconnect, the toy reports the battery as "s<value>"
             response = response.strip("s")
             return int(response)
         except ValueError:
@@ -703,38 +670,39 @@ class LovenseToy(Toy):
 
     async def strict_direct_command(self, command: str, timeout: float = 3.0) -> str:
         """
-        Similar to :meth: direct_command, but this method raises an exception if the command fails.
+        Like :meth:`direct_command`, but raises on failure.
+
+        Args:
+            command: The command, e.g., ``"DeviceType"``. The ``;`` terminator is optional.
+            timeout: Seconds to wait for the reply.
 
         Raises:
-            ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
+            ConnectionError: The command could not be sent, or no reply came within *timeout*.
 
         Returns:
-            response string from the toy
+            The reply without its ``;``.
         """
         return await self._strict_execute_command(command, timeout)
 
     async def strict_get_device_type(self) -> str:
         """
-        Similar to :meth: get_device_type, but this method raises an exception if the command fails.
+        Like :meth:`get_device_type`, but raises on failure. The reply is not checked.
 
         Raises:
-            ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
+            ConnectionError: Command could not be sent, or the toy did not respond.
 
         Returns:
-            String in format "DeviceType:FirmwareVersion:Address" (e.g., "C:11:0082059AD3BD")
-
-        Note:
-            does not raise UnexpectedToyResponse as the response is not verified.
+            The reply, e.g., ``"C:11:0082059AD3BD"`` (type C, firmware 11).
         """
         return await self._strict_execute_command("DeviceType")
 
     async def strict_get_status(self) -> int:
         """
-        Similar to :meth: get_status, but this method raises an exception if the command fails.
+        Like :meth:`get_status`, but raises on failure.
 
         Raises:
-            ConnectionError: Command could not be sent, or the toy did not respond within the provided timeout.
-            UnexpectedToyResponse: The toys' response was unexpected, in this case any string containing non-digit characters.
+            ConnectionError: Command could not be sent, or the toy did not respond.
+            UnexpectedToyResponse: The toys' response was not an integer.
 
         Returns:
             Status code (2 = Normal operation)
@@ -752,11 +720,11 @@ class LovenseToy(Toy):
 
     async def strict_get_batch_number(self) -> str:
         """
-        Similar to :meth: get_batch_number, but this method raises an exception if the command fails.
+        Like :meth:`get_batch_number`, but raises on failure.
 
         Raises:
-            ConnectionError: Command could not be sent, or the toy did not respond within an appropriate timeout.
-            UnexpectedToyResponse: The toys' response was unexpected.
+            ConnectionError: Command could not be sent, or the toy did not respond.
+            UnexpectedToyResponse: The toys' response was not a valid batch number.
 
         Returns:
             Batch number string (e.g., "241015" for October 15, 2024)
@@ -773,7 +741,7 @@ class LovenseToy(Toy):
 
     async def strict_power_off(self) -> bool:
         """
-        Similar to :meth: power_off, but this method raises an exception if the command fails.
+        Like :meth:`power_off`, but raises on failure.
 
         Raises:
             UnexpectedToyResponse: The toys' response was unexpected.
@@ -810,10 +778,7 @@ class LovenseToy(Toy):
 
     def _notification_callback(self, data: bytes) -> None:
         """
-        Callback invoked automatically when the toy sends a message.
-
-        This method is registered with self.transport.start_notify and is called whenever data arrives.
-        It decodes the message, strips the semicolon terminator, and queues the response for further processing.
+        Queue a reply from the toy, and report a power-off to *on_power_off*. May run outside the event loop.
 
         Args:
             data: Raw response bytes from the toy.
@@ -843,7 +808,7 @@ class LovenseToy(Toy):
             command: Command string in UTF-8 format. A semicolon terminator will be added if not already present.
 
         Raises:
-            ConnectionError: If the command could not be sent.
+            ConnectionError: The command could not be sent.
         """
         if not self._transport.is_connected:
             self._log.error(
@@ -874,17 +839,14 @@ class LovenseToy(Toy):
         self, command: str, timeout: float = 3.0
     ) -> Optional[str]:
         """
-        Execute a command and wait for the response.
-
-        This internal method handles the command execution.
-        It ensures sequential execution, clears the response queue, sends the command, and waits for the response with a timeout.
+        Send a command and wait for its reply, one command at a time.
 
         Args:
-            command: Command string (UTF-8). Semicolon added automatically.
-            timeout: Response timeout in seconds. Defaults to 3.0.
+            command: The command. The ``;`` terminator is optional.
+            timeout: Seconds to wait for the reply.
 
         Returns:
-            Response string from toy (with semicolon stripped), or None if notifications aren't started, send failed,
+            Response string from toy (with semicolon stripped). None if notifications aren't started, send failed,
             or timeout occurred.
         """
         try:
@@ -894,14 +856,11 @@ class LovenseToy(Toy):
 
     async def _strict_execute_command(self, command: str, timeout: float = 3.0) -> str:
         """
-        Execute a command and wait for the response.
-
-        This internal method handles the command execution.
-        It ensures sequential execution, clears the response queue, sends the command, and waits for the response with a timeout.
+        Send a command and wait for its reply, one command at a time.
 
         Args:
-            command: Command string (UTF-8). Semicolon added automatically.
-            timeout: Response timeout in seconds. Defaults to 3.0.
+            command: The command. The ``;`` terminator is optional.
+            timeout: Seconds to wait for the reply.
 
         Raises:
             ConnectionError: If the command could not be sent, or the response timed out.
@@ -918,14 +877,12 @@ class LovenseToy(Toy):
         """
         Execute a command with a level parameter.
 
-        This internal helper method formats and executes level-based commands (e.g., "Vibrate:15", "Rotate:10").
-
         Args:
             command_name: Command string without the level parameter (e.g., "Vibrate", "Rotate").
             level: Intensity level.
 
         Returns:
-            True if the toy acknowledged the command with "OK", False otherwise.
+            True if the toy replied ``OK``, else False.
         """
         command = f"{command_name}:{level}"
         response = await self._execute_command(command)
@@ -936,8 +893,6 @@ class LovenseToy(Toy):
     ) -> None:
         """
         Execute a command with a level parameter.
-
-        This internal helper method formats and executes level-based commands (e.g., "Vibrate:15", "Rotate:10").
 
         Args:
             command_name: Command string without the level parameter (e.g., "Vibrate", "Rotate").

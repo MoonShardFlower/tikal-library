@@ -1,3 +1,11 @@
+"""
+Low-Level API: async, direct control of toys.
+
+- :class:`ConnectionBuilder` discovers toys (:class:`ToyData`) and connects them.
+- A connected toy is a :class:`Toy`, e.g., a :class:`LovenseToy`.
+- :data:`BRANDS` and :data:`LOVENSE_TOY_NAMES` list the valid model names. A toy needs one to connect.
+"""
+
 from .brand_handler import BLEBrandHandler
 from .brands import BRANDS
 from .brands.lovense import (

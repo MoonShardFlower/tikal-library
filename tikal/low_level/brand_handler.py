@@ -1,15 +1,9 @@
 """
-Part of the Low-Level API: the abstract contract every BLE toy brand implements.
+Low-Level API: :class:`BLEBrandHandler`, what a BLE brand implements.
 
-A brand handler encapsulates everything brand-specific about BLE discovery and connection:
-
-- Recognizing the brand from a BLE advertisement
-- Creating the appropriate ``ToyData``
-- Establishing a connection and returning a ready-to-use ``Toy`` instance
-
-To add a new brand, create a subpackage under ``tikal/low_level/brands/`` with a ``BLEBrandHandler`` subclass and
-register it in ``tikal/low_level/brands/__init__.py``. The ``BLEConnectionBuilder`` instantiates every registered
-handler via the standard constructor defined here, so a new handler only needs to implement the four abstract methods.
+A handler recognizes its brand's devices, creates their :class:`~tikal.low_level.ToyData`, and connects them. To add a
+BLE brand, subclass it in ``tikal/low_level/brands/<brand>/`` and register it in ``tikal/low_level/brands/__init__.py``.
+:class:`~tikal.low_level.BLEConnectionBuilder` then uses it.
 """
 
 from abc import ABC, abstractmethod
@@ -25,22 +19,16 @@ from .toy_data import ToyData
 
 class BLEBrandHandler(ABC):
     """
-    Abstract interface for handling a specific brand of BLE toy.
+    The brand-specific part of BLE discovery and connection. Subclasses implement the four abstract methods.
 
-    Each concrete implementation provides the logic for:
-
-    - Recognizing the brand from BLE advertisements
-    - Creating the appropriate ``ToyData``
-    - Establishing a connection and returning a ready-to-use ``Toy`` instance
-
-    Subclasses are instantiated by the ``BLEConnectionBuilder`` through the constructor below.
-    A subclass only needs to  implement the four abstract methods.
+    The constructor signature is fixed: :class:`~tikal.low_level.BLEConnectionBuilder` creates every registered
+    handler with it.
 
     Args:
-        on_disconnect: Callback called when a toy disconnects unexpectedly. Receives the toy's toy_id.
-        on_power_off: Callback called when the user powers off a toy via its physical button. Receives the toy id (address).
-        logger_name: Name for the logger used by this handler. Defaults to 'tikal'.
-        client_class: BLE client class to use. Defaults to BleakClient. Can be overridden for testing.
+        on_disconnect: Called with the toy id when a toy's connection drops unexpectedly.
+        on_power_off: Called with the toy id when a toy reports a power-off (its button was pressed).
+        logger_name: Name of the logger.
+        client_class: BleakClient (sub)class to connect with, e.g., a mock for tests.
     """
 
     def __init__(
@@ -70,7 +58,7 @@ class BLEBrandHandler(ABC):
     @staticmethod
     @abstractmethod
     def create_toy_data(device: BLEDevice) -> ToyData:
-        """Create a brand-specific ``ToyData`` object from a BLE device."""
+        """The :class:`~tikal.low_level.ToyData` of a device for which :meth:`handles_device` is true."""
         raise NotImplementedError
 
     @abstractmethod
@@ -78,10 +66,17 @@ class BLEBrandHandler(ABC):
         """
         Connect to the toy described by ``toy_data`` using the provided ``BLEDevice``.
 
-        This method handles brand-specific connection steps (UUID resolution, notification setup, etc.) and returns a connected ``Toy`` instance.
+        The model's commands are not validated here: the connection builder does that afterward.
+
+        Args:
+            toy_data: The toy, with its model name set.
+            device: Its BLE device.
 
         Raises:
-            ValidationError: The ``toy_data`` contains an invalid model name.
-            ConnectionError: The BLE connection, UUID resolution, or notification setup failed.
+            ~tikal.low_level.InvalidModelError: The model name is not a model of the brand.
+            ConnectionError: Connecting failed.
+
+        Returns:
+            The connected toy.
         """
         raise NotImplementedError

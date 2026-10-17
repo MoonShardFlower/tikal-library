@@ -1,9 +1,13 @@
 """
 Part of the low-level API: Provides the transport layer for toy communication.
-You are not meant to instantiate any of these classes yourself. Objects of these classes are created by the ConnectionBuilder as needed.
 
-Decouples toy protocol logic from the underlying wire technology (BLE, USB, etc.).
-Concrete implementations wrap bleak or pyserial-asyncio-fast.
+- :class:`Transport`: the interface.
+- :class:`BleTransport`: Bluetooth Low Energy, via bleak.
+- :class:`UsbTransport`: USB serial, via pyserial-asyncio-fast.
+- :class:`MockTransport`: an in-memory device of the fictional MockEstimToys brand.
+
+You are not meant to instantiate any of these classes yourself.
+Objects of these classes are created by the ConnectionBuilder as needed.
 """
 
 import asyncio
@@ -17,16 +21,13 @@ from bleak.backends.device import BLEDevice
 
 class Transport(ABC):
     """
-    Abstract transport layer for a connected toy.
+    Byte-level link to one toy, so a :class:`~tikal.low_level.Toy` works without knowing the wire technology.
 
-    Wraps the raw I/O operations so that ``Toy`` subclasses can send commands and receive notifications without knowing
-    whether the underlying link is BLE, USB, or anything else.
-
-    A ``Transport`` is always created in a *connected* state. Connection setup is the responsibility of the ``ConnectionBuilder``.
+    Connected before a toy uses it.
 
     Args:
         toy_id: Unique identifier e.g., BLE: Bluetooth address string, USB: serial port path.
-        name:  Human-readable device name e.g., BLE: advertised name.  USB: the literal string ``"usb-<serial port path>"``.
+        name:  Device name e.g., BLE: advertised name.  USB: the literal string ``"usb-<serial port path>"``.
     """
 
     def __init__(self, toy_id: str, name: str):
@@ -36,12 +37,12 @@ class Transport(ABC):
 
     @property
     def toy_id(self) -> str:
-        """returns a unique identifier (BLE address or USB port)."""
+        """Unique identifier, e.g., the Bluetooth address or the serial port."""
         return self._toy_id
 
     @property
     def name(self) -> str:
-        """Returns a Human-readable device name."""
+        """Human-readable name, e.g., the Bluetooth name."""
         return self._name
 
     @property
@@ -58,13 +59,13 @@ class Transport(ABC):
     @abstractmethod
     async def send(self, data: bytes) -> None:
         """
-        Write raw bytes to the device.
+        Write bytes to the device.
 
         Args:
             data: Bytes to send (the ``Toy`` layer is responsible for framing).
 
         Raises:
-            ConnectionError: If the transport is not connected or the operation fails.
+            ConnectionError: The transport is not connected or the operation fails.
         """
         raise NotImplementedError
 
@@ -77,17 +78,17 @@ class Transport(ABC):
             callback: callback invoked with each inbound ``bytes`` payload.
 
         Raises:
-            ConnectionError: If the transport is not connected or the operation fails.
+            ConnectionError: The transport is not connected or the operation fails.
         """
         raise NotImplementedError
 
     @abstractmethod
     async def disconnect(self) -> None:
         """
-        Close the underlying connection and release all resources. After this call ``is_connected`` must return ``False``.
+        Close the underlying connection and release all resources. After this call ``is_connected`` returns ``False``.
 
         Raises:
-            ConnectionError: If the operation fails.
+            ConnectionError: Closing failed. The link counts as closed anyway.
         """
         raise NotImplementedError
 
@@ -100,12 +101,12 @@ class BleTransport(Transport):
     It establishes the BLE connection and resolves TX / RX UUIDs, via the supplied *uuid_resolver*
 
     Args:
-        device: The ``BLEDevice`` to connect to.
-        uuid_resolver: Async callable that receives the connected ``BleakClient`` and returns ``(tx_uuid, rx_uuid)``.
-            Invoked once inside :meth:`connect` while the link is already open, so it can inspect the GATT services.
-        on_disconnect: Optional callback is invoked with this self.toy_id when the underlying BLE
-            connection drops unexpectedly. Not invoked for intentional disconnects via :meth:`disconnect`.
-        client_class: ``BleakClient`` subclass to use. Defaults to ``BleakClient``; override for testing.
+        device: The device to connect to.
+        uuid_resolver: Called once by :meth:`connect` with the connected client.
+            Returns ``(tx_uuid, rx_uuid)``: the characteristics to write commands to and to receive replies from.
+        on_disconnect: Called with :attr:`toy_id` when the link drops unexpectedly.
+            Not called after :meth:`disconnect` (= intentional disconnect).
+        client_class: BleakClient (sub)class to connect with, e.g., a mock for tests.
     """
 
     def __init__(
@@ -201,7 +202,7 @@ class BleTransport(Transport):
             callback: callback invoked with each inbound ``bytes`` payload.
 
         Raises:
-            ConnectionError: If the transport is not connected or the operation fails.
+            ConnectionError: The transport is not connected or the operation fails.
         """
 
         # Bleak passes (characteristic, data: bytearray); we forward the data as bytes.
@@ -221,7 +222,7 @@ class BleTransport(Transport):
         Close the BLE connection and release all resources. After this call ``is_connected`` returns ``False``.
 
         Raises:
-            ConnectionError: If the operation fails. Connection is still regarded as closed if this exception is raised.
+            ConnectionError: Closing failed. The link counts as closed anyway.
         """
         if not self._client:
             return
@@ -238,21 +239,22 @@ class BleTransport(Transport):
 
 class MockTransport(Transport):
     """
-    In-memory ``Transport`` for the fictional ``MockEstimToys`` brand.
+    In-memory :class:`Transport` of the fictional MockEstimToys brand. No hardware.
 
-    Backed by no real hardware: it simulates a device that speaks a tiny line protocol (commands and responses are
-    UTF-8 strings terminated by ``;``). On every :meth:`send` it computes a canned response and feeds it straight back
-    through the notification callback, so the ``Toy`` layer's request/response flow works exactly as it would over BLE.
+    Simulates a device with a line protocol: commands and replies are UTF-8 text ending in ``;``. Every :meth:`send`
+    is answered at once through the notification callback:
 
-    Used purely to explore the library's architecture and to add a second brand/transport without a physical toy.
+    - ``Channel1:<level>``, ``Channel2:<level>``: ``OK``
+    - ``Battery``: the battery level
+    - ``DeviceType``: ``MockEstim``
+    - anything else: ``OK``
 
     Args:
-        toy_id: Unique identifier for the fake device (e.g. ``"Thunder_ID"``).
-        name: Human-readable device name (e.g. ``"Thunder1"``).
-        battery: Battery percentage the device reports in response to a ``Battery`` command.
-        on_disconnect: Optional callback invoked with ``toy_id`` on every :meth:`disconnect`
-            (intentional or not). Used by the ``MockConnectionBuilder`` to make the device
-            discoverable again once it is no longer connected.
+        toy_id: Unique identifier, e.g., ``"Thunder_ID"``.
+        name: Human-readable name, e.g., ``"Thunder1"``.
+        battery: Battery level the device reports, in percent.
+        on_disconnect: Called with *toy_id* on every :meth:`disconnect` (unlike with :class:`BleTransport`). The mock
+            connection builder uses it to make the device discoverable again.
     """
 
     def __init__(
@@ -277,7 +279,7 @@ class MockTransport(Transport):
         Re-open the simulated link. Does nothing if already connected.
 
         Raises:
-            RuntimeError: If called after an intentional :meth:`disconnect`.
+            RuntimeError: Called after :meth:`disconnect`.
         """
         if self._connected:
             return
@@ -287,10 +289,13 @@ class MockTransport(Transport):
 
     async def send(self, data: bytes) -> None:
         """
-        Accept a command and immediately feed the simulated response back through the notification callback.
+        Answer a command at once through the notification callback.
+
+        Args:
+            data: One UTF-8 command, with or without its ``;``.
 
         Raises:
-            ConnectionError: If the transport is not connected.
+            ConnectionError: The transport is not connected.
         """
         if not self._connected:
             raise ConnectionError(f"Mock transport {self._toy_id} is not connected")
@@ -300,10 +305,13 @@ class MockTransport(Transport):
 
     async def start_notify(self, callback: Callable[[bytes], None]) -> None:
         """
-        Register the callback that receives simulated responses.
+        Register the callback that receives the replies.
+
+        Args:
+            callback: Called with each reply, ``;`` included.
 
         Raises:
-            ConnectionError: If the transport is not connected.
+            ConnectionError: The transport is not connected.
         """
         if not self._connected:
             raise ConnectionError(f"Mock transport {self._toy_id} is not connected")
@@ -318,7 +326,7 @@ class MockTransport(Transport):
             self._on_disconnect(self._toy_id)
 
     def _respond(self, command: str) -> str | None:
-        """Compute the device's canned reply to a command (without the ``;`` terminator)."""
+        """The device's reply to *command*, without the ``;``."""
         if command.startswith("Channel1:") or command.startswith("Channel2:"):
             return "OK"
         if command == "Battery":
@@ -331,13 +339,15 @@ class MockTransport(Transport):
 
 class UsbTransport(Transport):
     """
-    ``Transport`` implementation for USB serial via pyserial-asyncio-fast.
+    :class:`Transport` over USB serial, via pyserial-asyncio-fast. Create it with :meth:`connect`.
+
+    :attr:`toy_id` is the port, :attr:`name` is ``"usb"``.
 
     Args:
-        port: Serial port path, e.g. ``"/dev/ttyUSB0"`` or ``"COM3"``.
-        baudrate: Baud rate for the serial connection.
-        reader: ``asyncio.StreamReader`` from ``serial_asyncio_fast``.
-        writer: ``asyncio.StreamWriter`` from ``serial_asyncio_fast``.
+        port: Serial port, e.g., ``"/dev/ttyUSB0"`` or ``"COM3"``.
+        baudrate: Baud rate.
+        reader: Stream reader of the open port.
+        writer: Stream writer of the open port.
     """
 
     def __init__(
@@ -358,7 +368,19 @@ class UsbTransport(Transport):
 
     @classmethod
     async def connect(cls, port: str, baudrate: int) -> "UsbTransport":
-        """Open the serial port and return a connected ``UsbTransport``."""
+        """
+        Open a serial port.
+
+        Args:
+            port: Serial port, e.g., ``"/dev/ttyUSB0"`` or ``"COM3"``.
+            baudrate: Baud rate.
+
+        Raises:
+            OSError: The port could not be opened (serial.SerialException is one).
+
+        Returns:
+            The connected transport.
+        """
         reader, writer = await serial_asyncio_fast.open_serial_connection(
             url=port, baudrate=baudrate
         )
@@ -369,6 +391,16 @@ class UsbTransport(Transport):
         return self._connected
 
     async def send(self, data: bytes) -> None:
+        """
+        Write bytes to the port.
+
+        Args:
+            data: The encoded command, framing included.
+
+        Raises:
+            ConnectionError: Not connected.
+            OSError: Writing failed.
+        """
         if not self._connected or self._writer is None:
             raise ConnectionError(f"USB transport {self._toy_id} is not connected")
         self._writer.write(data)
@@ -436,7 +468,7 @@ class UsbTransport(Transport):
         Close the serial connection and release all resources. After this call ``is_connected`` returns ``False``.
 
         Raises:
-            ConnectionError: If the operation fails. The connection is still regarded as closed if this exception is raised.
+            ConnectionError: If the operation fails. The connection is still regarded as closed.
         """
         self._connected = False
         try:
