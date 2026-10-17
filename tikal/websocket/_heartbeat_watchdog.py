@@ -1,14 +1,13 @@
 """
-Private Module of the WebSocket API: the heartbeat watchdog of ToyServer.
+Private module of the WebSocket API: the heartbeat watchdog of :class:`~tikal.websocket.toy_server.ToyServer`.
 
-A dead-man's switch. A client that arms it promises to send a ``heartbeat`` regularly. When it stops, every toy not
-blocked yet gets blocked and stopped (see ``_ToyHub.block_all_for_safety``). Nothing unblocks them on its own: the
-user has to decide when it is safe to continue.
+A dead-man's switch. A client that arms it promises to send a ``heartbeat`` regularly. When an armed client fails, every
+toy not blocked yet gets blocked and stopped. Only the user unblocks them.
 
 The rules:
 
-- An armed client that misses its deadline is *overdue*: the watchdog trips, once. It stays overdue until it proves it is
-  still there: a ``heartbeat``, arming again, or disarming. Its next miss trips the watchdog again.
+- An armed client that misses its deadline is *overdue*: the watchdog trips, once. It stays overdue until it proves it
+  is still there: a ``heartbeat``, arming again, or disarming. Its next miss trips the watchdog again.
 - An armed client that disconnects trips the watchdog as well.
 - A client that stays overdue for the grace period is given up and its connection closed
 
@@ -30,8 +29,8 @@ class _HeartbeatWatchdog:
     """
     Tracks the clients that armed the heartbeat, and blocks every toy when one of them fails.
 
-    It does not touch toys or connections itself, except for closing a client it gave up on. ToyServer tells it what
-    its clients do (:meth:`arm`, :meth:`disarm`, :meth:`beat`, :meth:`client_disconnected`).
+    The server reports what its clients do (:meth:`arm`, :meth:`disarm`, :meth:`beat`, :meth:`client_disconnected`).
+    The watchdog touches no toy or connection itself, except that it closes a client it gave up on.
 
     Args:
         block_all: Blocks and stops every toy that is not blocked yet. Returns the ids of the toys it blocked, and of
@@ -75,14 +74,24 @@ class _HeartbeatWatchdog:
 
     def is_kicked(self, client: ServerConnection) -> bool:
         """
-        Whether the watchdog gave up on *client* (see :meth:`_give_up_on`) and its connection is still closing.
+        Whether the watchdog gave up on a client whose connection is still closing. Ignore whatever such a client
+        sends, e.g., a command it queued before it froze.
 
-        Whatever such a client still sends must not count, e.g., a command it queued before it froze.
+        Args:
+            client: The client.
+
+        Returns:
+            True from the moment the watchdog gives up on *client* until it disconnects.
         """
         return client in self._kicked
 
     async def arm(self, client: ServerConnection) -> None:
-        """Start (or keep) watching *client*. Arming is proof of life just like a heartbeat is."""
+        """
+        Start (or keep) watching a client. Arming counts as a heartbeat.
+
+        Args:
+            client: The client.
+        """
         self._last_beat[client] = time.monotonic()
         if self._check_task is None or self._check_task.done():
             self._check_task = asyncio.get_running_loop().create_task(
@@ -91,13 +100,23 @@ class _HeartbeatWatchdog:
         self._recovered(client)
 
     async def disarm(self, client: ServerConnection) -> None:
-        """Stop watching *client*. A deliberate opt-out, so an overdue client counts as back."""
+        """
+        Stop watching a client. An overdue client counts as back.
+
+        Args:
+            client: The client. Need not be armed.
+        """
         self._last_beat.pop(client, None)
         self._recovered(client)
         self._stop_checking_if_unused()
 
     async def beat(self, client: ServerConnection) -> None:
-        """Record that the armed client *client* is still there."""
+        """
+        Record that a client is still there. An overdue client counts as back.
+
+        Args:
+            client: The client. Ignored if it is not armed.
+        """
         if client in self._last_beat:
             self._last_beat[client] = time.monotonic()
             self._recovered(client)
@@ -106,8 +125,10 @@ class _HeartbeatWatchdog:
 
     async def client_disconnected(self, client: ServerConnection) -> None:
         """
-        Forget *client*. If it was armed, this trips the watchdog: a client that vanished (crash or abrupt close) can
-        no longer be in control.
+        Forget a client that disconnected. Trips the watchdog if it was armed.
+
+        Args:
+            client: The client.
         """
         self._kicked.discard(client)
         was_armed = self._last_beat.pop(client, None) is not None
@@ -138,11 +159,10 @@ class _HeartbeatWatchdog:
 
     def _recovered(self, client: ServerConnection) -> None:
         """
-        Mark a previously overdue client as alive again. Its next miss trips the watchdog anew. The toys it got blocked
-        stay blocked: unblocking them is up to the user.
+        Mark an overdue client as back: its next miss trips the watchdog again. The toys it got blocked stay blocked.
 
-        Called from every path where an armed client proves it is still there (a heartbeat, a re-arm, or a deliberate
-        opt-out).
+        Args:
+            client: The client. Nothing happens if it is not overdue.
         """
         if client not in self._overdue:
             return
@@ -152,7 +172,10 @@ class _HeartbeatWatchdog:
         )
 
     async def _check_loop(self) -> None:
-        """Background loop that checks heartbeat deadlines and trips the watchdog on timeout."""
+        """
+        Every :attr:`check_interval`, trip the watchdog for clients that just went overdue, and give up on those overdue
+        for the whole grace period. Ends once no client is armed.
+        """
         while self._last_beat:
             await asyncio.sleep(self.check_interval)
             now = time.monotonic()
@@ -191,13 +214,12 @@ class _HeartbeatWatchdog:
         """
         Give up on a client that stayed overdue for the whole grace period: stop watching it and close its connection.
 
-        A client whose app is stuck can keep its connection open (a browser answers pings even while the page's
-        JavaScript is hung), and could send stale commands once it wakes up. Closing it prevents that. The toys were
-        blocked when it went overdue, so this blocks nothing more (toys the user unblocked meanwhile stay unblocked).
+        A stuck client can keep its connection open (a browser answers pings while the page's JavaScript hangs) and send
+        stale commands once it wakes up. Its toys were blocked when it went overdue, so this blocks nothing more.
+        Messages it sends while its connection closes are ignored (see :meth:`is_kicked`).
 
-        Whatever it still sends while its connection closes is ignored (see :meth:`is_kicked`). The close runs in the
-        background: a stuck client may never answer the closing handshake, and waiting for ``close_timeout`` would delay
-        the heartbeat checks of every other client.
+        Args:
+            client: The client.
         """
         self._last_beat.pop(client, None)
         self._overdue.discard(client)
@@ -218,18 +240,13 @@ class _HeartbeatWatchdog:
         self, reason: Literal["timeout", "disconnect"], message: str
     ) -> None:
         """
-        Block every toy that is not blocked yet, then tell every client.
+        Block every not blocked yet, then broadcast ``heartbeat_timeout``. Never raises.
 
-        Shared by the deadline check (a client stopped sending heartbeats) and the disconnect path (a client that armed
-        the heartbeat vanished): both are "we lost a controlling client, make the toys safe".
-
-        ``heartbeat_timeout`` is broadcast on every trip, also when every toy was blocked already, so clients learn about
-        each client that went overdue or vanished.
-
-        Never raises: it runs in the deadline check and in the disconnect handler, and neither may die.
+        The event is broadcast on every trip, also when every toy was blocked already. A timeout trip is dropped if the
+        overdue client came back meanwhile.
 
         Args:
-            reason: "timeout" for an overdue client, "disconnect" for one that vanished.
+            reason: ``"timeout"`` for an overdue client, ``"disconnect"`` for one that vanished.
             message: Human-readable description, sent with the event.
         """
         async with self._trip_lock:

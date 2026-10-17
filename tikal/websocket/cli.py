@@ -1,14 +1,7 @@
 """
-WebSocket JSON-based server that exposes _ToyHub to connected clients.
-Offers an alternative to the Low-Level / High-Level API defined by the tikal library.
-Here information is exchanged via a websocket. Significantly harder to use than the Low-Level / High-Level APIs but
-offers some advantages:
+Command-line entry point of the WebSocket server: ``tikal-server``, or ``python -m tikal.websocket.cli``.
 
-- Process separation
-- Service can be used in applications written in other programming languages (assuming websockets are supported)
-- Multiple clients can modify the same state (experimental, untested)
-
-This module is the entry point to the ToyServer command-line-interface.
+The options are described in :func:`main` and in ``docs/websocket/documentation.md``.
 """
 
 # nuitka-project: --msvc=latest
@@ -46,16 +39,10 @@ from .toy_server import InsecureBindError, ToyServer
 
 async def _serve_until_signal(server: ToyServer, logger: logging.Logger) -> None:
     """
-    Run the server until it stops or a terminating signal arrives.
+    Run the server until it shuts down or SIGINT/SIGTERM arrives. A signal shuts it down gracefully.
 
-    A signal has to be turned into a *graceful* shutdown, because a toy keeps running whatever it was last told once
-    this process is gone. SIGTERM (``systemctl stop``, ``docker stop``, a session ending) terminates the process
-    outright by default: no ``finally``, no ``atexit``, and a toy still going at full intensity.
-
-    Where the event loop supports signal handlers (POSIX) both SIGINT and SIGTERM are routed to
-    :meth:`ToyServer.shutdown`. On Windows ``add_signal_handler`` is unavailable, but Ctrl+C arrives as a
-    ``KeyboardInterrupt`` that cancels this coroutine, and :meth:`ToyServer.serve` stops the toys in its own
-    ``finally``.
+    Where the loop supports signal handlers (POSIX), both signals call :meth:`ToyServer.shutdown`. On Windows, Ctrl+C
+    cancels this coroutine instead, and :meth:`ToyServer.serve` stops the toys while it ends.
 
     Args:
         server: The server to run.
@@ -98,19 +85,22 @@ async def _serve_until_signal(server: ToyServer, logger: logging.Logger) -> None
 
 def main() -> None:
     """
-    Entry point for the ToyServer command-line interface.
+    Run the WebSocket server with the command-line options. Every toy is stopped and disconnected when the server ends,
+    also on Ctrl+C and (where supported) SIGTERM. An error while serving, e.g., the port is in use, is reported on
+    stderr (not in the log file), and the process exits with status 0.
 
-    Parses command-line arguments, configures logging, constructs a ToyServer instance.
-    ToyServer shuts down automatically if no client is connected for 3 seconds. Ctrl+C and (where supported) SIGTERM
-    stop and disconnect every toy before the process exits, rather than leaving them running.
+    Options:
 
-    Command-line arguments:
-        --host: Host to bind to (default: localhost).
-        --port: Port to listen on (default: 8142).
-        --toy-cache-path: Path to the toy-cache file (default: ./data/toy_cache.json).
-        --mock-toys: Use a software mock instead of real Bluetooth hardware.
-        --log-path: Filepath to write logs to (default: ./data/tikal_ws.log).
-        --log-level: Logging verbosity: DEBUG, INFO, WARNING, or ERROR (default: INFO).
+    - ``--host``: Interface to bind. Default ``localhost``. A non-loopback host needs ``--insecure``; else the process
+      exits with status 2.
+    - ``--port``: TCP port. Default 8142.
+    - ``--timeout``: Seconds without clients until the server shuts down. Default 3; 0 disables it.
+    - ``--toy-cache-path``: File that remembers each toy's model name. Default ``./data/toy_cache.json``; ``None`` keeps
+      it in memory only.
+    - ``--mock-toys``: Fake toys instead of Bluetooth.
+    - ``--insecure``: Allow a non-loopback ``--host``, although the server has no authentication.
+    - ``--log-path``: Log file. Default ``./data/tikal_ws.log``; ``None``: no log file.
+    - ``--log-level``: ``DEBUG``, ``INFO`` (default), ``WARNING``, or ``ERROR``. Case-insensitive.
     """
 
     parser = argparse.ArgumentParser(description="WebSocket server for _ToyHub")

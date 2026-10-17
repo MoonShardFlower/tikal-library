@@ -1,43 +1,15 @@
 """
-Part of the High-Level API: Provides connection management for toy devices.
+High-Level API: :class:`ToyHub`, the entry point. It discovers and connects toys, and hands out a
+:class:`~tikal.high_level.ToyController` per toy.
 
-This module provides the ToyHub class, which serves as the entry point for all toy operations. The ToyHub manages:
+Example::
 
-- **Toy Discovery**: Scanning for available devices via Bluetooth
-- **Connection Management**: Establishing and maintaining connections
-- **Pattern Playback**: Managing time-based pattern execution
-- **Battery Monitoring**: Automatic periodic battery level updates
-- **Reconnection**: Automatic recovery from unexpected disconnects
-
-Example:
-    ::
-
-        # Basic
-        hub = ToyHub()
-        toys = hub.discover_toys_blocking(5.0)
-        toys[0].model_name = "Lush"
-        controllers = hub.connect_toys_blocking(toys)
-        controllers[0].intensity1(15)
-        hub.shutdown()
-
-        # With callbacks
-        def on_error(exc, context, tb):
-            print(f"Error {exc} while {context}. Traceback:{tb}")
-
-        def on_battery(levels):
-            for toy_id, level in levels.items():
-                print(f"Toy {toy_id} has battery ({level}%)")
-
-        hub = ToyHub(
-            on_battery_update=on_battery,
-            on_error=on_error,
-            on_disconnect=lambda tid: print(f"{tid} disconnected"),
-            on_reconnection_success=lambda tid: print(f"{tid} reconnected"),
-            on_power_off=lambda tid: print(f"{tid} powered off"),
-            logger_name="my_app",
-            toy_cache_path=Path("./toys.json"),
-            default_model="Please select a model"
-        )
+    hub = ToyHub(toy_cache_path=Path("./toys.json"))
+    toys = hub.discover_toys_blocking(timeout=5.0)
+    toys[0].model_name = "Lush"  # unless the toy cache knows it
+    toy = hub.connect_toys_blocking(toys[:1])[0]  # a ToyController, or the exception that prevented it
+    toy.intensity1(15)
+    hub.shutdown()
 """
 
 from __future__ import annotations
@@ -73,36 +45,38 @@ _APPLY_TIMEOUT = 5.0  # seconds
 
 class ToyHub:
     """
-    Central interface for toy communication and lifecycle management.
+    Discovers, connects, and manages toys. Synchronous: an event loop on a background thread does the work.
 
-    Part of the High-Level API: Handles discovery, connection, battery monitoring, and control of toys.
-
-    Callbacks (the ones given here, and the ones given to :class:`ToyController` commands) run on the hub's background
-    thread. From a callback you can use every :class:`ToyController` method and the ``*_callback`` methods of this
-    class, but not its blocking methods, which raise ``RuntimeError`` there.
+    - The ``*_blocking`` methods, :meth:`start_discovery`, :meth:`stop_discovery`, :meth:`update_model_name` and
+      :meth:`shutdown` block until done.
+    - ``*_callback`` methods return at once and pass the result to their callback, or the exception (with its traceback
+      as a note).
+    - Callbacks, including those of :class:`~tikal.high_level.ToyController` commands, run on the background thread.
+      Keep them short.
+    - Call :meth:`shutdown` when done.
 
     Args:
-        on_battery_update: Callback invoked with the battery levels of all connected toys (dict mapping toy_id to the
-            level, or None if the toy has no battery) whenever one of them changes (checked every 2 minutes), and after
-            toys were connected or reconnected.
-        on_error: Callback invoked when an unexpected error occurs, including an exception raised by one of your
-            callbacks and a failing discovery. Receives (exception, context_message, traceback_string). Without it,
-            these errors are logged.
-        on_disconnect: Callback invoked when a toy's connection is lost unexpectedly, or a command to it failed twice.
-            Receives toy_id. ToyHub automatically attempts reconnection, with repeated attempts for up to one minute.
-        on_reconnection_failure: Callback invoked when no reconnect attempt succeeded within that minute. Receives
-            toy_id. The toy is disconnected; commands sent to it from then on are rejected right away (their callbacks
-            receive None).
-        on_reconnection_success: Callback invoked when automatic reconnection succeeds. Receives toy_id. The toy is
-            stopped and its pattern paused at that point; resume it (e.g., ``set_paused(False)``) if it should continue.
-            Commands issued while it was disconnected were rejected right away (their callbacks received None).
-        on_power_off: Callback invoked when a toy is powered off via its physical button. Receives toy_id.
-        logger_name: Name of the logger to use for logging messages.
-        toy_cache_path: Path to a file for caching toy model names. Allows automatic model name assignment on later discoveries.
-        default_model: Default model name to use if a toy isn't in the cache.
-        bluetooth_scanner: BLE scanner class to use (defaults to BleakScanner). Can be overridden for testing.
-        bluetooth_client: BLE client class to use (defaults to BleakClient). Can be overridden for testing.
-        mock_toys: If True, also offer the fictional MockEstimToys brand. Not part of the public API. This parameter may be removed without notice.
+        on_battery_update: Called with ``{toy_id: level}`` for every connected toy (level in percent, None without
+            battery) when a level changes (checked every 2 minutes), and after toys connected or reconnected.
+        on_error: Called with ``(exception, context, traceback)`` when one of your callbacks raises, and when a scan
+            started by :meth:`start_discovery` fails. Without it, these errors are logged.
+        on_disconnect: Called with the toy id when a toy's connection is lost or a command to it failed twice. The hub
+            reconnects it for up to 1 minute; its commands report None meanwhile.
+        on_reconnection_failure: Called with the toy id when reconnecting failed for 1 minute. The toy is disconnected
+            and its commands all report None.
+        on_reconnection_success: Called with the toy id when reconnecting succeeded. The toy is stopped and its pattern
+            paused. Resume it with ``set_paused(False)``.
+        on_power_off: Called with the toy id when a toy was switched off with its button. The toy is disconnected.
+        logger_name: Name of the logger.
+        toy_cache_path: JSON file that remembers each toy's model name, so discovery can fill it in (see
+            :class:`~tikal.high_level.ToyCache`). In-memory only if the empty path ``Path()`` is given.
+        default_model: Model name of discovered toys that the toy cache does not know.
+        bluetooth_scanner: BleakScanner (sub)class to scan with, e.g., ``tikal.mock.MockBleakScanner``.
+        bluetooth_client: BleakClient (sub)class to connect with, e.g., ``tikal.mock.MockBleakClient``.
+        mock_toys: Offer the fictional MockEstimToys brand. Not part of the public API and may be removed.
+
+    Raises:
+        RuntimeError: The background event loop did not start within 5 seconds.
     """
 
     def __init__(
@@ -147,18 +121,11 @@ class ToyHub:
 
     def _register_atexit(self) -> Callable[[], None]:
         """
-        Register a last-resort :meth:`shutdown` for interpreter exit and return the hook so it can be unregistered.
-
-        :meth:`shutdown` is documented as mandatory, but nothing forces a caller to reach it: an uncaught exception,
-        a ``KeyboardInterrupt``, or simply forgetting would otherwise leave every connected toy running at whatever
-        intensity it was last given. The interpreter still runs ``atexit`` hooks in all of those cases, and the
-        runner's event-loop thread is still alive at that point, so the toys can still be stopped and disconnected.
-
-        The hook holds only a weak reference, so registering it does not keep the hub alive; a hub that is garbage
-        collected simply makes the hook a no-op.
+        Register :meth:`shutdown` to run at interpreter exit, so an uncaught exception, a KeyboardInterrupt, or a
+        forgotten :meth:`shutdown` does not leave toys running. The hook does not keep the hub alive.
 
         Returns:
-            The registered hook, to be passed to ``atexit.unregister`` by :meth:`shutdown`.
+            The hook, for :meth:`shutdown` to unregister.
         """
         hub_ref = weakref.ref(self)
 
@@ -263,18 +230,16 @@ class ToyHub:
 
     def start_discovery(self, on_update: Callable[[list[ToyData]], Any]) -> None:
         """
-        Start scanning for toys continuously, and report the available toys whenever they change.
+        Start scanning for toys in the background, until :meth:`stop_discovery`. Blocks until the scan started.
 
         Args:
-            on_update: Called with a list[ToyData] of ALL available toys whenever availability changes. 'ALL' includes
-                toys that were previously discovered and are still available. Connected toys do not advertise and are
-                not included. Model names are filled in from the ToyCache. Invoked with an empty list if the scan fails.
+            on_update: Called with all available toys whenever they change, first with an empty list. Model names come
+                from the toy cache. Already connected toys are not discovered. If the scan fails, it ends:
+                *on_update* receives an empty list, and *on_error* the :class:`~tikal.high_level.DiscoveryError`.
 
         Raises:
-            DiscoveryStartError: The scan could not be started (e.g., Bluetooth is off).
-
-        Note:
-            A scan that fails after it started is reported to the error callback, and ends.
+            DiscoveryStartError: The scan could not start, e.g., Bluetooth is off.
+            RuntimeError: Called from a callback.
         """
 
         def forward(update: Exception | list[ToyData]) -> None:
@@ -289,39 +254,28 @@ class ToyHub:
         self._runner.run_async(self._core.start_scan(forward))
 
     def stop_discovery(self) -> None:
-        """Stop the scan started by :meth:`start_discovery`. The update callback is not invoked anymore afterward."""
+        """
+        Stop the scan started by :meth:`start_discovery`. Its *on_update* is not called anymore. No-op if no scan runs.
+
+        Raises:
+            RuntimeError: Called from a callback.
+        """
         self._runner.run_async(self._core.stop_scan())
 
     def discover_toys_blocking(self, timeout: float = 10.0) -> list[ToyData]:
         """
-        Discover available toys synchronously (blocking call).
-
-        Scans for nearby toys via Bluetooth and returns their discovery data.
-        Model names are automatically filled from the cache if available.
+        Discover available toys (blocking).
 
         Args:
-            timeout: Maximum scan duration in seconds. Longer timeouts may discover more devices but take longer.
+            timeout: Scan duration in seconds. Longer scans find more toys.
 
         Returns:
-            list[ToyData]: List of discovered toys. model_name set from cache if possible
+            The toys found, with model names from the toy cache (or *default_model*).
 
         Raises:
-            TimeoutError: If discovery exceeds timeout * 2. Should not occur with BleakScanner
-            Exception: Any exception from the underlying BLE scanner.
-            RuntimeError: If a continuous scan is in progress (see :meth:`start_discovery`), or if called from a
-                callback.
-
-        Example:
-            ::
-
-                toys = hub.discover_toys_blocking(timeout=10.0)
-
-                for toy in toys:
-                    print(f"Found: {toy.name}")
-                    if toy.model_name:
-                        print(f"Cached model: {toy.model_name}")
-                    else:
-                        print(f"Model unknown. Please set manually")
+            RuntimeError: A scan started by :meth:`start_discovery` is running, or called from a callback.
+            TimeoutError: The scan took more than twice *timeout*.
+            Exception: Whatever the scanner raises, e.g., Bluetooth is off.
         """
         self._log.info("Starting toy discovery (blocking)...")
         toys = self._runner.run_async(self._core.discover(timeout), timeout * 2)
@@ -334,27 +288,13 @@ class ToyHub:
         timeout: float = 10.0,
     ) -> None:
         """
-        Discover available toys with a callback (non-blocking).
-
-        Starts discovery in the background and returns immediately. The callback is invoked when discovery completes.
+        Discover available toys with a callback. Returns immediately.
 
         Args:
-            on_discovered: Callback invoked with either a list of discovered toys or an exception if discovery failed.
-            timeout: Maximum scan duration in seconds.
-
-        Example:
-            ::
-
-                def handle_discovery(result):
-                    if isinstance(result, Exception):
-                        print(f"Discovery failed: {result}")
-                        return
-
-                    print(f"Found {len(result)} toys")
-                    for toy in result:
-                        print(toy.name)
-
-                hub.discover_toys_callback(handle_discovery, timeout=5.0)
+            on_discovered: Called with the toys found (see :meth:`discover_toys_blocking`), or with the exception that
+                ended the scan: RuntimeError if a scan started by :meth:`start_discovery` is running, TimeoutError after
+                twice *timeout*, or whatever the scanner raised.
+            timeout: Scan duration in seconds.
         """
         self._log.info("Starting toy discovery (callback)...")
         self._submit_with_result(
@@ -369,45 +309,26 @@ class ToyHub:
         self, to_connect: list[ToyData], timeout: float = 30.0
     ) -> list[ToyController | BaseException]:
         """
-        Connect to specified toys synchronously (blocking call).
-
-        Attempts to connect to each toy in the list concurrently. Toys that connect successfully return ToyController
-        instances; failed connections return exceptions. On success, the ToyCache remembers each toy's model name.
+        Connect toys concurrently (blocking). The toy cache remembers the model of each connected toy.
 
         Args:
-            to_connect: List of ToyData objects with a valid model_name set. Must have been discovered first.
-            timeout: Maximum time to wait for all connections in seconds.
+            to_connect: Discovered toys, each with its model name set (case-insensitive).
+            timeout: Seconds to wait for all connections.
 
         Returns:
-            list[ToyController | BaseException]: Each element is either a connected ToyController or an exception
-                (e.g., :class:`InvalidModelError`, :class:`BadModelError`, :class:`AddConnectionError`,
-                :class:`ToyAlreadyAddedError`). Order matches the input list.
+            One result per toy, in input order. Each is the toy's :class:`~tikal.high_level.ToyController`, or the
+            exception that prevented connecting it:
+
+            - :class:`~tikal.high_level.ToyAlreadyAddedError`: The toy is connected already, or being connected.
+            - :class:`~tikal.high_level.InvalidModelError`: Not a model of the toy's brand.
+            - :class:`~tikal.high_level.BadModelError`: The toy refused or did not answer the model's commands.
+            - :class:`~tikal.high_level.AddConnectionError`: Connecting failed, e.g., the toy is off, connected
+              elsewhere, or no longer found by the scan.
+            - RuntimeError: Any other failure, e.g., the toy was never discovered.
 
         Raises:
-            TimeoutError: The connections took longer than *timeout*.
+            TimeoutError: Not all connections finished within *timeout*.
             RuntimeError: Called from a callback.
-
-        Example:
-            ::
-
-                # Discover and connect
-                toys = hub.discover_toys_blocking(5.0)
-
-                # Set model names (required!)
-                toys[0].model_name = "Nora"
-                toys[1].model_name = "Lush"
-
-                # Connect
-                results = hub.connect_toys_blocking(toys, timeout=30.0)
-
-                # Process results
-                controllers = []
-                for i, result in enumerate(results):
-                    if isinstance(result, BaseException):
-                        print(f"Failed to connect to {toys[i].name}: {result}")
-                    else:
-                        print(f"Connected: {result.model_name}")
-                        controllers.append(result)
         """
         self._log.info(f"Connecting to {len(to_connect)} toy(s) (blocking)...")
         return self._runner.run_async(self._connect(to_connect), timeout)
@@ -421,28 +342,13 @@ class ToyHub:
         timeout: float = 30.0,
     ) -> None:
         """
-        Connect to specified toys with a callback (non-blocking).
-
-        Starts connections in the background and returns immediately. The callback is invoked when all connection
-        attempts are complete.
+        Connect toys in the background. Returns at once. See :meth:`connect_toys_blocking`.
 
         Args:
-            to_connect: List of ToyData objects with a valid model_name set.
-            on_connected: Callback invoked with a list of controllers or exceptions (order matches the input list), or
-                with a TimeoutError if the connections took longer than *timeout*.
-            timeout: Maximum time to wait for all connections in seconds.
-
-        Example:
-            ::
-
-                def handle_connection(results):
-                    for result in results:
-                        if isinstance(result, BaseException):
-                            print(f"Connection failed: {result}")
-                        else:
-                            print(f"Connected: {result.model_name}")
-
-                hub.connect_toys_callback(toys, handle_connection, timeout=30.0)
+            to_connect: Discovered toys, each with its model name set (case-insensitive).
+            on_connected: Called with the results (see :meth:`connect_toys_blocking`), or with a TimeoutError if the
+                connections took longer than *timeout*.
+            timeout: Seconds to wait for all connections. Connections still running then are canceled.
         """
         self._log.info(f"Connecting to {len(to_connect)} toy(s) (callback)...")
         self._submit_with_result(
@@ -453,34 +359,22 @@ class ToyHub:
         self, to_disconnect: list[str], timeout: float = 10.0
     ) -> Sequence[BaseException | None]:
         """
-        Disconnect specified toys synchronously (blocking call).
-
-        Cleanly disconnects from the specified toys, stopping all actions and closing BLE connections.
+        Stop and disconnect toys concurrently (blocking).
+        After this their controllers keep reporting the last state and their commands report None.
 
         Args:
-            to_disconnect: List of toy_ids (Bluetooth addresses) to disconnect.
-            timeout: Maximum time to wait for all disconnections in seconds.
+            to_disconnect: The toy ids.
+            timeout: Seconds to wait for all disconnections.
 
         Returns:
-            list[BaseException | None]: List where each element is either None (successful disconnect) or an exception
-            (:class:`UnknownToyError` for a toy that is not connected, :class:`ToyConnectionError` for a disconnect that
-            failed). Order matches the input list. Toys are still disconnected even if an exception occurs.
+            One result per toy, in input order. Each is None on success, or the exception that occurred:
+
+            - :class:`~tikal.high_level.UnknownToyError`: The toy is not connected to this hub.
+            - :class:`~tikal.high_level.ToyConnectionError`: Disconnecting cleanly failed. Treated as disconnected.
 
         Raises:
-            TimeoutError: The disconnections took longer than *timeout*.
+            TimeoutError: Not all disconnections finished within *timeout*. They keep going in the background.
             RuntimeError: Called from a callback.
-
-        Example:
-            ::
-
-                toy_ids = [controller.toy_id for controller in controllers]
-                results = hub.disconnect_toys_blocking(toy_ids, timeout=10.0)
-
-                for toy_id, result in zip(toy_ids, results):
-                    if result is None:
-                        print(f"{toy_id} disconnected successfully")
-                    else:
-                        print(f"{toy_id} disconnect failed: {result}")
         """
         self._log.info(f"Disconnecting from {len(to_disconnect)} toy(s) (blocking)...")
         return self._runner.run_async(self._disconnect(to_disconnect), timeout)
@@ -492,27 +386,13 @@ class ToyHub:
         timeout: float = 10.0,
     ) -> None:
         """
-        Disconnect specified toys with a callback (non-blocking).
-
-        Starts disconnections in the background and returns immediately.
-        The callback is invoked when all disconnection attempts are complete.
+        Stop and disconnect toys in the background. Returns at once. See :meth:`disconnect_toys_blocking`.
 
         Args:
-            to_disconnect: List of toy_ids to disconnect.
-            on_disconnected: Callback invoked with a list of exceptions (or None for successful disconnects), see
-                :meth:`disconnect_toys_blocking`, or with a TimeoutError if the disconnections took longer than
-                *timeout*. Toys are still disconnected even if an exception occurs.
-            timeout: Maximum time to wait for all disconnections in seconds.
-
-        Example:
-            ::
-
-                def handle_disconnects(results):
-                    success_count = sum(1 for r in results if r is None)
-                    print(f"{success_count}/{len(results)} disconnected successfully")
-
-                toy_ids = [c.toy_id for c in controllers]
-                hub.disconnect_toys_callback(toy_ids, handle_disconnects)
+            to_disconnect: The toy ids.
+            on_disconnected: Called with the results (see :meth:`disconnect_toys_blocking`), or with a TimeoutError if
+                the disconnections took longer than *timeout*.
+            timeout: Seconds to wait for all disconnections. Disconnections still running then are canceled.
         """
         self._log.info(f"Disconnecting from {len(to_disconnect)} toy(s) (callback)...")
         self._submit_with_result(
@@ -523,35 +403,27 @@ class ToyHub:
         self, toy_id: str, model_name: str
     ) -> ToyController | BaseException:
         """
-        Update the model name for a connected toy.
+        Change the model of a connected toy. Capabilities both models share keep running. The others are switched off.
+        On success, the toy cache remembers the model.
 
-        Changes the toy's model name, which affects which commands are available and how they're interpreted. On
-        success, the ToyCache remembers the new model for this toy.
+        In a callback, use :meth:`ToyController.set_model_name` instead.
 
         Args:
-            toy_id: Unique identifier of the toy to update.
-            model_name: New model name (must be valid for the toy's brand).
+            toy_id: The toy.
+            model_name: New model name, case-insensitive.
 
         Returns:
-            ToyController | BaseException: The updated controller if successful, or:
+            The toy's :class:`~tikal.high_level.ToyController`, or the exception that prevented the change:
 
-            - :class:`InvalidModelError`: model_name is not valid for this toy brand.
-            - :class:`BadModelError`: the model_name is valid, but commands still fail.
-            - :class:`UnknownToyError`: the toy is not connected to this hub.
-            - :class:`ToyConnectionError`: the toy could not be reached, so its model was left unchanged.
+            - :class:`~tikal.high_level.InvalidModelError`: Not a model of the toy's brand.
+            - :class:`~tikal.high_level.BadModelError`: The toy refused or did not answer the new model's commands.
+            - :class:`~tikal.high_level.UnknownToyError`: The toy is not connected to this hub.
+            - :class:`~tikal.high_level.ToyNotConnectedError`: The toy is reconnecting.
+            - :class:`~tikal.high_level.ToyConnectionError`: The toy could not be reached. The hub reconnects it.
+            - TimeoutError: No result within 30 seconds. The change may still happen.
 
         Raises:
-            RuntimeError: Called from a callback (use :meth:`ToyController.set_model_name` there).
-
-        Example:
-            ::
-
-                # Correct a wrong model assignment
-                result = hub.update_model_name(toy_id, "Nora")
-                if isinstance(result, BaseException):
-                    print(f"Update failed: {result}")
-                else:
-                    print(f"Model updated to {result.model_name}")
+            RuntimeError: Called from a callback.
         """
         try:
             self._runner.run_async(self._core.set_model(toy_id, model_name))
@@ -571,28 +443,14 @@ class ToyHub:
 
     def shutdown(self) -> None:
         """
-        Stop scanning, disconnect all toys, and stop the background thread.
+        Stop scanning, stop and disconnect every toy, and stop the background thread. Idempotent.
 
-        This method should always be called before the program exits to ensure:
+        - Do not use the hub afterwards: create a new one.
+        - If you never call it, it runs at interpreter exit, even after an uncaught exception or a KeyboardInterrupt.
+          It cannot run if the process is killed outright (SIGKILL, ``os._exit``, power loss).
 
-        - All toys are stopped and properly disconnected
-        - The background thread is shut down cleanly
-
-        Example:
-            ::
-
-                    hub = ToyHub()
-                    # ... use hub ...
-                    hub.shutdown()
-        Note:
-            After calling shutdown(), the ToyHub instance should not be reused.
-            Create a new instance if you need to start working with toys again.
-            The method is idempotent: calling it again after the first shutdown is a no-op.
-
-        Note:
-            As a safety net this also runs automatically at interpreter exit if you never call it (including after an
-            uncaught exception or a ``KeyboardInterrupt``), so toys are not left running. Rely on it only as a
-            backstop: it cannot run if the process is killed outright (``SIGKILL``, ``os._exit``, a power loss).
+        Raises:
+            RuntimeError: Called from a callback. Treat as shutdown anyway.
         """
         if self._shut_down:
             self._log.debug("shutdown() called again; already shut down.")
@@ -618,7 +476,15 @@ class ToyHub:
     async def _connect(
         self, to_connect: list[ToyData]
     ) -> list[ToyController | BaseException]:
-        """Connect every toy concurrently and hand out a controller for each one that connected."""
+        """
+        Connect toys concurrently. If any toy connected, report the batteries to *on_battery_update*.
+
+        Args:
+            to_connect: Discovered toys, each with its model name set.
+
+        Returns:
+            One result per toy, in input order. Each is its controller, or the exception that prevented the connection.
+        """
         results = await asyncio.gather(
             *(self._core.add_toy_data(data) for data in to_connect),
             return_exceptions=True,
@@ -637,7 +503,15 @@ class ToyHub:
         return connected
 
     async def _disconnect(self, toy_ids: list[str]) -> list[BaseException | None]:
-        """Remove every toy concurrently. Each result is None, or the exception its removal raised."""
+        """
+        Stop and disconnect toys concurrently.
+
+        Args:
+            toy_ids: The toys.
+
+        Returns:
+            One result per toy, in input order. Each is None on success, or the exception that occurred.
+        """
         results = await asyncio.gather(
             *(self._core.remove(toy_id) for toy_id in toy_ids),
             return_exceptions=True,
@@ -647,7 +521,13 @@ class ToyHub:
         ]
 
     async def _on_status_change(self, toy_id: str, status: ToyStatus) -> None:
-        """Translate the core's connection status into the matching user callback."""
+        """
+        Call the callback that matches a toy's new connection status. After a reconnect, also report the batteries.
+
+        Args:
+            toy_id: The toy.
+            status: Its new status.
+        """
         if status == ToyStatus.RECONNECTING:
             self._log.warning(
                 f"Lost the connection to {toy_id}. Will try to reconnect for up to {RECONNECT_WINDOW:.0f} s."
@@ -667,7 +547,12 @@ class ToyHub:
             await self._report_batteries()
 
     async def _on_battery_change(self, _changed: dict[str, int | None]) -> None:
-        """A toy's battery level changed: report every toy's level (see ``on_battery_update``)."""
+        """
+        Report every toy's battery level to *on_battery_update*, since one changed.
+
+        Args:
+            _changed: ``{toy_id: level}`` of the toys whose level changed. Unused: every level is reported.
+        """
         await self._report_batteries()
 
     async def _report_batteries(self) -> None:
@@ -687,11 +572,14 @@ class ToyHub:
 
     def _controller_for(self, toy_id: str, fresh: bool = False) -> ToyController | None:
         """
-        The ToyController for a toy the core knows, or None.
+        The controller of a connected toy. Every call hands out the same one, until *fresh*.
 
         Args:
-            toy_id: Identifier of the toy.
-            fresh: Hand out a new controller even if there is one already (the toy was just connected again).
+            toy_id: The toy.
+            fresh: Replace the toy's controller with a new one, e.g., because the toy was just connected again.
+
+        Returns:
+            The controller, or None if the toy is not connected to this hub.
         """
         toy = self._core.get_controller(toy_id)
         if toy is None:
@@ -704,10 +592,18 @@ class ToyHub:
 
     def _on_loop(self, fn: Callable[[], T]) -> T:
         """
-        Run a quick function that does no I/O on the event loop's thread and return its result.
+        Run a quick function without I/O on the loop's thread, so it never races a command or a playback tick. In a
+        callback (already on the loop's thread) or after :meth:`shutdown`, it runs in the calling thread.
 
-        State changes go through here, so they never race a command or playback tick. From the loop's own thread
-        (a callback) the function simply runs; once the hub is shut down there is no loop left, and it runs here too.
+        Args:
+            fn: The function.
+
+        Returns:
+            What *fn* returns.
+
+        Raises:
+            TimeoutError: The loop did not run *fn* within 5 seconds, e.g., because a callback blocks it.
+            Exception: Whatever *fn* raises.
         """
         if self._runner.in_loop_thread() or not self._runner.is_running:
             return fn()
@@ -724,9 +620,12 @@ class ToyHub:
         command: str,
     ) -> None:
         """
-        Run a toy command in the background and hand its result to *callback*, or None if it failed.
+        Run a toy command in the background. Commands start in the order they are submitted. Failures are logged.
 
-        Commands start in the order they are submitted, so those for one toy reach it in that order.
+        Args:
+            run: Starts the command.
+            callback: Called with the command's result, or None if it failed. Optional.
+            command: Name of the command, for the log.
         """
 
         async def execute() -> None:
@@ -749,7 +648,15 @@ class ToyHub:
         callback: Callable[[T | BaseException], Any],
         timeout: float | None,
     ) -> None:
-        """Run a hub operation in the background and hand *callback* its result, or the exception it raised."""
+        """
+        Run a hub operation in the background and hand *callback* its result, or the exception it raised.
+
+        Args:
+            run: Starts the operation.
+            callback: Called with the result, or with the exception raised (TimeoutError after *timeout*). The
+                exception carries its traceback as a note.
+            timeout: Seconds before the operation is canceled. None: no limit.
+        """
 
         async def execute() -> None:
             result: T | BaseException
@@ -765,7 +672,14 @@ class ToyHub:
     def _run_callback(
         self, callback: Optional[Callable[[Any], Any]], result: Any, context: str
     ) -> None:
-        """Invoke a user callback. An exception it raises goes to the error callback (or the log)."""
+        """
+        Call a user callback. An exception it raises goes to *on_error* (or the log).
+
+        Args:
+            callback: The callback. None: do nothing.
+            result: What the callback is called with.
+            context: What the callback is for, for the error report, e.g., ``"battery update"``.
+        """
         if callback is None:
             return
         try:
@@ -774,7 +688,15 @@ class ToyHub:
             self._report_error(e, f"Your callback for {context} raised an exception")
 
     def _report_error(self, error: Exception, context: str) -> None:
-        """Hand an error to the error callback, or log it if there is none."""
+        """
+        Pass an error with its traceback to *on_error*, or log it if there is none.
+        An exception *on_error* raises is logged.
+
+        Args:
+            error: The error. For a :class:`~tikal.high_level.DiscoveryError`, the traceback of the failed scan is
+                reported.
+            context: What failed, for *on_error* and the log.
+        """
         tb = (
             error.tb
             if isinstance(error, DiscoveryError)

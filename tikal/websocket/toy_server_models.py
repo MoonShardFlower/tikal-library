@@ -1,9 +1,7 @@
 """
-Contains data models and payload structures used for the client-server communication of ToyServer
+Contains data models and payload structures used for the client-server communication of ToyServer.
 
-This module defines the primary data models for handling request and response envelopes, event envelopes,
-error payloads, and specific request payload structures for commands related to toys management.
-Each model is built with Pydantic for data validation and serialization purposes.
+The protocol is described in ``docs/websocket/``.
 """
 
 from typing import Any, Optional
@@ -19,7 +17,7 @@ from ..funscript import Funscript, FunscriptMode
 
 class RequestEnvelope(BaseModel):
     """
-    Outer envelope for every client -> server message.
+    Envelope of every client -> server message. No other keys are allowed.
 
     Attributes:
         request: Command name (e.g. "add", "get_toy_state").
@@ -35,13 +33,13 @@ class RequestEnvelope(BaseModel):
 
 class ResponseEnvelope(BaseModel):
     """
-    Outer envelope for every server -> client response.
+    Envelope of every server -> client reply.
 
     Attributes:
-        reply: Echoes the request field of the originating request.
-        id: Echoes the id field of the originating request.
-        success: True if the command succeeded; False if it produced an error. Lets clients branch on a single key without inspecting data.
-        data: Command-specific result payload on success, or an ErrorData-shaped dict on failure.
+        reply: The request's command name.
+        id: The request's id.
+        success: False if the command failed; *data* is an :class:`ErrorData` then.
+        data: The command's result, or the error.
     """
 
     reply: str
@@ -52,14 +50,12 @@ class ResponseEnvelope(BaseModel):
 
 class EventEnvelope(BaseModel):
     """
-    Envelope for server-initiated events broadcast to clients.
-
-    Unlike ResponseEnvelope, events are not correlated to a specific request and carry no id.
+    Envelope of a server-initiated event. Unlike a reply, it answers no request.
 
     Attributes:
-        event: Event name (e.g. "on_status_change", "on_scan_update").
-        success: True for normal data events, False when the event carries error information.
-        data: Event payload.
+        event: Event name, e.g., ``"connection_status_changed"``.
+        success: False if *data* reports an error.
+        data: The event's data.
     """
 
     event: str
@@ -73,6 +69,8 @@ class EventEnvelope(BaseModel):
 
 
 class _ErrMsg:
+    """Message templates of the error replies, see ``docs/websocket/error.md``."""
+
     MALFORMED_REQUEST = "Unable to parse request. Please verify the envelope is correctly formed and contains all required fields (request, id, data)."
     UNKNOWN_COMMAND = (
         "Unknown command '{cmd}'. Please verify the command name is correct."
@@ -99,15 +97,15 @@ class _ErrMsg:
 
 class ErrorData(BaseModel):
     """
-    The error payload returned by the server when an error occurs.
+    Data of a failed reply (and of an event reporting an error).
 
     Attributes:
-        error: Name of the error.
-        message: Human-readable error message.
-        traceback: Traceback of the error if available.
-        toy_id: Toy ID that caused the error, if applicable.
-        model_name: Model name that caused the error, if applicable.
-        brand: Brand of the toy that caused the error, if applicable.
+        error: Name of the error, e.g., ``"Unknown Toy"``.
+        message: Human-readable message.
+        traceback: The traceback, if any.
+        toy_id: The toy concerned, if any.
+        model_name: The model name concerned, if any.
+        brand: The brand concerned, if any.
     """
 
     error: str
@@ -122,21 +120,22 @@ class ErrorData(BaseModel):
 # Request models
 # -----------------------------------------------------------------------------
 
+# Request data with unknown keys is invalid.
 _STRICT = ConfigDict(extra="forbid")
 
 
 class _EmptyData(BaseModel):
-    """No arguments required (e.g., get_brands, start_scan)."""
+    """Data of commands without arguments, e.g., ``get_brands``."""
 
     model_config = _STRICT
 
 
 class ToyIdData(BaseModel):
     """
-    Single toy_id argument: Shared by the many commands that need nothing else.
+    Data of the commands that only take a toy.
 
     Attributes:
-        toy_id: Unique identifier of the toy to perform the command on.
+        toy_id: The toy.
     """
 
     toy_id: str
@@ -145,11 +144,11 @@ class ToyIdData(BaseModel):
 
 class AddRequestData(BaseModel):
     """
-    Payload for the add command.
+    Data of ``add``.
 
     Attributes:
-        toy_id: Unique identifier of the toy to connect (e.g., its Bluetooth address). The toy must have been discovered by an active scan first.
-        model_name: Model name to assign (case-insensitive). Must be a valid model for the toy's brand. Use the "get_brands" command for the full list
+        toy_id: The toy, as found by the running scan.
+        model_name: Its model name, case-insensitive.
     """
 
     toy_id: str
@@ -159,12 +158,11 @@ class AddRequestData(BaseModel):
 
 class SetModelData(BaseModel):
     """
-    Payload for the set_model command.
+    Data of ``set_model``.
 
     Attributes:
-        toy_id: Unique identifier of the already-added toy whose model assignment should change.
-        model_name: New model name to assign (case-insensitive). Must be valid for the toy's brand.
-
+        toy_id: The added toy.
+        model_name: New model name, case-insensitive.
     """
 
     toy_id: str
@@ -174,11 +172,12 @@ class SetModelData(BaseModel):
 
 class IntensityData(BaseModel):
     """
-    Payload for the intensity1 and intensity2 commands.
+    Data of ``intensity1`` and ``intensity2``.
 
     Attributes:
-        toy_id: Unique identifier of the toy to command.
-        intensity: Target intensity level (0 – ``max_intensity`` inclusive). Setting an intensity manually will automatically pause any active pattern;
+        toy_id: The toy.
+        intensity: The level, 0 to ``max_intensity``. Values outside are clamped, and the toy's limit applies. The
+            command pauses the pattern.
     """
 
     toy_id: str
@@ -188,12 +187,12 @@ class IntensityData(BaseModel):
 
 class IntensityLimitData(BaseModel):
     """
-    Payload for the set_intensity1_limit and set_intensity2_limit commands.
+    Data of ``set_intensity1_limit`` and ``set_intensity2_limit``.
 
     Attributes:
-        toy_id: Unique identifier of the toy to command.
-        limit: Maximum allowed intensity level (0 – ``max_intensity`` inclusive). Values above max_intensity are clamped.
-               Send ``null`` to remove this client's limit (the effective limit reverts to the minimum of the remaining clients' limits, or max_intensity if none).
+        toy_id: The toy.
+        limit: This client's limit, clamped to 0 to ``max_intensity``. None withdraws it. The toy's limit is the lowest
+            of all clients' limits (``max_intensity`` if none).
     """
 
     toy_id: str
@@ -203,11 +202,11 @@ class IntensityLimitData(BaseModel):
 
 class SetPausedData(BaseModel):
     """
-    Payload for the set_paused command.
+    Data of ``set_paused``.
 
     Attributes:
-        toy_id: Unique identifier of the toy to pause or resume.
-        pause: True to pause pattern playback (toy stops, pattern timer freezes). False to resume from where it left off.
+        toy_id: The toy.
+        pause: True to pause pattern playback (the toy stops, the pattern time stands still), False to resume it.
     """
 
     toy_id: str
@@ -217,12 +216,12 @@ class SetPausedData(BaseModel):
 
 class SetBlockedData(BaseModel):
     """
-    Payload for the set_blocked command.
+    Data of ``set_blocked``.
 
     Attributes:
-        toy_id: Unique identifier of the toy to block or unblock.
-        block:  True to force both intensities to zero regardless of any pattern or manual commands; ``False`` to restore normal operation.
-                Blocking a paused toy clears the pause state (a toy cannot be both paused and blocked).
+        toy_id: The toy.
+        block: True to block the toy (it stays at 0 whatever the pattern or manual commands; blocking ends a pause),
+            False to unblock it.
     """
 
     toy_id: str
@@ -232,13 +231,13 @@ class SetBlockedData(BaseModel):
 
 class SetPatternData(BaseModel):
     """
-    Payload for the set_pattern command.
+    Data of ``set_pattern``.
 
     Attributes:
-        toy_id (str): Identifier for the toy for which the pattern is being set.
-        pattern (list[tuple[int, int, int]]): The sequence of segments in the pattern, where each segment is (duration_ms, intensity1, intensity2)
-        wraparound (bool): Determines if the pattern should wrap around when the end is reached.
-        reset_time (bool): Indicates whether the pattern should reset the time counter after being set.
+        toy_id: The toy.
+        pattern: Segments as ``[duration_ms, intensity1, intensity2]``. An empty list clears the pattern.
+        wraparound: Loop the pattern. If False, it plays once, then the intensities are 0.
+        reset_time: Start at the beginning. If False, keep the current pattern time.
     """
 
     toy_id: str
@@ -250,12 +249,28 @@ class SetPatternData(BaseModel):
     @field_validator("pattern", mode="before")
     @classmethod
     def coerce_pattern(cls, v: Any) -> list[tuple[int, int, int]]:
-        """Accept either list-of-tuples or list-of-lists and normalize to list-of-tuples."""
+        """
+        Accept segments as lists or tuples.
+
+        Args:
+            v: The ``pattern`` as sent.
+
+        Returns:
+            The segments as tuples.
+        """
         return [tuple(seg) for seg in v]
 
     @model_validator(mode="after")
     def check_segments(self) -> "SetPatternData":
-        """Validate each segment of the pattern."""
+        """
+        Check that every segment is three integers.
+
+        Returns:
+            The model, unchanged.
+
+        Raises:
+            ValueError: A segment is not three integers.
+        """
         for i, seg in enumerate(self.pattern):
             if len(seg) != 3:
                 raise ValueError(f"Pattern segment {i} must have exactly 3 values")
@@ -266,18 +281,18 @@ class SetPatternData(BaseModel):
 
 class SetFunscriptData(BaseModel):
     """
-    Payload for the set_funscript command.
+    Data of ``set_funscript``.
 
     Attributes:
-        toy_id (str): Identifier of the toy that plays the script.
-        script (Funscript): The script for the primary capability: the content of a ``.funscript`` file (actions as
-            ``{"at": ms, "pos": 0-100}`` objects. Other fields such as ``metadata`` are ignored), or the same with the
-            actions as compact ``[at, pos]`` pairs.
-        secondary (Funscript | None): An optional script for the secondary capability, in the same form.
-        mode (str): ``"speed"`` (default: the intensity follows the stroke speed) or ``"position"``.
-        max_speed (float): Stroke speed (positions per second) that maps to the maximum intensity in ``"speed"`` mode.
-            Must be positive. Defaults to 400.
-        start_ms (float): Where in the script playback starts, in ms. Defaults to 0. Negative values count as 0.
+        toy_id: The toy.
+        script: The script for the primary capability: the content of a ``.funscript`` file (actions as ``{"at": ms,
+            "pos": 0-100}``; other fields such as ``metadata`` are ignored), optionally with the actions as compact
+            ``[at, pos]`` pairs.
+        secondary: Optional script for the secondary capability, in the same form.
+        mode: ``"speed"`` (default: the intensity follows the stroke speed) or ``"position"``.
+        max_speed: Stroke speed in positions per second that maps to the maximum intensity in ``"speed"`` mode.
+            Positive. Defaults to 400.
+        start_ms: Pattern time to start at in ms. Defaults to 0. Negative values count as 0.
     """
 
     toy_id: str
@@ -291,12 +306,12 @@ class SetFunscriptData(BaseModel):
 
 class SeekData(BaseModel):
     """
-    Payload for the seek command.
+    Data of ``seek``.
 
     Attributes:
-        toy_id (str): Identifier of the toy.
-        pattern_time (float): The new position in the toy's pattern, in ms (the time scale of ``elapsed`` in tge toy's
-            state). Negative values count as 0.
+        toy_id: The toy.
+        pattern_time: The new pattern time in ms (the time scale of ``elapsed`` in the toy's state). Negative values
+            count as 0.
     """
 
     toy_id: str
@@ -306,10 +321,10 @@ class SeekData(BaseModel):
 
 class HeartbeatEnableData(BaseModel):
     """
-    Payload for the enable_heartbeat command.
+    Data of ``enable_heartbeat``.
 
     Attributes:
-        enable: True to subscribe to the heartbeat watchdog, False to unsubscribe.
+        enable: True to arm the heartbeat watchdog for this client, False to disarm it.
     """
 
     enable: bool
@@ -318,14 +333,11 @@ class HeartbeatEnableData(BaseModel):
 
 class GetInfoData(BaseModel):
     """
-    Payload for the get_info command.
+    Data of ``get_info`` and ``get_all``.
 
     Attributes:
-        toy_id: Unique identifier of the toy to query.
-        full:   If False, return only the inexpensive in-memory fields (toy_id, name, model_name, brand,
-                intensity_names, supports_rotation, max_intensity, battery) with no requests to the toy.
-                If True, also request additional brand-specific information from the toy.
-                Returns an empty dict if the command could not be delivered.
+        toy_id: The toy.
+        full: Also ask the toy for brand-specific information. If False, the reply needs no request to the toy.
     """
 
     toy_id: str
@@ -335,14 +347,11 @@ class GetInfoData(BaseModel):
 
 class DirectCommandData(BaseModel):
     """
-    Payload for the direct_command command. Useful to access functionality not exposed by the server.
+    Data of ``direct_command``.
 
     Attributes:
-        toy_id: Unique identifier of the target toy.
-        command: Raw command string to send directly to the toy over BLE.
-
-    Note:
-        Do not use this to change the tracked state (e.g., intensities) as it bypasses the server's state tracking.
+        toy_id: The toy.
+        command: Raw command in the toy's protocol. It does not change the tracked state: do not use it for intensities.
     """
 
     toy_id: str
@@ -357,11 +366,11 @@ class DirectCommandData(BaseModel):
 
 class AckData(BaseModel):
     """
-    Generic acknowledgement payload returned by commands that have no meaningful data to return.
+    Reply of commands without a result of their own.
 
     Attributes:
-        ack: Always True
-        toy_id: Identifier of the affected toy, if applicable.
+        ack: True. For ``intensity1``, ``intensity2`` and ``change_rotation_direction``: whether the command took effect
+        toy_id: The toy, if the command names one.
     """
 
     ack: bool = True
@@ -370,10 +379,10 @@ class AckData(BaseModel):
 
 class BrandsData(BaseModel):
     """
-    Response payload for get_brands.
+    Reply of ``get_brands``.
 
     Attributes:
-        brands: Mapping of brand name -> list of supported model names, e.g. {"Lovense": ["Gush", "Solace", ...]}.
+        brands: Brand -> its model names, e.g., ``{"Lovense": ["Solace", "Sex Machine", ...]}``.
     """
 
     brands: dict[str, list[str]]
@@ -381,10 +390,10 @@ class BrandsData(BaseModel):
 
 class ToyIdsData(BaseModel):
     """
-    Response payload for get_toy_ids.
+    Reply of ``get_toy_ids``.
 
     Attributes:
-        toy_ids: Snapshot list of all toy identifiers currently managed by _ToyHub.
+        toy_ids: The added toys.
     """
 
     toy_ids: list[str]
@@ -392,18 +401,20 @@ class ToyIdsData(BaseModel):
 
 class ToyStateData(BaseModel):
     """
-    Response payload for get_toy_state and the on_toy_state_change event.
+    Reply of ``get_state``, and data of the ``toy_state_changed`` event.
 
     Attributes:
-        toy_id: Unique identifier of the toy.
-        current_intensities: Current intensity values as [intensity1, intensity2]. intensity2 is always 0 for single-intensity toys.
-        intensity_limits: Current intensity limits as [limit1, limit2]. All intensity commands are clamped to these values.
-        is_blocked: True when the toy is blocked (both intensities forced to zero).
-        pattern_version: Increments each time the pattern state changes.
-        pattern: Active pattern as a list of (duration_ms, intensity1, intensity2) tuples.
-        wraparound: True if the pattern loops after the final segment; False if it stops.
-        is_paused: True when pattern playback is paused.
-        elapsed: Milliseconds elapsed since the start of the pattern or the last wraparound (Does not advance during pauses).
+        toy_id: The toy.
+        current_intensities: ``[intensity1, intensity2]``: the levels the toy last acknowledged. intensity2 is 0 without
+            a secondary capability.
+        intensity_limits: ``[limit1, limit2]``: manual levels and pattern values are capped at these.
+        is_blocked: Whether the toy is blocked (it stays at 0).
+        pattern_version: Increases whenever the pattern, the pause, or the position changes.
+        pattern: Segments as ``[duration_ms, intensity1, intensity2]``. Empty without a pattern.
+        wraparound: Whether the pattern loops.
+        is_paused: Whether pattern playback is paused.
+        elapsed: The pattern time in ms, without paused time. A wraparound does not reset it: the position in the
+            pattern is ``elapsed`` modulo the pattern's duration.
     """
 
     toy_id: str
@@ -419,11 +430,11 @@ class ToyStateData(BaseModel):
 
 class BatteryResponseData(BaseModel):
     """
-    Response payload for get_battery.
+    Reply of ``get_battery``.
 
     Attributes:
-        battery: Battery level in the range 0–100, or None if the toy has no battery.
-        toy_id: Unique identifier of the queried toy.
+        battery: The last known level in percent. None if the toy has no battery.
+        toy_id: The toy.
     """
 
     battery: Optional[int]
@@ -432,11 +443,11 @@ class BatteryResponseData(BaseModel):
 
 class ConnectionStatusResponseData(BaseModel):
     """
-    Response payload for get_connection_status.
+    Reply of ``get_connection_status``.
 
     Attributes:
-        connection_status: Current connection status: "connected", "reconnecting", "lost", or "powered_off".
-        toy_id: Unique identifier of the queried toy.
+        connection_status: ``"connected"``, ``"reconnecting"``, ``"lost"``, or ``"powered_off"``.
+        toy_id: The toy.
     """
 
     connection_status: str
@@ -445,17 +456,18 @@ class ConnectionStatusResponseData(BaseModel):
 
 class InfoResponseData(BaseModel):
     """
-    Response payload for get_info. If full=True may contain additional brand-specific fields.
+    Reply of ``get_info``, and data of the ``model_changed`` event. With ``full``, brand-specific keys are added
+    (Lovense: ``status``, ``batch_number``, ``device_type``).
 
     Attributes:
-        toy_id: Unique identifier of the queried toy.
-        name: Human-readable name of the toy (e.g., Bluetooth advertisement name).
-        model_name: Model name of the toy (e.g., "Gush").
-        brand: Brand name of the toy (e.g., "Lovense").
-        intensity_names: List of two human-readable strings. The second string is "None" if the toy only has one intensity.
-        supports_rotation: True if the toy supports changing the rotation direction.
-        max_intensity: Maximum intensity value supported by the toy.
-        recommended_min_interval: Recommended minimum interval between intensity changes, in milliseconds.
+        toy_id: The toy.
+        name: Human-readable name, e.g., the Bluetooth name.
+        model_name: Model name, e.g., ``"Gush"``.
+        brand: Brand, e.g., ``"Lovense"``.
+        intensity_names: Display names of the two capabilities. The second is empty without a secondary capability.
+        supports_rotation: Whether the toy can change its rotation direction.
+        max_intensity: Highest intensity level of both capabilities.
+        recommended_min_interval: Recommended minimum interval between intensity changes, in ms.
     """
 
     toy_id: str
@@ -471,11 +483,11 @@ class InfoResponseData(BaseModel):
 
 class DirectCommandResponseData(BaseModel):
     """
-    Response payload for direct_command.
+    Reply of ``direct_command``.
 
     Attributes:
-        response: Raw response string returned by the toy, or an empty string if the command could not be delivered.
-        toy_id: Unique identifier of the toy that was commanded.
+        response: The toy's raw reply.
+        toy_id: The toy.
     """
 
     response: str
@@ -483,7 +495,14 @@ class DirectCommandResponseData(BaseModel):
 
 
 class GetAllResponseData(BaseModel):
-    """Response payload for get_all. Combines state, info, and connection status."""
+    """
+    Reply of ``get_all``. The keys of :class:`ToyStateData` and :class:`InfoResponseData` (brand-specific ones
+    included), plus these.
+
+    Attributes:
+        battery: The last known battery level in percent. None if the toy has no battery.
+        connection_status: ``"connected"``, ``"reconnecting"``, ``"lost"``, or ``"powered_off"``.
+    """
 
     toy_id: str
     name: str

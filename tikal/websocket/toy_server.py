@@ -1,102 +1,18 @@
 """
-WebSocket JSON-based server that exposes _ToyHub to connected clients.
-Offers an alternative to the Low-Level / High-Level API defined by the tikal library.
-Here information is exchanged via a websocket. Significantly harder to use than the Low-Level / High-Level APIs but
-offers some advantages:
+WebSocket API: :class:`ToyServer`, a JSON-over-WebSocket server for toy control.
 
-- Process separation
-- Service can be used in applications written in other programming languages (assuming websockets are supported)
-- Multiple clients can modify the same state (experimental, untested)
+Clients in any language, in other processes, can control the toys. The protocol is described in ``docs/websocket/``:
+clients send requests, the server replies to each, and broadcasts events about changes. Several clients can connect at
+once; this is less tested than a single client.
 
-**Protocol**
+Request, reply, and event::
 
-Request  (client -> server):
+    {"request": "get_battery", "id": "1", "data": {"toy_id": "00:00:00:00:00:01"}}
+    {"reply": "get_battery", "id": "1", "success": true, "data": {"battery": 85, "toy_id": "00:00:00:00:00:01"}}
+    {"event": "connection_status_changed", "success": true, "data": {"toy_id": "00:00:00:00:00:01", "status": "lost"}}
 
-.. code-block:: text
-
-    {"request": "some_command", "id": "some_id", "data": {...}}
-
-Response (server -> client):
-
-.. code-block:: text
-
-    {"reply": "some_command", "id": "some_id", "success": true,  "data": { ... }}
-    {"reply": "some_command", "id": "some_id", "success": false, "data": {"error": "...", "message": "...", ...}}
-
-Event (server -> all clients / scan subscribers):
-
-.. code-block:: text
-
-    {"event": "some_event", "success": true,  "data": {...}}
-    {"event": "some_event", "success": false, "data": {"error": "...", "message": "..."}}
-
-The success field lets you branch between error handling / normal operation without having to inspect data.
-
-**Examples**:
-
-Request:
-
-.. code-block:: json
-
-    {
-        "request": "get_battery",
-        "id": "some_id",
-        "data": {"toy_id": "some_toy_id"}
-    }
-
-Response:
-
-.. code-block:: json
-
-    {
-        "reply": "get_battery",
-        "id": "some_id",
-        "success": true,
-        "data": {"battery": 85, "toy_id": "some_toy_id"}
-    }
-
-Error response:
-
-.. code-block:: json
-
-    {
-        "reply": "get_battery",
-        "id": "some_id",
-        "success": false,
-        "data": {
-            "error": "Unknown Toy",
-            "message": "Unable to execute 'get_battery' on 'some_toy_id'. Please add the toy first.",
-            "traceback": null,
-            "toy_id": "some_toy_id",
-            "model_name": null,
-            "brand": null
-        }
-    }
-
-Event:
-
-.. code-block:: json
-
-    {
-        "event": "connection_status_changed",
-        "success": true,
-        "data": {"toy_id": "some_toy_id", "status": "reconnecting"}
-    }
-
-**Architecture**
-
-Each command is described by a _Command, which bundles:
-
-- Request_model   : Pydantic model that validates the incoming data object.
-- Response_model  : Pydantic model that validates (and serializes) the outgoing data.
-- Run             : async callable(ws, data: req_model) -> dict that performs the actual work and returns the reply data.
-
-ToyServer._build_commands lists every command. Most of them only call a _ToyHub method and shape its result into the
-reply; the rest need the client's connection or the server's own state (scan subscriptions, the heartbeat watchdog,
-per-client limits, shutdown) and are methods of ToyServer.
-
-_handle_message is a *generic* dispatcher: validate -> look up the command -> validate inner data -> run it -> validate response -> send.
-An exception a command raises is turned into an error reply by one table, _ERROR_REPLIES.
+Start it with ``tikal-server`` (see :mod:`tikal.websocket.cli`), or create a :class:`ToyServer` and await
+:meth:`ToyServer.serve`.
 """
 
 import asyncio
@@ -180,12 +96,12 @@ _Reply = Callable[[Any, Any], dict[str, Any]]
 @dataclass(frozen=True)
 class _Command:
     """
-    Everything the dispatcher needs to handle one command. See ToyServer._build_commands for the list.
+    How the server runs one command. :meth:`ToyServer._build_commands` lists them all.
 
     Attributes:
-        req_model:  The Pydantic model used to validate (and coerce) the data field of the incoming RequestEnvelope.
-        resp_model: The Pydantic model used to validate the reply data before it is serialized into the ResponseEnvelope.
-        run:        Performs the command for a client and returns the reply data.
+        req_model: Validates the request's ``data``.
+        resp_model: Validates the reply's ``data``.
+        run: Runs the command for a client and returns the reply's ``data``.
     """
 
     req_model: type[BaseModel]
@@ -194,18 +110,44 @@ class _Command:
 
 
 def _ack(_result: Any, data: Any) -> dict[str, Any]:
-    """Reply for a command without a result of its own: acknowledge it."""
+    """
+    Reply of a command without a result of its own.
+
+    Args:
+        _result: The command's result. Unused.
+        data: The validated request data. Names the toy.
+
+    Returns:
+        An acknowledgement with the ``toy_id``.
+    """
     return {"ack": True, "toy_id": data.toy_id}
 
 
 def _as_is(result: Any, _data: Any) -> dict[str, Any]:
-    """Reply for a command whose result already is the reply data (e.g., a toy's state)."""
+    """
+    Reply of a command whose result is the reply's data, e.g., a toy's state.
+
+    Args:
+        result: The command's result.
+        _data: The validated request data. Unused.
+
+    Returns:
+        *result*.
+    """
     reply: dict[str, Any] = result
     return reply
 
 
 def _named(key: str) -> _Reply:
-    """Reply that carries the command's result under *key*, plus the toy_id if the request named a toy."""
+    """
+    Reply that carries the command's result under a key.
+
+    Args:
+        key: The key, e.g., ``"battery"``.
+
+    Returns:
+        The reply function. Its reply also has the ``toy_id`` if the request named a toy.
+    """
 
     def reply(result: Any, data: Any) -> dict[str, Any]:
         named = {key: result}
@@ -227,9 +169,10 @@ class _ErrorReply:
     How an exception raised by a command is reported to the client.
 
     Attributes:
-        error:          Name of the error (the error field of ErrorData).
-        message:        Message template. May use {toy_id}, {model_name}, {cmd}, {status} and {details} (the traceback).
-        log_level:      Level the failure is logged at. From WARNING upwards, the log includes the traceback.
+        error: The ``error`` of the reply's :class:`ErrorData`.
+        message: Message template. May use ``{toy_id}``, ``{model_name}``, ``{cmd}``, ``{status}`` and ``{details}``
+            (the traceback).
+        log_level: Level the failure is logged at. From WARNING on, with the traceback.
         with_traceback: Whether the reply carries the traceback.
     """
 
@@ -274,8 +217,8 @@ _UNEXPECTED_ERROR = _ErrorReply(
 
 class InsecureBindError(ValueError):
     """
-    Raised when a :class:`ToyServer` is asked to bind a non-loopback host without opting into insecure mode.
-    See ``docs/websocket/security.md``.
+    A :class:`ToyServer` was asked to bind a non-loopback host without ``insecure=True``. See
+    ``docs/websocket/security.md``.
     """
 
 
@@ -283,8 +226,12 @@ def _is_loopback_host(host: str | None) -> bool:
     """
     Return ``True`` only if *host* provably refers to the loopback interface (safe to serve without auth).
 
-    Fails closed: anything not provably loopback -- ``0.0.0.0``/``::`` (all interfaces), a LAN IP, a hostname,
-    or ``None``/``""`` -- is treated as exposed so the caller must opt into it explicitly.
+    Args:
+        host: The host to bind, as given to :class:`ToyServer`.
+
+    Returns:
+        True for ``localhost`` and loopback addresses, e.g., ``127.0.0.1`` or ``::1``. False for all interfaces
+        (``0.0.0.0``, ``::``, ``""``, None), other addresses, and other host names.
     """
     if not host:
         return False  # None / "" binds all interfaces -> exposed
@@ -303,9 +250,34 @@ def _is_loopback_host(host: str | None) -> bool:
 
 class ToyServer:
     """
-    WebSocket server that wraps a _ToyHub instance.
+    JSON-over-WebSocket server for toy control (protocol: ``docs/websocket/``). Owns a toy hub; start it with
+    :meth:`serve`.
 
-    The server owns the _ToyHub and wires itself up as all of its callbacks. Create it, then await self.serve() to start accepting connections.
+    - Shuts down when no client is connected for *idle_shutdown_delay* seconds, or when a client that sent ``shutdown``
+      disconnects.
+    - Stops every toy when the last client disconnects.
+    - Intensity limits are per client: a toy's limit is the lowest of all clients' limits. A client's limits end when
+      it disconnects.
+    - A client that armed the heartbeat (``enable_heartbeat``) and then misses a heartbeat or disconnects gets every toy
+      blocked.
+    - Has no authentication: it refuses a non-loopback *host* unless *insecure* (see ``docs/websocket/security.md``).
+    - Serves a read-only status page to plain HTTP requests, and refuses WebSocket connections from browsers.
+
+    Args:
+        toy_cache_path: JSON file that remembers each toy's model name. ``Path()`` keeps it in memory only.
+        host: Interface to bind.
+        port: TCP port.
+        idle_shutdown_delay: Seconds without clients until the server shuts down, counted from :meth:`serve` and from
+            each time the last client left. 0 or less: never.
+        mock_toys: Use the fake Lovense toys of :mod:`tikal.mock`, and offer the fictional MockEstimToys brand.
+        log_name: Name of the logger, shared with the hub.
+        insecure: Allow a non-loopback *host*. Only when something else protects the server: a reverse proxy, a
+            firewall, a trusted LAN, or tests.
+        bluetooth_scanner: BleakScanner (sub)class to scan with, instead of the one *mock_toys* picks.
+        bluetooth_client: BleakClient (sub)class to connect with, instead of the one *mock_toys* picks.
+
+    Raises:
+        InsecureBindError: *host* is not a loopback interface, and *insecure* is False.
     """
 
     def __init__(
@@ -320,29 +292,6 @@ class ToyServer:
         bluetooth_scanner: Any = None,
         bluetooth_client: Any = None,
     ) -> None:
-        """
-        Initialize the server and wire it up to a new _ToyHub instance. Call await self.serve() to begin accepting connections.
-
-        Args:
-            toy_cache_path: Path to the toy-cache file used by _ToyHub to persist previously added toys across restarts. If empty, no persistent cache is used.
-            host:           Network interface to bind the WebSocket server to. Defaults to "localhost".
-                            tikal performs no authentication, so binding a non-loopback host is refused unless
-                            ``insecure=True``; the supported way to expose it is behind a reverse proxy (TLS + auth)
-                            with tikal on localhost. See ``docs/websocket/security.md``.
-            port:           TCP port to listen on. Defaults to 8142.
-            idle_shutdown_delay:  How long to wait for clients to disconnect before shutting down the server. Defaults to 3 seconds. If 0, the Server does not shut down automatically.
-            mock_toys:      If True, _ToyHub uses mock toys instead of real toys.
-            log_name:       Name of the Python logger used by both the server and the underlying _ToyHub instance. Defaults to "tikal_ws".
-            insecure:       Allow binding a non-loopback ``host`` even though tikal has no built-in authentication.
-                            Off by default: an exposed bind raises :class:`InsecureBindError`. Only set this when the
-                            server is protected another way (reverse proxy, firewall, trusted LAN, or testing).
-            bluetooth_scanner: BLE scanner class to use instead of the one ``mock_toys`` picks (e.g., for tests).
-            bluetooth_client: BLE client class to use instead of the one ``mock_toys`` picks (e.g., for tests).
-
-        Raises:
-            InsecureBindError: ``host`` is not a loopback interface and ``insecure`` is False.
-        """
-
         self._host = host
         self._port = port
         self._log = logging.getLogger(log_name)
@@ -369,16 +318,17 @@ class ToyServer:
         self._shutdown_requested_clients: set[ServerConnection] = set()
         # Subset of _clients that have subscribed to scan results.
         self._scan_subscribers: set[ServerConnection] = set()
-        # Lock that serializes start_scan/stop_scan calls.
+        # Serializes starting and stopping the scan.
         self._scan_lock = asyncio.Lock()
-        # Task that fires idle_shutdown_delay seconds after the last client leaves and shuts down the server.
+        #: Seconds without clients until the server shuts down (see *idle_shutdown_delay*). Read at each countdown.
         self.idle_shutdown_delay = idle_shutdown_delay
+        # The countdown to the idle shutdown, while no client is connected.
         self._shutdown_task: asyncio.Task[None] | None = None
         # The underlying websockets server object; set in serve().
         self._server: websockets.Server | None = None
-        # Set once the server no longer accepts connections (see _stop_accepting), which is the first step of a shutdown.
+        # Set once the server stopped accepting connections (see _stop_accepting): the first step of a shutdown.
         self._stopped_accepting = False
-
+        # Set by the first _shutdown that gets past the hub's shutdown. It alone closes the remaining connections.
         self._shutdown_initiated = False
 
         # Per-client intensity limits: ws -> toy_id -> [limit1_or_None, limit2_or_None]
@@ -411,11 +361,13 @@ class ToyServer:
 
     async def serve(self) -> None:
         """
-        Start the WebSocket server and block until it shuts itself down.
+        Start the server and return once it shut down.
 
-        The teardown runs in a ``finally``: a toy keeps doing whatever it was last told once this process is gone, so
-        the hub has to get its chance to stop and disconnect every toy even when this coroutine is **canceled**
-        (which is what ``asyncio.run`` does on Ctrl+C).
+        Every toy is stopped and disconnected at the end, also when this coroutine is canceled (as ``asyncio.run`` does
+        on Ctrl+C): a toy keeps doing what it was last told once the process is gone.
+
+        Raises:
+            OSError: The server could not listen on *host* and *port*, e.g., the port is in use.
         """
         self._server = await serve(
             self._handle_connection,
@@ -443,15 +395,15 @@ class ToyServer:
 
     async def shutdown(self) -> None:
         """
-        Stop the server and make every toy safe: stops accepting connections (which frees the port for a new server
-        right away), stops and disconnects all toys, then closes the remaining connections.
+        Shut the server down: stop accepting connections (which frees the port at once), stop and disconnect every toy,
+        then close the remaining connections.
 
-        Idempotent, and safe to call from a signal handler. :meth:`serve` returns once this completes.
+        Idempotent, and safe to call from a signal handler. :meth:`serve` returns once it completed.
         """
         await self._shutdown()
 
     async def _idle_shutdown(self) -> None:
-        """Sleep for self.idle_shutdown_delay, then tear down _ToyHub, and close the server."""
+        """Shut down after *idle_shutdown_delay* seconds, unless canceled. Returns at once if that is 0 or less."""
         if self.idle_shutdown_delay <= 0:
             # Auto-shutdown disabled: the server stays up until an explicit shutdown request.
             self._log.info("Idle shutdown disabled (delay <= 0); server will stay up.")
@@ -467,7 +419,10 @@ class ToyServer:
         await self._shutdown()
 
     async def _shutdown(self) -> None:
-        """Stop accepting connections, tear down _ToyHub, and close the remaining connections."""
+        """
+        Stop accepting connections, shut the hub down (stopping and disconnecting every toy), then close the remaining
+        connections. Idempotent.
+        """
         self._stop_accepting()
         await self._hub.shutdown()  # idempotent
         if self._shutdown_initiated:
@@ -487,11 +442,8 @@ class ToyServer:
 
     def _stop_accepting(self) -> None:
         """
-        Stop accepting new connections, so a new server can take over the port right away. Idempotent.
-
-        Stopping and disconnecting every toy takes a while with real toys, and an application that is restarted
-        meanwhile must not connect to a server that is about to go away. Its own server could not even start, because
-        the port would still be taken. Connections already open stay open until the shutdown closes them.
+        Stop accepting connections, so a new server can take the port while this one still stops its toys. Open
+        connections stay. Idempotent.
         """
         if self._stopped_accepting or self._server is None:
             return
@@ -501,24 +453,17 @@ class ToyServer:
 
     async def _handle_connection(self, ws: ServerConnection) -> None:
         """
-        Manage the full lifecycle of a single WebSocket client connection.
+        Serve one client until it disconnects.
 
-        On connect: Cancels any pending idle-shutdown timer, registers the client in _clients, and calls _ToyHub.startup().
+        Each message is handled in its own task, so a slow command does not hold up later ones. Once the client is gone:
 
-        While connected: Reads messages from the client in a loop, spawning a new task per message, so slow commands don't block later ones.
-
-        On disconnect (normal close or connection error):
-
-        - If this client requested the shutdown: stops accepting connections first, so the port is free at once.
-        - Removes the client from _clients and _scan_subscribers.
-        - Watchdog: an armed heartbeat client vanishing blocks every toy; the last client leaving stops every toy and
-          pauses its pattern (no one has control anymore) and idle shutdown might be disabled or still seconds away.
-        - Stops the BLE scan if this was the last scan subscriber.
-        - Drops this client's intensity limits and re-applies the remaining clients' ceiling.
-        - Starts the idle-shutdown timer if no other clients remain.
+        - If it armed the heartbeat, every toy gets blocked (see ``enable_heartbeat``).
+        - If it was the last client, every toy is stopped, and the idle shutdown countdown starts.
+        - Its scan subscription and intensity limits are dropped.
+        - If it sent ``shutdown``, the server shuts down.
 
         Args:
-            ws: The WebSocket connection object for the newly connected client.
+            ws: The client's connection.
         """
         if self._shutdown_task is not None:
             self._shutdown_task.cancel()
@@ -587,8 +532,8 @@ class ToyServer:
         Parse, validate, and dispatch a single incoming message.
 
         Args:
-            ws: The WebSocket connection object of the client that sent the message.
-            raw_msg: The raw message string received from the client.
+            ws: The client's connection.
+            raw_msg: The message.
         """
 
         # 1. Parse and validate the outer envelope.
@@ -660,10 +605,14 @@ class ToyServer:
         self, ws: ServerConnection, req_id: str, cmd: str, error: Exception
     ) -> None:
         """
-        Report an exception that a command raised: look up how in _ERROR_REPLIES, log it, and send the error reply.
+        Log an exception a command raised and send the matching error reply (see ``_ERROR_REPLIES``).
 
-        The toy_id, model_name and brand of the reply (and the placeholders of the message) are taken from the
-        exception where it has them.
+        Args:
+            ws: The client's connection.
+            req_id: The request's id.
+            cmd: The request's command name.
+            error: The exception. Its ``toy_id``, ``model_name``, ``brand``, ``cmd``, and ``status`` attributes, if
+                any, go into the reply.
         """
         spec = _UNEXPECTED_ERROR
         for cls in type(error).__mro__:
@@ -705,10 +654,11 @@ class ToyServer:
 
     def _build_commands(self) -> dict[str, _Command]:
         """
-        The commands of the protocol (see docs/websocket/actions.md)
+        The protocol's commands (see ``docs/websocket/actions.md``).
 
-        Most commands call a _ToyHub method. ``hub_command`` builds those from the call and from how its result
-        is shaped into the reply (acknowledged by default). The server itself handles the commands at the end.
+        Returns:
+            Request name -> its :class:`_Command`. Most call one ``_ToyHub`` method and shape its result into the reply.
+            The others need the client's connection or the server's state, and are ``_cmd_*`` methods.
         """
         hub = self._hub
 
@@ -718,6 +668,8 @@ class ToyServer:
             call: Callable[[Any], Awaitable[Any]],
             reply: _Reply = _ack,
         ) -> _Command:
+            """A command that runs *call* with the request data and shapes its result with *reply*."""
+
             async def run(_ws: ServerConnection, data: Any) -> dict[str, Any]:
                 return reply(await call(data), data)
 
@@ -844,12 +796,33 @@ class ToyServer:
         }
 
     async def _cmd_shutdown(self, ws: ServerConnection, _data: Any) -> dict[str, Any]:
-        """Shut the server down once *ws* disconnects (see _handle_connection)."""
+        """
+        ``shutdown``: shut the server down once the client disconnects.
+
+        Args:
+            ws: The client.
+            _data: The validated request data. Unused.
+
+        Returns:
+            The reply's data, an acknowledgement.
+        """
         self._shutdown_requested_clients.add(ws)
         return {"ack": True}
 
     async def _cmd_start_scan(self, ws: ServerConnection, _data: Any) -> dict[str, Any]:
-        """Subscribe *ws* to scan results, starting the scan if this is the first subscriber."""
+        """
+        ``start_scan``: subscribe the client to ``scan_update`` events. The first subscriber starts the scan.
+
+        Args:
+            ws: The client.
+            _data: The validated request data. Unused.
+
+        Returns:
+            The reply's data, an acknowledgement.
+
+        Raises:
+            DiscoveryStartError: The scan could not start, e.g., Bluetooth is off. The client is not subscribed.
+        """
         try:
             async with self._scan_lock:
                 self._scan_subscribers.add(ws)
@@ -861,12 +834,26 @@ class ToyServer:
         return {"ack": True}
 
     async def _cmd_stop_scan(self, ws: ServerConnection, _data: Any) -> dict[str, Any]:
-        """Unsubscribe *ws* from scan results."""
+        """
+        ``stop_scan``: unsubscribe the client from ``scan_update`` events. The last subscriber stops the scan.
+
+        Args:
+            ws: The client.
+            _data: The validated request data. Unused.
+
+        Returns:
+            The reply's data, an acknowledgement.
+        """
         await self._unsubscribe_from_scan(ws)
         return {"ack": True}
 
     async def _unsubscribe_from_scan(self, ws: ServerConnection) -> None:
-        """Unsubscribe *ws* from scan results, stopping the scan when no subscribers remain. Never raises."""
+        """
+        Unsubscribe a client from ``scan_update`` events. The last subscriber stops the scan. Never raises.
+
+        Args:
+            ws: The client. Need not be subscribed.
+        """
         async with self._scan_lock:
             self._scan_subscribers.discard(ws)
             if not self._scan_subscribers:
@@ -878,7 +865,16 @@ class ToyServer:
     async def _cmd_enable_heartbeat(
         self, ws: ServerConnection, data: Any
     ) -> dict[str, Any]:
-        """Arm or disarm the heartbeat watchdog for *ws*."""
+        """
+        ``enable_heartbeat``: arm or disarm the heartbeat watchdog for the client.
+
+        Args:
+            ws: The client.
+            data: The validated :class:`HeartbeatEnableData`.
+
+        Returns:
+            The reply's data, an acknowledgement.
+        """
         if data.enable:
             await self._watchdog.arm(ws)
         else:
@@ -886,7 +882,16 @@ class ToyServer:
         return {"ack": True}
 
     async def _cmd_heartbeat(self, ws: ServerConnection, _data: Any) -> dict[str, Any]:
-        """Record that the armed client *ws* is still there."""
+        """
+        ``heartbeat``: record that the client is still there. Ignored if it did not arm the heartbeat.
+
+        Args:
+            ws: The client.
+            _data: The validated request data. Unused.
+
+        Returns:
+            The reply's data, an acknowledgement.
+        """
         await self._watchdog.beat(ws)
         return {"ack": True}
 
@@ -894,19 +899,27 @@ class ToyServer:
         self, axis: int, ws: ServerConnection, data: Any
     ) -> dict[str, Any]:
         """
-        Store the client's limit for one intensity, compute the effective minimum, and forward it to _ToyHub.
+        ``set_intensity1_limit`` and ``set_intensity2_limit``: set the client's limit for one channel of a toy. The
+        toy's limit is the lowest of all clients' limits.
 
         Args:
             axis: 0 for intensity1, 1 for intensity2.
-            ws: The client setting its limit.
-            data: Validated IntensityLimitData.
+            ws: The client.
+            data: The validated :class:`IntensityLimitData`.
+
+        Returns:
+            The reply's data, an acknowledgement with the ``toy_id``.
+
+        Raises:
+            ToyConnectionError: The limit is in force, but bringing the toy down failed. The client's limit is kept.
+            Exception: Anything else the hub raises, e.g., UnknownToyError. The client's previous limit is restored.
         """
         toy_id = data.toy_id
 
         client_toys = self._client_limits.setdefault(ws, {})
         toy_limits = client_toys.setdefault(toy_id, [None, None])
         old_value = toy_limits[axis]
-        toy_limits[axis] = data.limit  # None = "I don't want to limit"
+        toy_limits[axis] = data.limit  # None withdraws this client's limit
 
         try:
             await self._apply_effective_limit(toy_id, axis)
@@ -925,7 +938,19 @@ class ToyServer:
         return {"ack": True, "toy_id": toy_id}
 
     async def _apply_effective_limit(self, toy_id: str, axis: int) -> None:
-        """Forward the minimum of all clients' limits for a toy axis to _ToyHub (None if no client limits it)."""
+        """
+        Set a toy's limit for one channel to the lowest of all clients' limits, or remove it if no client limits it.
+
+        Args:
+            toy_id: The toy.
+            axis: 0 for intensity1, 1 for intensity2.
+
+        Raises:
+            UnknownToyError: The toy is not added.
+            ToyNotConnectedError: The toy runs above the limit but is not connected, so it was not brought down. The
+                limit is still in force.
+            ToyConnectionError: Bringing the toy down failed. The limit is in force. Reconnecting has started.
+        """
         values = [
             client_toys[toy_id][axis]
             for client_toys in self._client_limits.values()
@@ -936,16 +961,15 @@ class ToyServer:
 
     async def _stop_all_toys(self, reason: str) -> list[str]:
         """
-        Stop every managed toy, which also freezes its pattern playback.
+        Stop every managed toy, which also pauses its pattern playback.
 
-        Never raises: a toy that cannot be reached is logged and reported back, because the remaining toys still
-        have to be stopped.
+        Never raises: a toy that cannot be reached is logged and reported back.
 
         Args:
-            reason: Short phrase for the log line explaining why the toys are being stopped.
+            reason: For the log, e.g., "the last client disconnected".
 
         Returns:
-            The ids of the toys that could **not** be stopped.
+            The ids of the toys that could not be stopped.
         """
         failed: list[str] = []
         for toy_id in await self._hub.get_toy_ids():
@@ -966,8 +990,17 @@ class ToyServer:
 
     async def _handle_http_request(self, _: Any, request: Any) -> Response | None:
         """
-        Intercept plain HTTP requests and serve a status page.
-        WebSocket upgrade requests (Upgrade: websocket) are passed through by returning None.
+        Answer plain HTTP requests with the status page, and let WebSocket handshakes through.
+
+        A handshake with an ``Origin`` header (from a browser) is refused with 403, to prevent cross-site WebSocket
+        hijacking.
+
+        Args:
+            _: The connection being opened. Unused.
+            request: The HTTP request.
+
+        Returns:
+            The HTTP response, or None to continue the WebSocket handshake.
         """
         if request.headers.get("upgrade", "").lower() == "websocket":
             if "origin" in request.headers:
@@ -1009,19 +1042,42 @@ class ToyServer:
         *,
         success: bool,
     ) -> None:
-        """Serialize and send a response envelope to *ws*."""
+        """
+        Send a reply to a client. Does nothing if the client is gone.
+
+        Args:
+            ws: The client.
+            req_id: The request's id.
+            cmd: The request's command name.
+            data: The reply's data.
+            success: Whether the command succeeded. False: *data* is an :class:`ErrorData`.
+        """
         resp = ResponseEnvelope(reply=cmd, id=req_id, success=success, data=data)
         await self._send_raw(ws, resp.model_dump_json())
 
     async def _send_error(
         self, ws: ServerConnection, req_id: str, cmd: str, error: ErrorData
     ) -> None:
-        """Send an unsuccessful response carrying *error* to *ws*."""
+        """
+        Send a failed reply to a client. Does nothing if the client is gone.
+
+        Args:
+            ws: The client.
+            req_id: The request's id, ``"?"`` if unknown.
+            cmd: The request's command name, ``"?"`` if unknown.
+            error: The reply's data.
+        """
         await self._send_response(ws, req_id, cmd, error.model_dump(), success=False)
 
     @staticmethod
     async def _send_raw(ws: ServerConnection, msg: str) -> None:
-        """Send a JSON string to a single client, silently dropping if already gone."""
+        """
+        Send a message to one client. Does nothing if the client is gone.
+
+        Args:
+            ws: The client.
+            msg: The JSON message.
+        """
         try:
             await ws.send(msg)
         except Exception:
@@ -1035,7 +1091,15 @@ class ToyServer:
         success: bool = True,
         to: set[ServerConnection] | None = None,
     ) -> None:
-        """Broadcast an event to all connected clients, or only to the clients in *to*."""
+        """
+        Send an event to clients. Clients that are gone are skipped.
+
+        Args:
+            event_name: The event, e.g., ``"toy_state_changed"``.
+            payload: The event's data.
+            success: False if *payload* reports an error.
+            to: The recipients. None: every client.
+        """
         recipients = set(self._clients if to is None else to)
         if not recipients:
             return
@@ -1049,13 +1113,24 @@ class ToyServer:
     # _ToyHub callbacks -> event broadcasts
 
     async def _on_status_change(self, toy_id: str, status: ToyStatus) -> None:
-        """Broadcast a ``connection_status_changed`` event to all connected clients when a toy's connection status changes."""
+        """
+        Broadcast ``connection_status_changed``.
+
+        Args:
+            toy_id: The toy.
+            status: Its new status.
+        """
         await self._broadcast(
             "connection_status_changed", dict(toy_id=toy_id, status=status.value)
         )
 
     async def _on_toy_ids_change(self, toy_ids: list[str]) -> None:
-        """Broadcast a ``toy_ids_changed`` event to all connected clients when the set of managed toys changes."""
+        """
+        Broadcast ``toy_ids_changed``, and drop the clients' limits of removed toys.
+
+        Args:
+            toy_ids: The ids of all added toys.
+        """
         current = set(toy_ids)
         # Clean up any stale intensity limits
         for client_toys in self._client_limits.values():
@@ -1065,19 +1140,40 @@ class ToyServer:
         await self._broadcast("toy_ids_changed", dict(toy_ids=toy_ids))
 
     async def _on_toy_state_change(self, state: dict[str, Any]) -> None:
-        """Broadcast a ``toy_state_changed`` event to all connected clients when any part of a toy's state changes."""
+        """
+        Broadcast ``toy_state_changed``.
+
+        Args:
+            state: The toy's state, see :class:`ToyStateData`.
+        """
         await self._broadcast("toy_state_changed", state)
 
     async def _on_model_change(self, update: dict[str, Any]) -> None:
-        """Broadcast a ``model_changed`` event to all connected clients when a toy's assigned model name changes."""
+        """
+        Broadcast ``model_changed``.
+
+        Args:
+            update: The toy's info after the change, see :class:`InfoResponseData`.
+        """
         await self._broadcast("model_changed", update)
 
     async def _on_battery_change(self, updates: dict[str, int | None]) -> None:
-        """Broadcast a ``battery_changed`` event to all connected clients when one or more toys report a new battery level."""
+        """
+        Broadcast ``battery_changed``.
+
+        Args:
+            updates: ``{toy_id: level}`` for the toys whose level changed. Level in percent, None without battery.
+        """
         await self._broadcast("battery_changed", updates)
 
     async def _on_scan_update(self, update: Exception | list[ToyData]) -> None:
-        """Forward a ``scan_update`` event to scan-subscribed clients only."""
+        """
+        Forward a ``scan_update`` to the scan subscribers.
+
+        Args:
+            update: The toys found, or the error that ended the scan. A :class:`DiscoveryError` is reported as
+                ``"Discovery Error"``, any other exception as ``"Developer Error"``.
+        """
         if isinstance(update, DiscoveryError):
             await self._broadcast(
                 "scan_update",

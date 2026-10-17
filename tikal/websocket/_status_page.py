@@ -1,7 +1,6 @@
 """
-HTML status page generator for ToyServer.
-
-Renders a self-refreshing HTML dashboard showing server metadata and per-toy info / state / battery / connection status.
+Private module of the WebSocket API: the HTML status page of :class:`~tikal.websocket.toy_server.ToyServer`, with server
+data and every toy's info, state, battery, and connection status.
 """
 
 import datetime
@@ -12,7 +11,14 @@ if TYPE_CHECKING:
 
 
 class ToyServerStatusPage:
-    """Generates an HTML status page for the ToyServer."""
+    """
+    Renders the server's status page.
+
+    Args:
+        hub: The server's toy hub.
+        host: The server's host, for display.
+        port: The server's port, for display.
+    """
 
     def __init__(self, hub: "_ToyHub", host: str, port: int) -> None:
         self._hub = hub
@@ -21,10 +27,21 @@ class ToyServerStatusPage:
         self._start_time: datetime.datetime | None = None
 
     def set_start_time(self, start_time: datetime.datetime) -> None:
-        """Record when the server started (used for uptime display)."""
+        """
+        Record when the server started, for the uptime.
+
+        Args:
+            start_time: The start time, local time.
+        """
         self._start_time = start_time
 
     def _format_uptime(self) -> str:
+        """
+        The server's uptime.
+
+        Returns:
+            The uptime as ``"1h 2m 3s"``, or ``"unknown"`` before :meth:`set_start_time`.
+        """
         if self._start_time is None:
             return "unknown"
         delta = datetime.datetime.now() - self._start_time
@@ -34,7 +51,7 @@ class ToyServerStatusPage:
 
     async def build_html(self, client_count: int) -> str:
         """
-        Build the complete HTML status page.
+        Render the page with the current server and toy data. Toys whose data cannot be read are left out.
 
         Args:
             client_count: Number of currently connected WebSocket clients.
@@ -71,6 +88,17 @@ class ToyServerStatusPage:
     def _render_page(
         self, client_count: int, toy_count: int, toys_data: list[dict[str, Any]]
     ) -> str:
+        """
+        Render the page from the data :meth:`build_html` gathered.
+
+        Args:
+            client_count: Number of connected WebSocket clients.
+            toy_count: Number of added toys, including those left out of *toys_data*.
+            toys_data: One dict per toy, with the keys ``id``, ``info``, ``state``, ``status``, and ``battery``.
+
+        Returns:
+            The HTML document: server data, then one card per toy.
+        """
         uptime = self._format_uptime()
         now = datetime.datetime.now().strftime("%H:%M:%S")
 
@@ -139,6 +167,15 @@ class ToyServerStatusPage:
 
     @staticmethod
     def _render_toy_card(toy: dict[str, Any]) -> str:
+        """
+        Render the card of one toy.
+
+        Args:
+            toy: The toy's data, see *toys_data* of :meth:`_render_page`.
+
+        Returns:
+            The HTML card: info, state, and pattern.
+        """
         info = toy["info"]
         state = toy["state"]
         status = toy["status"]
