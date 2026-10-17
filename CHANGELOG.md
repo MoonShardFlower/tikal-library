@@ -28,6 +28,10 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 ### Fixed
     - Web API docs: A request with invalid data is reported as "Invalid Data". error.md and the `set_pattern` section
         of actions.md wrongly called it "Validation Error".
+    - High-Level API: `set_pattern` copies the pattern. Changing the list afterward no longer changes playback.
+    - High-Level API: `set_pattern` now checks every segment and raises `TypeError` or `ValueError` if one is malformed.
+    - Pattern playback follows the monotonic clock: a change of the system time no longer makes it jump.
+    - Pattern playback of one toy no longer waits for the others, ensuring one toy cannot stall the others.
 
 ## [2.0.0] - 2026-10-06
 

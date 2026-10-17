@@ -7,7 +7,7 @@ High-Level API: :class:`ToyController`, the synchronous handle of one connected 
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Sequence, TypeVar
 
 from .._core import UnknownToyError, _ToyController
 from ..funscript import Funscript, FunscriptMode
@@ -151,7 +151,9 @@ class ToyController:
         """
         return self._toy().get_pattern_values(pattern_time)
 
-    def get_pattern_data(self) -> tuple[list[tuple[int, int, int]], bool, bool, float]:
+    def get_pattern_data(
+        self,
+    ) -> tuple[list[tuple[float, int, int]], bool, bool, float]:
         """
         The full pattern and playback state.
 
@@ -239,7 +241,7 @@ class ToyController:
 
     def set_pattern(
         self,
-        pattern: list[tuple[int, int, int]],
+        pattern: Sequence[tuple[float, int, int]],
         wraparound: bool = True,
         reset_time: bool = True,
     ) -> None:
@@ -251,6 +253,11 @@ class ToyController:
                 Stored as given: limits are applied during playback.
             wraparound: Loop the pattern. If False, it plays once, then the intensities are 0.
             reset_time: Start at the beginning. If False, keep the current pattern time.
+
+        Raises:
+            TypeError: A segment is not a sequence, a duration is not a number, or a level is not an int. Nothing
+                changed.
+            ValueError: A segment does not have three values, or a duration is not finite. Nothing changed.
 
         Example::
 

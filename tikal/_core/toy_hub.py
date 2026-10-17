@@ -11,8 +11,9 @@ import copy
 import logging
 import traceback
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Coroutine, TypeVar
+from typing import Any, Awaitable, Callable, Coroutine, Sequence, TypeVar
 
 from bleak import BleakClient, BleakScanner
 
@@ -26,7 +27,7 @@ from ..low_level import BRANDS
 from ..low_level import BadModelError as LowLevelBadModelError
 from ..low_level import ConnectionBuilder
 from ..low_level import InvalidModelError as LowLevelInvalidModelError
-from ..low_level import Toy, ToyData
+from ..low_level import Toy, ToyData, UnexpectedToyResponse
 from ..mock import MockBleakClient, MockBleakScanner
 from .toy_cache import ToyCache
 from .toy_controller import _CONTROLLER_BY_BRAND, _ToyController
@@ -42,7 +43,7 @@ class ToyStatus(StrEnum):
 
     #: Connected. Reported after a successful reconnect, right after the toy's (stopped) state.
     CONNECTED = "connected"
-    #: The connection dropped, or a command failed twice.
+    #: The connection dropped, or a command (a pattern playback command included) failed twice.
     #: The hub reconnects for up to ``RECONNECT_WINDOW``. Nothing is sent to the toy meanwhile.
     RECONNECTING = "reconnecting"
     #: No reconnect attempt succeeded. The toy is removed.
@@ -275,6 +276,9 @@ class _ToyHub:
         self._process_task: asyncio.Task[None] | None = None
         self._battery_poll_task: asyncio.Task[None] | None = None
 
+        # The playback tick in flight, at most one per toy. Keyed by toy_id.
+        self._tick_tasks: dict[str, asyncio.Task[None]] = {}
+
         # At most one reconnect task per toy. Keyed by toy_id.
         self._reconnect_tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -317,6 +321,13 @@ class _ToyHub:
                     pass
         self._process_task = None
         self._battery_poll_task = None
+
+        # Cancel the playback ticks in flight first: a failing tick could start a reconnect.
+        tick_tasks = list(self._tick_tasks.values())
+        self._tick_tasks.clear()
+        for task in tick_tasks:
+            task.cancel()
+        await asyncio.gather(*tick_tasks, return_exceptions=True)
 
         # Cancel any in-flight reconnect tasks before disconnecting toys.
         reconnect_tasks = list(self._reconnect_tasks.values())
@@ -483,28 +494,38 @@ class _ToyHub:
             pass
 
     async def _process_loop(self) -> None:
-        """Every ``COMMUNICATION_INTERVAL``, run a playback tick for every connected toy, concurrently."""
+        """
+        Every ``COMMUNICATION_INTERVAL``, start a playback tick for every connected toy whose previous tick has finished.
+
+        The ticks run concurrently and are not waited for: a toy that is slow to answer skips ticks, but does not delay
+        the playback of the other toys.
+        """
         loop = asyncio.get_running_loop()
         while True:
-            start = loop.time()
-            connected = [
-                toy
-                for toy_id, toy in self._toys.items()
-                if self._toy_status.get(toy_id) == ToyStatus.CONNECTED
-            ]
-            if connected:
-                await asyncio.gather(
-                    *(self._process_one(toy) for toy in connected),
-                    return_exceptions=True,
+            for toy_id, toy in self._toys.items():
+                if self._toy_status.get(toy_id) != ToyStatus.CONNECTED:
+                    continue
+                in_flight = self._tick_tasks.get(toy_id)
+                if in_flight is not None and not in_flight.done():
+                    continue
+                task = loop.create_task(
+                    self._process_one(toy), name=f"toy-tick-{toy_id}"
                 )
-            # Sleep only the time left in this interval
-            await asyncio.sleep(
-                max(0.0, COMMUNICATION_INTERVAL - (loop.time() - start))
-            )
+                task.add_done_callback(partial(self._prune_tick_task, toy_id))
+                self._tick_tasks[toy_id] = task
+            await asyncio.sleep(COMMUNICATION_INTERVAL)
+
+    def _prune_tick_task(self, toy_id: str, task: asyncio.Task[None]) -> None:
+        """Forget a finished playback tick, unless a newer one replaced it."""
+        if self._tick_tasks.get(toy_id) is task:
+            self._tick_tasks.pop(toy_id, None)
 
     async def _process_one(self, toy: _ToyController) -> None:
         """
-        Run one playback tick for *toy*, under its command lock, with one retry. Failures are logged.
+        Run one playback tick for *toy*, under its command lock, with one retry.
+
+        If the toy cannot be reached twice, reconnecting starts, as for a failed command. A toy that refuses a playback
+        command is still reachable: like any other failure, that is only logged.
 
         Args:
             toy: The toy controller whose process_communication method will be called.
@@ -513,12 +534,22 @@ class _ToyHub:
         try:
             async with toy.cmd_lock:
                 await _retry(toy.process_communication)
+        except UnexpectedToyResponse as e:
+            self._log.warning(
+                "Toy %s refused a playback command after retry: %s", toy.toy_id, e
+            )
         except ConnectionError as e:
             self._log.warning(
                 "process_communication failed for toy %s after retry: %s",
                 toy.toy_id,
                 e,
             )
+            # The toy may have been removed or replaced, or may be reconnecting already, while this tick ran.
+            if (
+                self._toys.get(toy.toy_id) is toy
+                and self._toy_status.get(toy.toy_id) == ToyStatus.CONNECTED
+            ):
+                await self._start_reconnecting(toy, "Playback failed")
         except Exception as e:
             self._log.error(
                 "Unexpected error in process_communication for toy %s: %s",
@@ -1097,7 +1128,7 @@ class _ToyHub:
     async def set_pattern(
         self,
         toy_id: str,
-        pattern: list[tuple[int, int, int]],
+        pattern: Sequence[tuple[float, int, int]],
         wraparound: bool = True,
         reset_time: bool = True,
     ) -> None:
@@ -1106,13 +1137,16 @@ class _ToyHub:
 
         Args:
             toy_id: Unique identifier of the toy.
-            pattern: Segments as ``(duration_ms, intensity1, intensity2)``. Stored as given: limits apply during
-                playback.
+            pattern: Segments as ``(duration_ms, intensity1, intensity2)``: a finite number and two ints. A copy is
+                stored as given: limits apply during playback.
             wraparound: Loop the pattern. If False, it plays once, then the intensities are 0.
             reset_time: Start at the beginning. If False, keep the current pattern time.
 
         Raises:
             UnknownToyError: The toy is not added.
+            TypeError: A segment is not a sequence, a duration is not a number, or an intensity is not an int. Nothing
+                changed.
+            ValueError: A segment does not have three values, or a duration is not finite. Nothing changed.
             ToyNotConnectedError: The pattern was cleared, but the toy is not connected, so it was not stopped.
             ToyConnectionError: The pattern was cleared, but stopping failed twice. Reconnecting has started.
         """

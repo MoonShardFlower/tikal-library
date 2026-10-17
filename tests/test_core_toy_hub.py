@@ -30,7 +30,7 @@ from tikal._core import (
 )
 from tikal._private import COMMUNICATION_INTERVAL
 from tikal.funscript import Funscript, funscript_to_pattern
-from tikal.low_level import ToyData
+from tikal.low_level import ToyData, UnexpectedToyResponse
 
 pytestmark = pytest.mark.asyncio
 
@@ -853,6 +853,94 @@ async def test_a_command_in_flight_on_one_toy_does_not_delay_another(hub):
 
     async with thunder.cmd_lock:
         assert await asyncio.wait_for(hub.intensity("Lightning_ID", 0, 30), 1) is True
+
+
+# ---------------------------------------------------------------------------
+# Pattern playback ticks
+# ---------------------------------------------------------------------------
+
+
+async def test_a_toy_that_does_not_answer_does_not_stall_the_playback_of_another(hub):
+    thunder = await _add_thunder(hub)
+    await hub.add("Lightning_ID", "Lightning")
+    lightning = hub._toys["Lightning_ID"]
+    answer = asyncio.Event()
+    thunder.process_communication = AsyncMock(side_effect=answer.wait)
+    lightning.process_communication = AsyncMock()
+
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 10)
+
+    # Thunder's first tick is still waiting for its reply, and no second one started. Lightning kept ticking.
+    assert thunder.process_communication.await_count == 1
+    assert lightning.process_communication.await_count >= 5
+    answer.set()
+    assert await _wait_until(lambda: thunder.process_communication.await_count > 1)
+
+
+async def test_playback_that_cannot_reach_the_toy_starts_a_reconnect(hub):
+    controller = await _add_thunder(hub)
+    statuses = []
+    hub._on_status_change = lambda toy_id, status: statuses.append(status)
+    controller.process_communication = AsyncMock(
+        side_effect=ConnectionError("no reply")
+    )
+
+    assert await _wait_until(lambda: ToyStatus.RECONNECTING in statuses)
+    del controller.process_communication  # the toy answers again
+    assert await _wait_until(
+        lambda: hub._toy_status.get("Thunder_ID") == ToyStatus.CONNECTED
+        and not hub._reconnect_tasks
+    )
+
+
+async def test_a_toy_that_refuses_a_playback_command_is_not_reconnected(hub):
+    controller = await _add_thunder(hub)
+    statuses = []
+    hub._on_status_change = lambda toy_id, status: statuses.append(status)
+    controller.process_communication = AsyncMock(
+        side_effect=UnexpectedToyResponse("ERR")
+    )
+
+    assert await _wait_until(lambda: controller.process_communication.await_count >= 4)
+
+    assert statuses == [] and not hub._reconnect_tasks
+    assert hub._toy_status["Thunder_ID"] == ToyStatus.CONNECTED
+
+
+async def test_a_failed_tick_of_a_toy_removed_meanwhile_starts_no_reconnect(hub):
+    controller = await _add_thunder(hub)
+    statuses = []
+    hub._on_status_change = lambda toy_id, status: statuses.append(status)
+    fail = asyncio.Event()
+
+    async def fail_once_released() -> None:
+        await fail.wait()
+        raise ConnectionError("no reply")
+
+    controller.process_communication = fail_once_released
+    assert await _wait_until(lambda: "Thunder_ID" in hub._tick_tasks)
+    await hub.remove("Thunder_ID")
+
+    fail.set()
+    await asyncio.sleep(COMMUNICATION_INTERVAL * 4)
+
+    assert statuses == [] and not hub._reconnect_tasks and not hub._tick_tasks
+
+
+async def test_shutdown_cancels_a_tick_in_flight():
+    hub = _ToyHub(mock_toys=True, log_name="test")
+    await hub.startup()
+    thunder = next(d for d in await hub.discover(0.1) if d.toy_id == "Thunder_ID")
+    thunder.model_name = "Thunder"
+    await hub.add_toy_data(thunder)
+    hub._toys["Thunder_ID"].process_communication = AsyncMock(
+        side_effect=asyncio.Event().wait
+    )
+    assert await _wait_until(lambda: "Thunder_ID" in hub._tick_tasks)
+
+    await asyncio.wait_for(hub.shutdown(), 2)
+
+    assert not hub._tick_tasks
 
 
 # ---------------------------------------------------------------------------

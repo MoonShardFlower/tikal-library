@@ -3,7 +3,9 @@
 import math
 from bisect import bisect_right
 from itertools import accumulate
-from time import time
+from numbers import Integral, Real
+from time import monotonic
+from typing import Any, Iterable
 
 
 class PatternHandler:
@@ -15,14 +17,14 @@ class PatternHandler:
     """
 
     def __init__(self) -> None:
-        self._pattern: list[tuple[int, int, int]] = []
+        self._pattern: list[tuple[float, int, int]] = []
         # End time of each segment in ms since the pattern start, for a binary search.
-        self._segment_ends: list[int] = []
+        self._segment_ends: list[float] = []
         self._pattern_wraparound = True
         self._is_paused = False
         # Pattern time (ms) reached before the current running stretch.
         self._pattern_elapsed_time: float = 0.0
-        # Wall-clock time (ms) at which the current running stretch began. None while not running.
+        # Monotonic clock time (ms) at which the current running stretch began. None while not running.
         self._segment_start_time: float | None = None
         self._pattern_version = 0
 
@@ -43,21 +45,31 @@ class PatternHandler:
 
     def set_pattern(
         self,
-        pattern: list[tuple[int, int, int]],
+        pattern: Iterable[tuple[float, int, int]],
         wraparound: bool = True,
         reset_time: bool = True,
     ) -> None:
         """
-        Set a new pattern. An empty list clears the pattern.
+        Set a new pattern. An empty list clears the pattern. The handler keeps its own copy: changing *pattern*
+        afterward does not affect playback.
 
         Args:
-            pattern: Segments as ``(duration_ms, intensity1, intensity2)``. A negative duration counts as 0.
+            pattern: Segments as ``(duration_ms, intensity1, intensity2)``. The duration is a finite number; a negative
+                one counts as 0. The intensities are ints.
             wraparound: Loop the pattern. If False, it plays once, then the intensities are 0.
             reset_time: Start at the beginning. If False, keep the current pattern time.
+
+        Raises:
+            TypeError: A segment is not a sequence, a duration is not a number, or an intensity is not an int (a bool
+                is neither). Nothing changed.
+            ValueError: A segment does not have exactly three values, or a duration is not finite. Nothing changed.
         """
-        self._pattern = pattern
+        segments = [
+            _checked_segment(index, segment) for index, segment in enumerate(pattern)
+        ]
+        self._pattern = segments
         self._segment_ends = list(
-            accumulate(max(0, duration) for duration, _, _ in pattern)
+            accumulate(max(0, duration) for duration, _, _ in segments)
         )
         self._pattern_wraparound = wraparound
         self._pattern_version += 1
@@ -65,7 +77,7 @@ class PatternHandler:
         if reset_time:
             self._pattern_elapsed_time = 0.0
             if not self._is_paused and self.has_active_pattern:
-                self._segment_start_time = time() * 1000
+                self._segment_start_time = monotonic() * 1000
             else:
                 self._segment_start_time = None
         else:
@@ -75,7 +87,7 @@ class PatternHandler:
                 and self._segment_start_time is None
             ):
                 # There was no pattern before: start running from the kept pattern time.
-                self._segment_start_time = time() * 1000
+                self._segment_start_time = monotonic() * 1000
 
     def set_paused(self, paused: bool) -> None:
         """
@@ -92,13 +104,13 @@ class PatternHandler:
 
         if paused:
             if self.has_active_pattern and self._segment_start_time is not None:
-                current_time = time() * 1000
+                current_time = monotonic() * 1000
                 segment_elapsed = current_time - self._segment_start_time
                 self._pattern_elapsed_time += segment_elapsed
                 self._segment_start_time = None
         else:
             if self.has_active_pattern:
-                self._segment_start_time = time() * 1000
+                self._segment_start_time = monotonic() * 1000
             else:
                 self._segment_start_time = None
 
@@ -122,7 +134,7 @@ class PatternHandler:
             )
         self._pattern_elapsed_time = max(0.0, float(pattern_time))
         if not self._is_paused and self.has_active_pattern:
-            self._segment_start_time = time() * 1000
+            self._segment_start_time = monotonic() * 1000
         else:
             self._segment_start_time = None
         self._pattern_version += 1
@@ -140,7 +152,7 @@ class PatternHandler:
         if self._segment_start_time is None:
             return 0.0
 
-        current_time = time() * 1000
+        current_time = monotonic() * 1000
         segment_elapsed = current_time - self._segment_start_time
         return self._pattern_elapsed_time + segment_elapsed
 
@@ -173,7 +185,9 @@ class PatternHandler:
         ]
         return intensity1, intensity2
 
-    def get_pattern_data(self) -> tuple[list[tuple[int, int, int]], bool, bool, float]:
+    def get_pattern_data(
+        self,
+    ) -> tuple[list[tuple[float, int, int]], bool, bool, float]:
         """
         Gets the complete pattern state for visualization.
 
@@ -193,3 +207,47 @@ class PatternHandler:
             self._is_paused,
             self.get_pattern_time(),
         )
+
+
+def _checked_segment(index: int, segment: Any) -> tuple[float, int, int]:
+    """
+    One pattern segment, checked and converted to built-in numbers (e.g., a numpy int becomes an int).
+
+    Args:
+        index: Position of the segment in the pattern, for the error message.
+        segment: The segment as given, ``(duration_ms, intensity1, intensity2)``.
+
+    Returns:
+        ``(duration_ms, intensity1, intensity2)``: an int or float, and two ints.
+
+    Raises:
+        TypeError: *segment* is not a sequence, the duration is not a number, or an intensity is not an int. A bool is
+            neither.
+        ValueError: *segment* does not have exactly three values, or the duration is not finite.
+    """
+    try:
+        duration, intensity1, intensity2 = segment
+    except TypeError:
+        raise TypeError(
+            f"Pattern segment {index} must be (duration_ms, intensity1, intensity2), got {segment!r}"
+        ) from None
+    except ValueError:
+        raise ValueError(
+            f"Pattern segment {index} must have exactly 3 values, got {segment!r}"
+        ) from None
+    if isinstance(duration, bool) or not isinstance(duration, Real):
+        raise TypeError(
+            f"Pattern segment {index}: the duration must be a number, got {duration!r}"
+        )
+    if not math.isfinite(duration):
+        raise ValueError(
+            f"Pattern segment {index}: the duration must be finite, got {duration!r}"
+        )
+    for name, level in (("intensity1", intensity1), ("intensity2", intensity2)):
+        # Levels go to the toy verbatim: "Vibrate:7.5" is not a command a toy understands.
+        if isinstance(level, bool) or not isinstance(level, Integral):
+            raise TypeError(
+                f"Pattern segment {index}: {name} must be an int, got {level!r}"
+            )
+    number = int(duration) if isinstance(duration, Integral) else float(duration)
+    return number, int(intensity1), int(intensity2)

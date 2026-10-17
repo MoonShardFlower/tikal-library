@@ -6,7 +6,7 @@ The hub (``_ToyHub``) owns the controllers and runs every command through them.
 
 import asyncio
 import math
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, Awaitable, Callable, Sequence, TypeVar
 
 from .._private import PatternHandler
 from ..funscript import Funscript, FunscriptMode, funscript_to_pattern
@@ -138,7 +138,9 @@ class _ToyController:
         """The ``(intensity1, intensity2)`` the pattern plays at *pattern_time* (ms), before limits."""
         return self._pattern_handler.get_pattern_values(pattern_time)
 
-    def get_pattern_data(self) -> tuple[list[tuple[int, int, int]], bool, bool, float]:
+    def get_pattern_data(
+        self,
+    ) -> tuple[list[tuple[float, int, int]], bool, bool, float]:
         """``(pattern, wraparound, is_paused, pattern_time)``, as in :meth:`get_state`."""
         return self._pattern_handler.get_pattern_data()
 
@@ -220,18 +222,23 @@ class _ToyController:
 
     def apply_pattern(
         self,
-        pattern: list[tuple[int, int, int]],
+        pattern: Sequence[tuple[float, int, int]],
         wraparound: bool = True,
         reset_time: bool = True,
     ) -> bool:
         """
-        Set a pattern. An empty list clears it. The pause stays as it is.
+        Set a pattern. An empty list clears it. The pause stays as it is. A copy is kept.
 
         Args:
-            pattern: List of (duration_ms, intensity1, intensity2) tuples. Limits are applied later during playback,
-                so a changed limit affects a running pattern at once.
+            pattern: List of (duration_ms, intensity1, intensity2) tuples: a finite number and two ints. Limits are
+                applied later during playback, so a changed limit affects a running pattern at once.
             wraparound: Loop the pattern. If False, it plays once; then the intensities are 0.
             reset_time: Start at the beginning. If False, keep the current pattern time.
+
+        Raises:
+            TypeError: A segment is not a sequence, a duration is not a number, or an intensity is not an int. Nothing
+                changed.
+            ValueError: A segment does not have three values, or a duration is not finite. Nothing changed.
 
         Returns:
             Whether the toy has to be stopped now (see :meth:`stop_output`), which is when the pattern was cleared.
@@ -536,7 +543,7 @@ class _ToyController:
         - `intensity_limits` (list[int, int]) Current set intensity limits.
         - `is_blocked` (bool) Whether the toy is currently blocked (toy's intensities are forced to zero).
         - `pattern_version` (int) Each time the pattern state changes, the version number is incremented.
-        - `pattern` (list[tuple[int, int, int]]) List of tuples (duration, intensity1, intensity2) defining the pattern.
+        - `pattern` (list[tuple[float, int, int]]) List of tuples (duration, intensity1, intensity2) defining the pattern.
         - `wraparound` (bool) Whether the pattern repeats from the beginning after completing the last segment.
             If False, both Intensities are 0 after the last segment.
         - `is_paused` (bool) Whether the toy is currently paused (patterns do not advance).
