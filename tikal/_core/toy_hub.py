@@ -1238,24 +1238,24 @@ class _ToyHub:
         report_state: bool = True,
     ) -> T:
         """
-        Send a command to a toy.
+         Send a command to a toy.
 
-       Sends it under the toy's command lock (in order with its other commands), refused while the toy is not
-       connected. Failed commands are retried once after a ConnectionError, followed by reconnecting if it fails again.
+        Sends it under the toy's command lock (in order with its other commands), refused while the toy is not
+        connected. Failed commands are retried once after a ConnectionError, followed by reconnecting if it fails again.
 
-        Args:
-            toy_id: Unique Identifier of the toy.
-            command_name: Name of the command, for errors and logs.
-            command: Sends the command, given the toy's controller, e.g., ``lambda toy: toy.stop_output()``.
-            report_state: Report the toy's state afterward. False for queries.
+         Args:
+             toy_id: Unique Identifier of the toy.
+             command_name: Name of the command, for errors and logs.
+             command: Sends the command, given the toy's controller, e.g., ``lambda toy: toy.stop_output()``.
+             report_state: Report the toy's state afterward. False for queries.
 
-        Raises:
-            UnknownToyError: The toy is not added.
-            ToyNotConnectedError: The toy is not connected. Nothing was sent.
-            ToyConnectionError: The command failed twice. Reconnecting has started.
+         Raises:
+             UnknownToyError: The toy is not added.
+             ToyNotConnectedError: The toy is not connected. Nothing was sent.
+             ToyConnectionError: The command failed twice. Reconnecting has started.
 
-        Returns:
-            The command's result.
+         Returns:
+             The command's result.
         """
         toy = self._get_toy(toy_id)
         async with toy.cmd_lock:
