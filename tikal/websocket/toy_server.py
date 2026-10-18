@@ -51,6 +51,7 @@ from .._core import (
 )
 from ..low_level import ToyData
 from ._heartbeat_watchdog import _HeartbeatWatchdog
+from ._outbox import _Outbox, close_or_abort
 from ._status_page import ToyServerStatusPage
 from .toy_server_models import (
     AckData,
@@ -260,6 +261,7 @@ class ToyServer:
       it disconnects.
     - A client that armed the heartbeat (``enable_heartbeat``) and then misses a heartbeat or disconnects gets every toy
       blocked.
+    - Each client's replies and events are sent from a queue of its own. Clients can't hold up each other.
     - Has no authentication: it refuses a non-loopback *host* unless *insecure* (see ``docs/websocket/security.md``).
     - Serves a read-only status page to plain HTTP requests, and refuses WebSocket connections from browsers.
 
@@ -314,6 +316,10 @@ class ToyServer:
 
         # All currently connected WebSocket clients.
         self._clients: set[ServerConnection] = set()
+        # Each client's outbox: every reply and event goes through it
+        self._outboxes: dict[ServerConnection, _Outbox] = {}
+        # The tasks handling messages, each one referenced until it is done.
+        self._message_tasks: set[asyncio.Task[None]] = set()
         # Clients that requested shutdown; the server stops once they disconnect.
         self._shutdown_requested_clients: set[ServerConnection] = set()
         # Subset of _clients that have subscribed to scan results.
@@ -402,6 +408,19 @@ class ToyServer:
         """
         await self._shutdown()
 
+    def _start_idle_shutdown(self) -> None:
+        """
+        Start the idle-shutdown countdown, replacing one already running. Does nothing once the server shuts down.
+        """
+        if self._stopped_accepting:
+            return
+        if self._shutdown_task is not None:
+            # Two clients that left close together each get here: Only one countdown may run
+            self._shutdown_task.cancel()
+        self._shutdown_task = asyncio.get_running_loop().create_task(
+            self._idle_shutdown(), name="idle-shutdown"
+        )
+
     async def _idle_shutdown(self) -> None:
         """Shut down after *idle_shutdown_delay* seconds, unless canceled. Returns at once if that is 0 or less."""
         if self.idle_shutdown_delay <= 0:
@@ -412,6 +431,8 @@ class ToyServer:
         try:
             await asyncio.sleep(self.idle_shutdown_delay)
         except asyncio.CancelledError:
+            return
+        if self._clients:
             return
         self._log.info(
             "No clients connected for %.1fs. Shutting down.", self.idle_shutdown_delay
@@ -434,7 +455,7 @@ class ToyServer:
             # still open are closed here, the way Server.close() would have closed them.
             await asyncio.gather(
                 *(
-                    connection.close(CloseCode.GOING_AWAY)
+                    close_or_abort(connection, CloseCode.GOING_AWAY)
                     for connection in list(self._server.connections)
                 ),
                 return_exceptions=True,
@@ -469,6 +490,7 @@ class ToyServer:
             self._shutdown_task.cancel()
             self._shutdown_task = None
 
+        self._outboxes[ws] = _Outbox(ws, self._log)
         self._clients.add(ws)
         await self._hub.startup()
         self._log.debug("Client connected (%d total).", len(self._clients))
@@ -479,10 +501,11 @@ class ToyServer:
                     # Watchdog gave up on this client. Whatever it sends while the connection closes does not count.
                     continue
                 # Spawn a task per message so the receiver loop stays responsive.
-                message = raw if isinstance(raw, str) else raw.decode("utf-8")
-                asyncio.get_running_loop().create_task(
-                    self._handle_message(ws, message), name="handle-message"
+                task = asyncio.get_running_loop().create_task(
+                    self._handle_message(ws, raw), name="handle-message"
                 )
+                self._message_tasks.add(task)
+                task.add_done_callback(self._message_task_done)
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
@@ -490,6 +513,9 @@ class ToyServer:
                 # The shutdown begins now. The cleanup below can take seconds, and a new server may want the port.
                 self._stop_accepting()
             self._clients.discard(ws)
+            outbox = self._outboxes.pop(ws, None)
+            if outbox is not None:
+                outbox.close()
             # An armed heartbeat client vanishing blocks every toy, until the user unblocks them.
             await self._watchdog.client_disconnected(ws)
             if not self._clients:
@@ -523,23 +549,35 @@ class ToyServer:
                 )
                 if not self._clients:
                     # The toys were already stopped at the top of this block; only the shutdown decision is left.
-                    self._shutdown_task = asyncio.get_running_loop().create_task(
-                        self._idle_shutdown(), name="idle-shutdown"
-                    )
+                    self._start_idle_shutdown()
 
-    async def _handle_message(self, ws: ServerConnection, raw_msg: str) -> None:
+    def _message_task_done(self, task: asyncio.Task[None]) -> None:
         """
-        Parse, validate, and dispatch a single incoming message.
+        Forget a finished message task, and log what it raised.
+        :meth:`_handle_message` answers every request, so that is a bug in the server.
+
+        Args:
+            task: The task.
+        """
+        self._message_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            self._log.error("Handling a message failed.", exc_info=task.exception())
+
+    async def _handle_message(self, ws: ServerConnection, raw_msg: str | bytes) -> None:
+        """
+        Parse, validate, and dispatch a single incoming message. Every request gets a reply, also when the server fails
+        on it ("Developer Error").
 
         Args:
             ws: The client's connection.
-            raw_msg: The message.
+            raw_msg: The message, as received: text, or a binary frame, which must be UTF-8 JSON as well.
         """
 
         # 1. Parse and validate the outer envelope.
         try:
-            envelope = RequestEnvelope.model_validate_json(raw_msg)
-        except ValidationError as e:
+            text = raw_msg if isinstance(raw_msg, str) else raw_msg.decode("utf-8")
+            envelope = RequestEnvelope.model_validate_json(text)
+        except (UnicodeDecodeError, ValidationError) as e:
             details = traceback.format_exc()
             self._log.warning(
                 "Invalid request envelope: '%s' with details: '%s'", e, details
@@ -558,7 +596,26 @@ class ToyServer:
 
         cmd = envelope.request
         req_id = envelope.id
+        try:
+            await self._dispatch(ws, req_id, cmd, envelope.data)
+        except Exception as e:
+            await self._send_error_for(ws, req_id, cmd, e)
 
+    async def _dispatch(
+        self, ws: ServerConnection, req_id: str, cmd: str, raw_data: dict[str, Any]
+    ) -> None:
+        """
+        Look up a request's command, validate its data, run it, and reply.
+
+        Args:
+            ws: The client's connection.
+            req_id: The request's id.
+            cmd: The request's command name.
+            raw_data: The request's data, not validated yet.
+
+        Raises:
+            Exception: What the command raised. The caller replies with the matching error.
+        """
         # 2. Look up the command.
         command = self._commands.get(cmd)
         if command is None:
@@ -576,9 +633,15 @@ class ToyServer:
 
         # 3. Validate the inner data payload.
         try:
-            data = command.req_model(**envelope.data)
-        except ValueError as e:
-            self._log.warning("Invalid request data for '%s': '%s'", cmd, e)
+            data = command.req_model(**raw_data)
+        except Exception as e:
+            if isinstance(e, ValidationError):
+                self._log.warning("Invalid request data for '%s': '%s'", cmd, e)
+            else:
+                # A validator raised something pydantic does not wrap: a bug in the model. The data is still invalid.
+                self._log.error(
+                    "Validating the data of '%s' failed unexpectedly.", cmd, exc_info=e
+                )
             tb = traceback.format_exc()
             await self._send_error(
                 ws,
@@ -593,12 +656,8 @@ class ToyServer:
             return
 
         # 4. Run the command and reply.
-        try:
-            result = await command.run(ws, data)
-            reply = command.resp_model(**result).model_dump()
-        except Exception as e:
-            await self._send_error_for(ws, req_id, cmd, e)
-            return
+        result = await command.run(ws, data)
+        reply = command.resp_model(**result).model_dump()
         await self._send_response(ws, req_id, cmd, reply, success=True)
 
     async def _send_error_for(
@@ -826,8 +885,7 @@ class ToyServer:
         try:
             async with self._scan_lock:
                 self._scan_subscribers.add(ws)
-                if len(self._scan_subscribers) == 1:
-                    await self._hub.start_scan(self._on_scan_update)
+                await self._hub.start_scan(self._on_scan_update)
         except Exception:
             self._scan_subscribers.discard(ws)
             raise
@@ -971,16 +1029,16 @@ class ToyServer:
         Returns:
             The ids of the toys that could not be stopped.
         """
+        toy_ids = await self._hub.get_toy_ids()
+        results = await asyncio.gather(
+            *(self._hub.stop(toy_id) for toy_id in toy_ids), return_exceptions=True
+        )
         failed: list[str] = []
-        for toy_id in await self._hub.get_toy_ids():
-            try:
-                await self._hub.stop(toy_id)
-            except Exception:
+        for toy_id, result in zip(toy_ids, results):
+            if isinstance(result, BaseException):
                 failed.append(toy_id)
-                self._log.exception(
-                    "Failed to stop toy %s (%s).",
-                    toy_id,
-                    reason,
+                self._log.error(
+                    "Failed to stop toy %s (%s).", toy_id, reason, exc_info=result
                 )
         if failed:
             self._log.error(
@@ -1043,7 +1101,7 @@ class ToyServer:
         success: bool,
     ) -> None:
         """
-        Send a reply to a client. Does nothing if the client is gone.
+        Send a reply to a client, after the messages already queued for it. Does nothing if the client is gone.
 
         Args:
             ws: The client.
@@ -1053,7 +1111,7 @@ class ToyServer:
             success: Whether the command succeeded. False: *data* is an :class:`ErrorData`.
         """
         resp = ResponseEnvelope(reply=cmd, id=req_id, success=success, data=data)
-        await self._send_raw(ws, resp.model_dump_json())
+        self._send_raw(ws, resp.model_dump_json())
 
     async def _send_error(
         self, ws: ServerConnection, req_id: str, cmd: str, error: ErrorData
@@ -1069,8 +1127,7 @@ class ToyServer:
         """
         await self._send_response(ws, req_id, cmd, error.model_dump(), success=False)
 
-    @staticmethod
-    async def _send_raw(ws: ServerConnection, msg: str) -> None:
+    def _send_raw(self, ws: ServerConnection, msg: str) -> None:
         """
         Send a message to one client. Does nothing if the client is gone.
 
@@ -1078,10 +1135,9 @@ class ToyServer:
             ws: The client.
             msg: The JSON message.
         """
-        try:
-            await ws.send(msg)
-        except Exception:
-            pass
+        outbox = self._outboxes.get(ws)
+        if outbox is not None:
+            outbox.put(msg)
 
     async def _broadcast(
         self,
@@ -1106,9 +1162,8 @@ class ToyServer:
         msg = EventEnvelope(
             event=event_name, success=success, data=payload
         ).model_dump_json()
-        await asyncio.gather(
-            *(ws.send(msg) for ws in recipients), return_exceptions=True
-        )
+        for ws in recipients:
+            self._send_raw(ws, msg)
 
     # _ToyHub callbacks -> event broadcasts
 

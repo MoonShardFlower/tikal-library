@@ -4,10 +4,26 @@ data and every toy's info, state, battery, and connection status.
 """
 
 import datetime
+import html
 from typing import TYPE_CHECKING, Any
+
+from .._core import ToyStatus
 
 if TYPE_CHECKING:
     from .._core import _ToyHub
+
+
+def _text(value: Any) -> str:
+    """
+    A value as HTML text. Toy names come from Bluetooth advertisements, which any nearby device chooses.
+
+    Args:
+        value: The value.
+
+    Returns:
+        ``str(value)``, HTML-escaped.
+    """
+    return html.escape(str(value))
 
 
 class ToyServerStatusPage:
@@ -152,7 +168,7 @@ class ToyServerStatusPage:
       <tr><th>Property</th><th>Value</th></tr>
       <tr><td>Status</td><td><span class="badge badge-success">Running</span></td></tr>
       <tr><td>Uptime</td><td>{uptime}</td></tr>
-      <tr><td>Address</td><td><code class="mono">ws://{self._host}:{self._port}</code></td></tr>
+      <tr><td>Address</td><td><code class="mono">ws://{_text(self._host)}:{self._port}</code></td></tr>
       <tr><td>Connected clients</td><td>{client_count}</td></tr>
       <tr><td>Connected toys</td><td>{toy_count}</td></tr>
     </table>
@@ -183,10 +199,10 @@ class ToyServerStatusPage:
         toy_id = toy["id"]
 
         status_badge = {
-            "CONNECTED": "badge-success",
-            "RECONNECTING": "badge-warn",
-            "LOST": "badge-danger",
-            "POWERED_OFF": "badge-info",
+            ToyStatus.CONNECTED: "badge-success",
+            ToyStatus.RECONNECTING: "badge-warn",
+            ToyStatus.LOST: "badge-danger",
+            ToyStatus.POWERED_OFF: "badge-info",
         }.get(status, "badge-info")
 
         # Battery
@@ -219,9 +235,9 @@ class ToyServerStatusPage:
             else None
         )
 
-        i1_row = f"<tr><td>{i1_name}</td><td>{bar(intensities[0])}</td></tr>"
+        i1_row = f"<tr><td>{_text(i1_name)}</td><td>{bar(intensities[0])}</td></tr>"
         i2_row = (
-            f"<tr><td>{i2_name}</td><td>{bar(intensities[1])}</td></tr>"
+            f"<tr><td>{_text(i2_name)}</td><td>{bar(intensities[1])}</td></tr>"
             if i2_name
             else ""
         )
@@ -242,16 +258,16 @@ class ToyServerStatusPage:
 
         return f"""<div class="card">
     <div class="card-header">
-      <span class="mono">{toy_id}</span>
-      <span class="badge {status_badge}">{status}</span>
+      <span class="mono">{_text(toy_id)}</span>
+      <span class="badge {status_badge}">{_text(status)}</span>
     </div>
     <div class="grid">
       <div>
         <h3>Info</h3>
         <table>
-          <tr><td>Name</td><td>{info.get("name", "N/A")}</td></tr>
-          <tr><td>Model</td><td>{info.get("model_name", "N/A")}</td></tr>
-          <tr><td>Brand</td><td>{info.get("brand", "N/A")}</td></tr>
+          <tr><td>Name</td><td>{_text(info.get("name", "N/A"))}</td></tr>
+          <tr><td>Model</td><td>{_text(info.get("model_name", "N/A"))}</td></tr>
+          <tr><td>Brand</td><td>{_text(info.get("brand", "N/A"))}</td></tr>
           <tr><td>Battery</td><td><div class="bar-wrap">{battery_str}{battery_bar}</div></td></tr>
           <tr><td>Max Intensity</td><td>{max_intensity}</td></tr>
           <tr><td>Rotation</td><td>{"Yes" if info.get("supports_rotation") else "No"}</td></tr>

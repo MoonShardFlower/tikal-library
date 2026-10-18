@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from tikal._core import ToyStatus
 from tikal.websocket._status_page import ToyServerStatusPage
 
 
@@ -49,7 +50,7 @@ def _card(**overrides):
         id="toy-1",
         info=_info(),
         state=_state(),
-        status="CONNECTED",
+        status=ToyStatus.CONNECTED,
         battery=77,
     )
     base.update(overrides)
@@ -107,7 +108,7 @@ async def test_build_html_renders_toy():
     hub.get_toy_ids.return_value = ["toy-1"]
     hub.get_info.return_value = _info()
     hub.get_state.return_value = _state(current_intensities=[15, 0])
-    hub.get_status.return_value = "CONNECTED"
+    hub.get_status.return_value = ToyStatus.CONNECTED
     hub.get_battery.return_value = 77
     page = ToyServerStatusPage(hub, "localhost", 8142)
 
@@ -176,3 +177,26 @@ def test_card_renders_pattern_segments():
 def test_card_no_pattern_shows_placeholder():
     html = ToyServerStatusPage._render_toy_card(_card(state=_state(pattern=[])))
     assert "No active pattern" in html
+
+
+@pytest.mark.parametrize(
+    "status, badge",
+    [
+        (ToyStatus.CONNECTED, "badge-success"),
+        (ToyStatus.RECONNECTING, "badge-warn"),
+        (ToyStatus.LOST, "badge-danger"),
+        (ToyStatus.POWERED_OFF, "badge-info"),
+    ],
+)
+def test_card_badge_follows_the_status_the_hub_reports(status, badge):
+    """The hub reports ToyStatus values, which are lowercase strings ("connected")."""
+    html = ToyServerStatusPage._render_toy_card(_card(status=status))
+    assert f'<span class="badge {badge}">{status.value}</span>' in html
+
+
+def test_card_escapes_what_the_toy_reports():
+    """A toy's name is its Bluetooth advertisement name, which any nearby device chooses."""
+    info = _info(name="LVS-<img src=x onerror=alert(1)>", intensity_names=["<b>", ""])
+    html = ToyServerStatusPage._render_toy_card(_card(id="<i>id</i>", info=info))
+    assert "<img" not in html and "<b>" not in html and "<i>" not in html
+    assert "LVS-&lt;img src=x onerror=alert(1)&gt;" in html

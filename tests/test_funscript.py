@@ -7,7 +7,12 @@ import pytest
 from pydantic import ValidationError
 
 from tikal._private.pattern_handler import PatternHandler
-from tikal.funscript import Funscript, funscript_to_pattern
+from tikal.funscript import (
+    MAX_ACTION_TIME,
+    MAX_SLOTS,
+    Funscript,
+    funscript_to_pattern,
+)
 
 
 def convert(actions, min_segment_ms=100, **kwargs):
@@ -105,12 +110,20 @@ def test_script_is_immutable():
         [{"at": 0, "pos": True}],
         [{"at": float("nan"), "pos": 0}],
         [{"at": 0, "pos": float("inf")}],
+        [{"at": MAX_ACTION_TIME + 1, "pos": 0}],
+        [[0, 0], [1e12, 100]],
         "not a list",
     ],
 )
 def test_malformed_actions_are_rejected(actions):
     with pytest.raises(ValidationError):
         Funscript(actions=actions)
+
+
+def test_an_action_at_the_latest_time_is_accepted():
+    """24 hours: far longer than any video, and converting it still takes well under a second."""
+    pattern = convert([(0, 0), (MAX_ACTION_TIME, 100)])
+    assert sum(segment[0] for segment in pattern) == MAX_ACTION_TIME
 
 
 def test_validation_error_is_a_value_error():
@@ -308,6 +321,14 @@ def test_invalid_arguments_are_rejected(kwargs):
     arguments = {"max_intensity": 20, "min_segment_ms": 100, **kwargs}
     with pytest.raises(ValueError):
         funscript_to_pattern(Funscript(actions=[(0, 0), (100, 100)]), **arguments)
+
+
+def test_a_script_needing_too_many_slots_is_rejected_before_converting():
+    """The work grows with the number of slots, so the limit is checked up front."""
+    script = Funscript(actions=[(0, 0), (MAX_SLOTS + 1, 100)])
+    with pytest.raises(ValueError, match="slots"):
+        funscript_to_pattern(script, max_intensity=20, min_segment_ms=1)
+    assert funscript_to_pattern(script, max_intensity=20, min_segment_ms=2)
 
 
 # ---------------------------------------------------------------------------

@@ -143,31 +143,54 @@ def test_insecure_bind_error_exits_cleanly():
     run.assert_not_called()
 
 
-def test_serve_exception_is_logged_not_raised():
+def test_a_failed_start_is_reported_and_exits_with_status_1(tmp_path, capsys):
+    """
+    A launcher (the Tikal App) tells a failed start, e.g., the port is in use, from a normal end by the exit status. The
+    windowless build has no stderr, so the error must reach the log file as well.
+    """
+    log_file = tmp_path / "server.log"
     with (
         patch.object(cli, "ToyServer"),
         patch.object(cli, "_serve_until_signal", new_callable=MagicMock),
-        patch.object(cli.asyncio, "run", side_effect=RuntimeError("boom")),
-        patch.object(cli.logging, "critical") as critical,
-        patch.object(sys, "argv", ["tikal-server", "--log-path", "None"]),
+        patch.object(cli.asyncio, "run", side_effect=OSError("port in use")),
+        patch.object(sys, "argv", ["tikal-server", "--log-path", str(log_file)]),
     ):
-        cli.main()  # must not raise
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
 
-    critical.assert_called_once()
+    assert exc_info.value.code == 1
+    for handler in logging.getLogger("tikal_ws").handlers:
+        handler.flush()
+    assert "port in use" in log_file.read_text(encoding="utf-8")
+    assert "port in use" in capsys.readouterr().err
 
 
-def test_keyboard_interrupt_exits_quietly():
+def test_keyboard_interrupt_exits_quietly(caplog):
     """Ctrl+C is an expected way to stop the server, not a crash: serve()'s finally has already stopped the toys."""
     with (
         patch.object(cli, "ToyServer"),
         patch.object(cli, "_serve_until_signal", new_callable=MagicMock),
         patch.object(cli.asyncio, "run", side_effect=KeyboardInterrupt),
-        patch.object(cli.logging, "critical") as critical,
         patch.object(sys, "argv", ["tikal-server", "--log-path", "None"]),
     ):
-        cli.main()  # must not propagate the KeyboardInterrupt
+        cli.main()  # must not propagate the KeyboardInterrupt, nor exit with an error
 
-    critical.assert_not_called()
+    assert not [r for r in caplog.records if r.levelno >= logging.CRITICAL]
+
+
+def test_an_unknown_log_level_is_a_usage_error():
+    with pytest.raises(SystemExit) as exc_info:
+        _run_main(["tikal-server", "--log-path", "None", "--log-level", "verbose"])
+    assert exc_info.value.code == 2
+
+
+def test_without_a_log_file_the_log_level_still_applies_and_the_log_goes_to_stderr():
+    _run_main(["tikal-server", "--log-path", "None", "--log-level", "warning"])
+
+    logger = logging.getLogger("tikal_ws")
+    assert logger.level == logging.WARNING
+    handlers = [h for h in logger.handlers if type(h) is logging.StreamHandler]
+    assert handlers and handlers[0].stream is sys.stderr
 
 
 # ---------------------------------------------------------------------------

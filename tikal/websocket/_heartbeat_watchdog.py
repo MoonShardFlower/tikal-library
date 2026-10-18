@@ -21,6 +21,8 @@ from typing import Any, Awaitable, Callable, Literal
 
 from websockets.asyncio.server import ServerConnection
 
+from ._outbox import close_or_abort
+
 #: WebSocket close code sent to a client that stayed overdue for the whole heartbeat grace period.
 CLOSE_HEARTBEAT_OVERDUE = 4000
 
@@ -229,7 +231,8 @@ class _HeartbeatWatchdog:
             self.grace_period,
         )
         task = asyncio.get_running_loop().create_task(
-            client.close(code=CLOSE_HEARTBEAT_OVERDUE, reason="Heartbeat overdue"),
+            # A stuck client may not take the close frame: then its connection is aborted after the close timeout.
+            close_or_abort(client, CLOSE_HEARTBEAT_OVERDUE, "Heartbeat overdue"),
             name="close-overdue-client",
         )
         # Keep a reference: a bare create_task may be garbage-collected before the close completes.

@@ -23,13 +23,15 @@ In the following I only define the data fields of each event and describe when t
 ### 1. `connection_status_changed`
 A toy’s connection status has changed. The server monitors the connection and broadcasts this event whenever the status transitions (e.g., connected -> reconnecting -> lost).
 
-- `reconnecting`: a command failed or the connection dropped. The server tries to reconnect, with several attempts over
+- `reconnecting`: a command failed twice, pattern playback could not reach the toy twice, or the connection dropped.
+  The server tries to reconnect, with several attempts over
   up to about a minute. After reconnecting it first stops the toy, which also pauses its pattern: whatever the toy was
   last told no longer applies. Until then, nothing is sent to the toy: a command that needs it is refused with a
   Connection Error, while a state change such as a block, pause, pattern, or limit is still recorded (see **error.md**).
 - `connected`: reconnecting succeeded. A `toy_state_changed` with the stopped state is sent just before.
 - `lost`: no attempt succeeded within that minute. The toy is removed (a `toy_ids_changed` follows) and has to be added
-  again once it is discovered again. The server can no longer tell whether the toy is still running.
+  again once it is discovered again. The server can no longer tell whether the toy is still running. Removing a toy
+  while it reconnects ends the reconnect: no `lost` is sent in this case.
 - `powered_off`: the toy was switched off with its power button (it reports this). It is removed as well.
 
 **Data**
@@ -64,7 +66,10 @@ The set of toys managed by the server changed: a toy was added or removed.
 ---
 
 ### 3. `toy_state_changed`
-Any part of a toy’s internal state has changed (intensities, intensity limits, pattern, pause/block state, pattern version, elapsed time)
+A toy's state has changed: after a command that changes it (intensities, intensity limits, pattern, position,
+pause/block state), after reconnecting, and when the heartbeat watchdog blocks the toy. Pattern playback itself sends
+no event: while a pattern plays, `current_intensities` and `elapsed` move on without one. Ask `get_state` for their
+current values.
 
 **Data**
 ```json
@@ -81,17 +86,17 @@ Any part of a toy’s internal state has changed (intensities, intensity limits,
 }
 ```
 
-| Field                 | Type                     | Description                                                                                                    |
-|-----------------------|--------------------------|----------------------------------------------------------------------------------------------------------------|
-| `toy_id`              | string                   | Unique identifier of the toy.                                                                                  |
-| `current_intensities` | list[int]                | `[intensity1, intensity2]`; second value is always `0` for single‑intensity toys.                              |
-| `intensity_limits`    | list[int]                | `[limit1, limit2]`; current intensity limits. All intensity commands are clamped to these values.              |
-| `is_blocked`          | bool                     | `true` if the toy is forced to zero intensities.                                                               |
-| `pattern_version`     | int                      | Increments each time the pattern state changes.                                                                |
-| `pattern`             | list[tuple[int,int,int]] | Active pattern as a list of `(duration_ms, intensity1, intensity2)` segments.                                  |
-| `wraparound`          | bool                     | `true` if the pattern loops after the last segment; `false` if it stops.                                       |
-| `is_paused`           | bool                     | `true` when pattern playback is paused (intensities zero, timer frozen).                                       |
-| `elapsed`             | float                    | Milliseconds elapsed since the start of the pattern or the last wraparound (does not advance during pauses).   |
+| Field                 | Type                     | Description                                                                                                                                      |
+|-----------------------|--------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
+| `toy_id`              | string                   | Unique identifier of the toy.                                                                                                                    |
+| `current_intensities` | list[int]                | `[intensity1, intensity2]`; second value is always `0` for single‑intensity toys.                                                                |
+| `intensity_limits`    | list[int]                | `[limit1, limit2]`; current intensity limits. All intensity commands are clamped to these values.                                                |
+| `is_blocked`          | bool                     | `true` if the toy is forced to zero intensities.                                                                                                 |
+| `pattern_version`     | int                      | Increments each time the pattern state changes.                                                                                                  |
+| `pattern`             | list[tuple[int,int,int]] | Active pattern as a list of `(duration_ms, intensity1, intensity2)` segments.                                                                    |
+| `wraparound`          | bool                     | `true` if the pattern loops after the last segment; `false` if it stops.                                                                         |
+| `is_paused`           | bool                     | `true` when pattern playback is paused (intensities zero, timer frozen).                                                                         |
+| `elapsed`             | float                    | Pattern time in ms, without paused time. A wraparound does not reset it: the position in the pattern is `elapsed` modulo the pattern's duration. |
 
 ---
 
@@ -119,7 +124,6 @@ The model name assigned to an already‑added toy has changed (via the `set_mode
 | `model_name`               | string               | New model name assigned to the toy.                                                                                    |
 | `brand`                    | string               | Brand of the toy                                                                                                       |
 | `intensity_names`          | list[string, string] | New Human readable names for both capabilities. Second string is empty if the toy only has one capability.             |
-| `model_name`               | string               | New model name assigned to the toy.                                                                                    |
 | `supports_rotation`        | boolean              | If `true`, the toy allows for its rotation direction to be changed.                                                    |
 | `max_intensity`            | int                  | New maximum intensity level (equal for both capabilities). Values outside the range (0-max) are clamped automatically. |
 | `recommended_min_interval` | int                  | New recommended minimum interval between intensity commands (in ms). Especially useful for pattern playback.           |
@@ -129,24 +133,19 @@ The model name assigned to an already‑added toy has changed (via the `set_mode
 ### 5. `battery_changed`
 One or more toys reported a new battery level. Battery values are updated in the background without client interaction.
 
-**Data**
+**Data**: one key per toy whose level changed, its `toy_id`. The value is the battery level (0-100), or `null` if the
+toy has no battery.
 ```json
 {
-  "updates": {
-    "AA:BB:CC:DD:EE:FF": 85,
-    "11:22:33:44:55:66": 12
-  }
+  "AA:BB:CC:DD:EE:FF": 85,
+  "11:22:33:44:55:66": 12
 }
 ```
-
-| Field     | Type                      | Description                                                                       |
-|-----------|---------------------------|-----------------------------------------------------------------------------------|
-| `updates` | dict[string, int or None] | Mapping of `toy_id` -> battery level (0‑100) or `None` if the toy has no battery. |
 
 
 ---
 
-### 6. `on_scan_update`
+### 6. `scan_update`
 One or more new toys are discovered or no longer available.
 This event is sent only to clients that have started a scan (sent a `start_scan` request and not yet stopped it). Each event contains all currently discovered toys.
 

@@ -32,6 +32,12 @@ from pydantic import BaseModel, ConfigDict, field_validator
 #: Highest position a funscript action can have (the lowest is 0).
 MAX_POSITION = 100
 
+#: Latest time a funscript action can have, in milliseconds: 24 hours.
+MAX_ACTION_TIME = 24 * 3_600_000
+
+#: Most grid slots :func:`funscript_to_pattern` lays a script on: its duration divided by ``min_segment_ms``.
+MAX_SLOTS = 1_000_000
+
 #: How :func:`funscript_to_pattern` maps a script to intensities: ``"speed"`` (the intensity follows the stroke speed)
 #: or ``"position"`` (the intensity follows the position).
 FunscriptMode = Literal["speed", "position"]
@@ -46,7 +52,7 @@ class Funscript(BaseModel):
 
     Raises:
         pydantic.ValidationError: (subclass of ValueError) The script is malformed, e.g., an action without ``pos``,
-            a negative time, or a position outside 0-100.
+            a negative time or one after :data:`MAX_ACTION_TIME` (24 h), or a position outside 0-100.
 
     Example::
 
@@ -83,6 +89,10 @@ class Funscript(BaseModel):
             position = _whole_number(pos, f"Action {index}: 'pos'")
             if at_ms < 0:
                 raise ValueError(f"Action {index}: 'at' must not be negative, got {at}")
+            if at_ms > MAX_ACTION_TIME:
+                raise ValueError(
+                    f"Action {index}: 'at' must be at most {MAX_ACTION_TIME} ms (24 h), got {at}"
+                )
             if not 0 <= position <= MAX_POSITION:
                 raise ValueError(
                     f"Action {index}: 'pos' must be between 0 and {MAX_POSITION}, got {pos}"
@@ -183,7 +193,8 @@ def funscript_to_pattern(
             Without it, ``intensity2`` is always 0.
 
     Raises:
-        ValueError: *max_intensity* or *min_segment_ms* is below 1, *max_speed* is not positive, or *mode* is unknown.
+        ValueError: *max_intensity* or *min_segment_ms* is below 1, *max_speed* is not positive, *mode* is unknown, or
+            the script needs more than :data:`MAX_SLOTS` slots of *min_segment_ms*.
 
     Returns:
         The pattern, to be played without wraparound. Empty if no script has an action after 0 ms.
@@ -205,6 +216,11 @@ def funscript_to_pattern(
         raise ValueError(f"mode must be 'speed' or 'position', got {mode!r}")
 
     end = max(script.duration_ms, secondary.duration_ms if secondary else 0)
+    slots = -(-end // min_segment_ms)
+    if slots > MAX_SLOTS:
+        raise ValueError(
+            f"The script lasts {end} ms: {slots} slots of {min_segment_ms} ms, more than {MAX_SLOTS}"
+        )
     channels = [
         _slot_levels(_pieces(s, mode, max_speed, max_intensity), end, min_segment_ms)
         for s in (script, secondary)

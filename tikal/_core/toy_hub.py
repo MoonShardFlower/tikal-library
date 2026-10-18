@@ -7,13 +7,22 @@ The module also defines :class:`ToyStatus` and the exceptions the hub raises.
 """
 
 import asyncio
+import contextlib
 import copy
 import logging
 import traceback
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Coroutine, Sequence, TypeVar
+from typing import (
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Sequence,
+    TypeVar,
+)
 
 from bleak import BleakClient, BleakScanner
 
@@ -281,8 +290,10 @@ class _ToyHub:
         # The playback tick in flight, at most one per toy. Keyed by toy_id.
         self._tick_tasks: dict[str, asyncio.Task[None]] = {}
 
-        # At most one reconnect task per toy. Keyed by toy_id.
-        self._reconnect_tasks: dict[str, asyncio.Task[None]] = {}
+        # At most one reconnect task per toy, with the controller it reconnects. Keyed by toy_id.
+        self._reconnect_tasks: dict[str, tuple[_ToyController, asyncio.Task[None]]] = {}
+        # Toys whose command failed under their command lock. They start reconnecting once the lock is released
+        self._failed_commands: set[_ToyController] = set()
 
     # -------------------------------------------------------------------------
     # Startup / Shutdown
@@ -340,7 +351,7 @@ class _ToyHub:
         await asyncio.gather(*connect_tasks, return_exceptions=True)
 
         # Cancel any in-flight reconnect tasks before disconnecting toys.
-        reconnect_tasks = list(self._reconnect_tasks.values())
+        reconnect_tasks = [task for _, task in self._reconnect_tasks.values()]
         self._reconnect_tasks.clear()
         for task in reconnect_tasks:
             task.cancel()
@@ -490,7 +501,8 @@ class _ToyHub:
 
     async def _on_power_off(self, toy_id: str) -> None:
         """
-        Toy was turned off. Sets ToyStatus to POWERED_OFF and removes the Toy from _ToyHub.
+        Toy was turned off. Sets ToyStatus to POWERED_OFF and removes the Toy from _ToyHub. Like a LOST toy, it keeps
+        its status: :meth:`get_status` reports POWERED_OFF until the toy is added again.
 
         Args:
             toy_id: Identifier of the toy that powered off.
@@ -500,7 +512,7 @@ class _ToyHub:
             return
         await self._set_toy_status(toy_id, ToyStatus.POWERED_OFF)
         try:
-            await self.remove(toy_id)
+            await self.remove(toy_id, False)
         except Exception:
             pass
 
@@ -571,29 +583,55 @@ class _ToyHub:
 
     async def _start_reconnecting(self, toy: _ToyController, reason: str) -> None:
         """
-        Set RECONNECTING and start reconnecting *toy*. Does nothing if a reconnect task already runs.
+        Set RECONNECTING and start reconnecting *toy*. Does nothing if a reconnect task for this controller already
+        runs, or if the toy was removed or replaced meanwhile.
 
         Args:
             toy: The toy whose connection failed.
             reason: For the log, e.g., "Command failed".
         """
-        self._log.warning("%s for toy %s. Reconnecting...", reason, toy.toy_id)
         toy_id = toy.toy_id
-        existing = self._reconnect_tasks.get(toy_id)
-        if existing is not None and not existing.done():
+        if self._toys.get(toy_id) is not toy:
             return
+        self._log.warning("%s for toy %s. Reconnecting...", reason, toy_id)
+        existing = self._reconnect_tasks.get(toy_id)
+        if existing is not None and not existing[1].done():
+            if existing[0] is toy:
+                return
+            # It reconnects a controller of this id that was removed: it must not go on.
+            existing[1].cancel()
         task = asyncio.get_running_loop().create_task(
             self._reconnect_toy(toy), name=f"toy-reconnect-{toy_id}"
         )
         # Prune the entry when this specific task finishes
         task.add_done_callback(lambda t: self._prune_reconnect_task(toy_id, t))
-        self._reconnect_tasks[toy_id] = task
-        await self._set_toy_status(toy.toy_id, ToyStatus.RECONNECTING)
+        self._reconnect_tasks[toy_id] = (toy, task)
+        await self._set_toy_status(toy_id, ToyStatus.RECONNECTING)
 
     def _prune_reconnect_task(self, toy_id: str, task: asyncio.Task[None]) -> None:
         """Forget a finished reconnect task, unless a newer one replaced it."""
-        if self._reconnect_tasks.get(toy_id) is task:
+        entry = self._reconnect_tasks.get(toy_id)
+        if entry is not None and entry[1] is task:
             self._reconnect_tasks.pop(toy_id, None)
+
+    def _cancel_reconnecting(self, toy_id: str) -> asyncio.Task[None] | None:
+        """
+        Cancel the toy's reconnect task, unless it is the caller: a reconnect that gives up removes the toy itself.
+
+        Args:
+            toy_id: The toy.
+
+        Returns:
+            The canceled task, to wait for. None if there was nothing to cancel.
+        """
+        entry = self._reconnect_tasks.pop(toy_id, None)
+        if entry is None:
+            return None
+        task = entry[1]
+        if task is asyncio.current_task() or task.done():
+            return None
+        task.cancel()
+        return task
 
     async def _reconnect_toy(self, toy: _ToyController) -> None:
         """
@@ -601,13 +639,17 @@ class _ToyHub:
 
         Each attempt reconnects and then stops the toy (also pauses its pattern). On success, the toy's state is
         reported and the ToyStatus is set to CONNECTED. Otherwise, the ToyStatus is set to LOST and the toy removed.
+        Both only while *toy* is still the toy under its id: a toy added again under that id is not this one's to touch.
         """
 
         async def attempt() -> None:
             await toy.reconnect()
             await toy.stop()  # Always stop the toy after connection loss
 
-        if await retry_within_window(attempt, toy.toy_id, self._log):
+        reconnected = await retry_within_window(attempt, toy.toy_id, self._log)
+        if self._toys.get(toy.toy_id) is not toy:
+            return
+        if reconnected:
             await self._report_state(toy)
             await self._set_toy_status(toy.toy_id, ToyStatus.CONNECTED)
             return
@@ -641,6 +683,24 @@ class _ToyHub:
                 "Event callback %r raised an exception: %s", callback, e
             )
 
+    @contextlib.asynccontextmanager
+    async def _command_lock(self, toy: _ToyController) -> AsyncIterator[None]:
+        """
+        Hold the toy's command lock. If a command failed under it (see :meth:`_run_toy_command`), reconnecting starts
+        once the lock is released, before the error reaches the caller. A callback must not hold the lock, as this
+        would hold all commands to the toy.
+
+        Args:
+            toy: The toy.
+        """
+        try:
+            async with toy.cmd_lock:
+                yield
+        finally:
+            if toy in self._failed_commands:
+                self._failed_commands.discard(toy)
+                await self._start_reconnecting(toy, "Command failed")
+
     async def _run_toy_command(
         self,
         toy: _ToyController,
@@ -660,7 +720,7 @@ class _ToyHub:
 
         Raises:
             ToyNotConnectedError: The toy is not connected. Nothing was sent.
-            ToyConnectionError: The command failed twice. Reconnecting has started.
+            ToyConnectionError: The command failed twice. Reconnecting starts once the command lock is released.
 
         Returns:
             The command's result.
@@ -669,7 +729,7 @@ class _ToyHub:
         try:
             return await _retry(command, *args)
         except Exception as e:
-            await self._start_reconnecting(toy, "Command failed")
+            self._failed_commands.add(toy)
             raise ToyConnectionError(toy.toy_id, toy.model_name, command_name) from e
 
     async def _report_state(self, toy: _ToyController) -> None:
@@ -710,7 +770,7 @@ class _ToyHub:
         """
         toy = self._get_toy(toy_id)
         try:
-            async with toy.cmd_lock:
+            async with self._command_lock(toy):
                 needs_follow_up = transition(toy)
                 if needs_follow_up is None:
                     return
@@ -906,7 +966,7 @@ class _ToyHub:
         self, toy_id: str, remove_from_connection_status: bool = True
     ) -> None:
         """
-        Disconnect a toy and remove it. *on_toy_ids_change* is called.
+        Disconnect a toy and remove it. *on_toy_ids_change* is called. A reconnect in progress is canceled first.
 
         Args:
             toy_id: The toy.
@@ -925,14 +985,30 @@ class _ToyHub:
         if remove_from_connection_status:
             self._toy_status.pop(toy_id, None)
         ids_snapshot = list(self._toys.keys())
+        # A reconnect left running would give the toy up later, by its id: by then that may be a toy added again.
+        reconnecting = self._cancel_reconnecting(toy_id)
+        disconnect_error: Exception | None = None
         try:
-            await toy.disconnect()
-        except Exception as e:
+            if reconnecting is not None:
+                # The canceled attempt may be opening the link that disconnect() closes: let it end first.
+                await asyncio.wait({reconnecting})
+        finally:
+            # Also when canceled: the link must not stay open.
+            try:
+                await toy.disconnect()
+            except Exception as e:
+                disconnect_error = e
+        if disconnect_error is not None:
             self._log.warning(
-                "Failed to disconnect toy %s: %s", toy_id, e, exc_info=True
+                "Failed to disconnect toy %s: %s",
+                toy_id,
+                disconnect_error,
+                exc_info=disconnect_error,
             )
             await self._fire_callback(self._on_toy_ids_change, ids_snapshot)
-            raise ToyConnectionError(toy_id, toy.model_name, "remove") from e
+            raise ToyConnectionError(
+                toy_id, toy.model_name, "remove"
+            ) from disconnect_error
 
         await self._fire_callback(self._on_toy_ids_change, ids_snapshot)
 
@@ -957,7 +1033,7 @@ class _ToyHub:
         """
         self._log.info(f"Setting model of {toy_id} to {model_name})")
         toy = self._get_toy(toy_id)
-        async with toy.cmd_lock:
+        async with self._command_lock(toy):
             # A model switch talks to the toy, so it needs the toy connected.
             self._require_connected(toy, "set_model")
             try:
@@ -969,7 +1045,7 @@ class _ToyHub:
             except ConnectionError as e:
                 # A model switch stops the toy on its old commands first. That stop could not be delivered. The
                 # model was left as-is and the toy may still be running.
-                await self._start_reconnecting(toy, "Command failed")
+                self._failed_commands.add(toy)
                 raise ToyConnectionError(toy_id, model_name, "set_model") from e
             self._toy_cache.update({toy.name: model_name})
         change = await toy.get_info(full=False)
@@ -1111,7 +1187,7 @@ class _ToyHub:
                 return True  # removed in the meantime
             stopped = True
             try:
-                async with toy.cmd_lock:
+                async with self._command_lock(toy):
                     await self._run_toy_command(toy, "stop", toy.stop_output)
             except ToyConnectionError:
                 self._log.warning(f"Could not stop {toy_id} after blocking it.")
@@ -1182,11 +1258,13 @@ class _ToyHub:
         # A converted funscript can have thousands of segments: the full pattern only goes to the debug log.
         self._log.info(f"Setting pattern of {toy_id} ({len(pattern)} segments)")
         self._log.debug(f"Pattern of {toy_id}: {pattern}")
-        await self._change_state(
-            toy_id,
-            "set_pattern",
-            lambda toy: toy.apply_pattern(pattern, wraparound, reset_time),
-        )
+        # See set_funscript for why this lock is needed
+        async with self._get_toy(toy_id).pattern_lock:
+            await self._change_state(
+                toy_id,
+                "set_pattern",
+                lambda toy: toy.apply_pattern(pattern, wraparound, reset_time),
+            )
 
     async def set_funscript(
         self,
@@ -1214,8 +1292,8 @@ class _ToyHub:
 
         Raises:
             UnknownToyError: The toy is not added.
-            ValueError: *max_speed* is not positive, *mode* is unknown, or *start_ms* is not a finite number. Nothing
-                changed.
+            ValueError: *max_speed* is not positive, *mode* is unknown, *start_ms* is not a finite number, or the
+                script is too long (see :func:`tikal.funscript.funscript_to_pattern`). Nothing changed.
             ToyNotConnectedError: The script has no action after 0 ms, which clears the pattern, but the toy is not
                 connected, so it was not stopped.
             ToyConnectionError: The pattern was cleared, but stopping failed twice. Reconnecting has started.
@@ -1223,18 +1301,24 @@ class _ToyHub:
         self._log.info(
             f"Setting funscript of {toy_id} ({len(script.actions)} actions, starting at {start_ms} ms)"
         )
-        pattern = await asyncio.to_thread(
-            self._get_toy(toy_id).convert_funscript,
-            script,
-            mode=mode,
-            max_speed=max_speed,
-            secondary=secondary,
-        )
-        await self._change_state(
-            toy_id,
-            "set_funscript",
-            lambda toy: toy.apply_funscript(pattern, start_ms),
-        )
+        toy = self._get_toy(toy_id)
+        # Lock needed: Funscript conversion takes a while. A later sent, but quickly processed command like set_pattern
+        # or seek could otherwise land first (out-of-order)
+        async with toy.pattern_lock:
+            pattern = await asyncio.to_thread(
+                toy.convert_funscript,
+                script,
+                mode=mode,
+                max_speed=max_speed,
+                secondary=secondary,
+            )
+            if self._toys.get(toy_id) is not toy:
+                raise UnknownToyError(toy_id)  # removed while converting
+            await self._change_state(
+                toy_id,
+                "set_funscript",
+                lambda toy: toy.apply_funscript(pattern, start_ms),
+            )
 
     async def seek(self, toy_id: str, pattern_time: float) -> None:
         """
@@ -1251,9 +1335,11 @@ class _ToyHub:
             ValueError: *pattern_time* is not a finite number. Nothing changed.
         """
         self._log.info(f"Moving pattern of {toy_id} to {pattern_time} ms")
-        await self._change_state(
-            toy_id, "seek", lambda toy: toy.apply_seek(pattern_time)
-        )
+        # See set_funscript for why this lock is needed
+        async with self._get_toy(toy_id).pattern_lock:
+            await self._change_state(
+                toy_id, "seek", lambda toy: toy.apply_seek(pattern_time)
+            )
 
     def apply_state(self, toy_id: str, transition: Callable[[_ToyController], T]) -> T:
         """
@@ -1321,7 +1407,7 @@ class _ToyHub:
              The command's result.
         """
         toy = self._get_toy(toy_id)
-        async with toy.cmd_lock:
+        async with self._command_lock(toy):
             result = await self._run_toy_command(toy, command_name, command, toy)
         if report_state:
             await self._report_state(toy)
@@ -1345,7 +1431,7 @@ class _ToyHub:
             The level in percent, or None if the toy has no battery.
         """
         toy = self._get_toy(toy_id)
-        async with toy.cmd_lock:
+        async with self._command_lock(toy):
             old_battery = toy.battery
             battery = await self._run_toy_command(
                 toy, "fetch_battery", toy.refresh_battery
@@ -1484,7 +1570,7 @@ class _ToyHub:
         """
         self._log.info(f"Sending direct command to {toy_id}: {command}")
         toy = self._get_toy(toy_id)
-        async with toy.cmd_lock:
+        async with self._command_lock(toy):
             # A raw command can drive the toy, and the hub cannot tell which ones would, so none pass a block.
             if toy.is_blocked:
                 raise ToyBlockedError(toy_id)

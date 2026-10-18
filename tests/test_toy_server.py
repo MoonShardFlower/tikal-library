@@ -7,8 +7,12 @@ the heartbeat watchdog, and shutdown.
 """
 
 import asyncio
+import base64
 import contextlib
+import dataclasses
 import json
+import logging
+import os
 import socket
 from typing import Callable
 from unittest.mock import AsyncMock, patch
@@ -30,6 +34,7 @@ from tikal._core import (
 )
 from tikal._private import COMMUNICATION_INTERVAL
 from tikal.low_level import ToyData
+from tikal.websocket import _outbox
 from tikal.websocket.toy_server import InsecureBindError, ToyServer
 from tikal.websocket.toy_server_models import SeekData, SetFunscriptData
 
@@ -1605,11 +1610,11 @@ async def test_scan_update_maps_errors_and_success(ws_server):
     assert calls[2][2] is True
 
 
-async def test_send_raw_swallows_send_error(ws_server):
+async def test_send_raw_to_a_client_that_is_gone_does_nothing(ws_server):
     server, _ = ws_server
-    dead_ws = AsyncMock()
-    dead_ws.send = AsyncMock(side_effect=ConnectionError("gone"))
-    await server._send_raw(dead_ws, "msg")  # must not raise
+    gone = AsyncMock()
+    server._send_raw(gone, "msg")  # must not raise: the client has no outbox anymore
+    gone.send.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1810,3 +1815,293 @@ async def test_funscript_commands_for_an_unknown_toy(ws_server, command, data):
     client = await connect()
     reply = await client.request(command, {"toy_id": "nope", **data})
     assert reply["data"]["error"] == "Unknown Toy"
+
+
+# ---------------------------------------------------------------------------
+# Clients that stop reading, and other robustness
+# ---------------------------------------------------------------------------
+
+
+async def _poll(predicate: Callable[[], object], timeout: float = 5.0) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(0.02)
+    return bool(predicate())
+
+
+# 20000 segments: every toy_state_changed carries the pattern (~300 kB), so a client that stops reading has full buffers
+# after a few commands.
+_BIG_PATTERN = [[100, i % 20, 0] for i in range(20_000)]
+
+
+def _stuck_client(port: int) -> socket.socket:
+    """Open a WebSocket connection by hand that completes the handshake and never reads. Blocking: run it in a thread."""
+    sock = socket.create_connection(("localhost", port))
+    key = base64.b64encode(os.urandom(16)).decode()
+    sock.sendall(
+        (
+            f"GET / HTTP/1.1\r\nHost: localhost:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        ).encode()
+    )
+    assert b"101" in sock.recv(1024)
+    return sock
+
+
+async def _app_with_a_stuck_client(server, connect) -> tuple[_Client, socket.socket]:
+    """A client playing a big pattern on Thunder, and a second client that stopped reading."""
+    app = await connect()
+    await _scan_and_add(app, "Thunder_ID", "Thunder")
+    await app.request(
+        "set_pattern",
+        {
+            "toy_id": "Thunder_ID",
+            "pattern": _BIG_PATTERN,
+            "wraparound": True,
+            "reset_time": True,
+        },
+    )
+    stuck = await asyncio.to_thread(_stuck_client, server._port)
+    assert await _poll(lambda: len(server._clients) == 2)
+    return app, stuck
+
+
+async def test_a_client_that_stops_reading_holds_up_no_other_client(
+    ws_server, monkeypatch
+):
+    monkeypatch.setattr(_outbox, "SEND_TIMEOUT", 2.0)
+    server, connect = ws_server
+    app, stuck = await _app_with_a_stuck_client(server, connect)
+    try:
+        for i in range(10):  # each one broadcasts the big state to the stuck client too
+            reply = await app.request(
+                "set_paused", {"toy_id": "Thunder_ID", "pause": i % 2 == 0}, timeout=2
+            )
+            assert reply["success"] is True
+        # It did not accept a message within the send timeout: it is dropped.
+        assert await _poll(lambda: len(server._clients) == 1, timeout=10)
+    finally:
+        stuck.close()
+
+
+async def test_shutdown_does_not_wait_for_a_client_that_stopped_reading(
+    ws_server, monkeypatch
+):
+    monkeypatch.setattr(_outbox, "CLOSE_TIMEOUT", 0.5)
+    server, connect = ws_server
+    app, stuck = await _app_with_a_stuck_client(server, connect)
+    try:
+        for i in range(4):
+            await app.request(
+                "set_paused", {"toy_id": "Thunder_ID", "pause": i % 2 == 0}
+            )
+        # The stuck client never answers the closing handshake (websockets would wait 10 s for it), and may not even
+        # take the close frame (websockets would wait forever).
+        await asyncio.wait_for(server.shutdown(), 3)
+        assert not server._hub._toys
+    finally:
+        stuck.close()
+
+
+async def test_clients_leaving_together_leave_a_single_idle_countdown(monkeypatch):
+    """Otherwise the countdown nobody can cancel shuts the server down under the next client."""
+    port = _free_port()
+    server = ToyServer(
+        host="localhost",
+        port=port,
+        mock_toys=True,
+        idle_shutdown_delay=1.0,
+        log_name="test_ws",
+    )
+    serve_task = asyncio.create_task(server.serve())
+    assert await _poll(lambda: server._server is not None)
+    unsubscribe = server._unsubscribe_from_scan
+    slowed: list = []
+
+    async def slow_for_the_first(ws):
+        # The first client's cleanup takes a while, as stopping a Bluetooth scan does.
+        if not slowed:
+            slowed.append(ws)
+            await asyncio.sleep(0.3)
+        await unsubscribe(ws)
+
+    monkeypatch.setattr(server, "_unsubscribe_from_scan", slow_for_the_first)
+    try:
+        first = await websockets.connect(f"ws://localhost:{port}")
+        second = await websockets.connect(f"ws://localhost:{port}")
+        await first.close()
+        await asyncio.sleep(0.05)
+        await second.close()
+        await asyncio.sleep(0.45)  # both cleanups are done, no countdown ran out yet
+
+        countdowns = [
+            task
+            for task in asyncio.all_tasks()
+            if task.get_name() == "idle-shutdown" and not task.done()
+        ]
+        assert len(countdowns) == 1
+
+        third = _Client(await websockets.connect(f"ws://localhost:{port}"))
+        await asyncio.sleep(1.2)  # past the idle delay
+        assert (await third.request("get_toy_ids"))["success"] is True
+        assert server._shutdown_initiated is False
+        await third.raw.close()
+    finally:
+        with contextlib.suppress(Exception):
+            await server._shutdown()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await serve_task
+
+
+async def test_idle_shutdown_does_not_fire_while_a_client_is_connected(ws_server):
+    server, connect = ws_server
+    await connect()
+    server.idle_shutdown_delay = 0.05
+
+    await server._idle_shutdown()
+
+    assert server._shutdown_initiated is False and server._stopped_accepting is False
+
+
+@pytest.mark.parametrize("pattern", [5, None, [5, 6], [[1000, 5, 0], None], {"a": 1}])
+async def test_a_malformed_pattern_is_invalid_data(ws_server, pattern):
+    _, connect = ws_server
+    client = await connect()
+    data = {
+        "toy_id": "Thunder_ID",
+        "pattern": pattern,
+        "wraparound": True,
+        "reset_time": True,
+    }
+    reply = await client.request("set_pattern", data, timeout=2)
+    assert reply["success"] is False
+    assert reply["data"]["error"] == "Invalid Data"
+
+
+async def test_a_request_model_that_fails_unexpectedly_still_gets_a_reply(
+    ws_server, caplog
+):
+    server, connect = ws_server
+    client = await connect()
+
+    def broken_model(**_data):
+        raise TypeError("a bug in the request model")
+
+    command = dataclasses.replace(
+        server._commands["get_brands"], req_model=broken_model
+    )
+    with (
+        patch.dict(server._commands, {"get_brands": command}),
+        caplog.at_level(logging.ERROR, logger="test_ws"),
+    ):
+        reply = await client.request("get_brands", timeout=2)
+
+    assert reply["success"] is False and reply["data"]["error"] == "Invalid Data"
+    assert any(record.levelno == logging.ERROR for record in caplog.records)
+
+
+async def test_message_tasks_are_kept_until_done_and_their_failures_logged(
+    ws_server, caplog
+):
+    server, connect = ws_server
+    client = await connect()
+    await client.request("get_toy_ids")
+    assert await _poll(lambda: not server._message_tasks)
+
+    with (
+        patch.object(server, "_dispatch", AsyncMock(side_effect=RuntimeError("bug"))),
+        patch.object(
+            server, "_send_error_for", AsyncMock(side_effect=RuntimeError("bug"))
+        ),
+        caplog.at_level(logging.ERROR, logger="test_ws"),
+    ):
+        await client.raw.send(
+            json.dumps({"request": "get_toy_ids", "id": "x", "data": {}})
+        )
+        assert await _poll(
+            lambda: any(
+                "Handling a message failed" in r.message for r in caplog.records
+            )
+        )
+    assert await _poll(lambda: not server._message_tasks)
+
+
+async def test_a_late_scan_subscriber_gets_the_toys_found_so_far(ws_server):
+    _, connect = ws_server
+    first = await connect()
+    await first.request("start_scan")
+    # Every mock toy is found: from now on the scan sends nothing new on its own.
+    await first.wait_scan(lambda ids: len(ids) >= 7, timeout=10)
+
+    second = await connect()
+    await second.request("start_scan")
+    await second.wait_scan(lambda ids: "Thunder_ID" in ids, timeout=1.0)
+
+
+async def test_a_binary_message_is_read_as_utf8_and_otherwise_malformed(ws_server):
+    _, connect = ws_server
+    client = await connect()
+
+    await client.raw.send(b"\xff\xfe not utf-8")
+    reply = json.loads(await asyncio.wait_for(client.raw.recv(), 2))
+    assert reply["success"] is False and reply["data"]["error"] == "Malformed Request"
+
+    await client.raw.send(
+        json.dumps({"request": "get_toy_ids", "id": "b", "data": {}}).encode()
+    )
+    reply = json.loads(await asyncio.wait_for(client.raw.recv(), 2))
+    assert reply["id"] == "b" and reply["success"] is True  # still connected
+
+
+async def test_set_funscript_with_an_action_after_24_hours_is_invalid_data(ws_server):
+    """Its conversion would take hours: the request is refused at once."""
+    _, connect = ws_server
+    client = await connect()
+    reply = await client.request(
+        "set_funscript",
+        {"toy_id": "Thunder_ID", "script": {"actions": [[0, 0], [1e12, 100]]}},
+        timeout=2,
+    )
+    assert reply["success"] is False and reply["data"]["error"] == "Invalid Data"
+
+
+async def test_the_toys_are_stopped_at_once(ws_server):
+    """When the last client leaves, a toy that does not answer must not hold up the stop of the others."""
+    server, _ = ws_server
+    answer = asyncio.Event()
+    stopped: list[str] = []
+
+    async def stop(toy_id: str) -> None:
+        stopped.append(toy_id)
+        if toy_id == "A":
+            await answer.wait()
+        if toy_id == "C":
+            raise ToyConnectionError("C", "Thunder", "stop")
+
+    with (
+        patch.object(
+            server._hub, "get_toy_ids", AsyncMock(return_value=["A", "B", "C"])
+        ),
+        patch.object(server._hub, "stop", new=stop),
+    ):
+        stopping = asyncio.create_task(server._stop_all_toys("test"))
+        assert await _poll(lambda: stopped == ["A", "B", "C"], timeout=1)
+        answer.set()
+        assert await stopping == ["C"]
+
+
+async def test_a_powered_off_toy_keeps_its_status(ws_server):
+    """Like a lost toy: the client can still ask what happened to it."""
+    server, connect = ws_server
+    client = await connect()
+    await _scan_and_add(client, "Thunder_ID", "Thunder")
+
+    await server._hub._on_power_off("Thunder_ID")
+
+    assert (await client.request("get_toy_ids"))["data"]["toy_ids"] == []
+    reply = await client.request("get_connection_status", {"toy_id": "Thunder_ID"})
+    assert reply["success"] is True
+    assert reply["data"]["connection_status"] == "powered_off"

@@ -6,7 +6,7 @@ The protocol is described in ``docs/websocket/``.
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..funscript import Funscript, FunscriptMode
 
@@ -248,7 +248,7 @@ class SetPatternData(BaseModel):
 
     @field_validator("pattern", mode="before")
     @classmethod
-    def coerce_pattern(cls, v: Any) -> list[tuple[int, int, int]]:
+    def coerce_pattern(cls, v: Any) -> Any:
         """
         Accept segments as lists or tuples.
 
@@ -256,27 +256,11 @@ class SetPatternData(BaseModel):
             v: The ``pattern`` as sent.
 
         Returns:
-            The segments as tuples.
+            The list with its list segments as tuples, or *v* unchanged if it is not a list.
         """
-        return [tuple(seg) for seg in v]
-
-    @model_validator(mode="after")
-    def check_segments(self) -> "SetPatternData":
-        """
-        Check that every segment is three integers.
-
-        Returns:
-            The model, unchanged.
-
-        Raises:
-            ValueError: A segment is not three integers.
-        """
-        for i, seg in enumerate(self.pattern):
-            if len(seg) != 3:
-                raise ValueError(f"Pattern segment {i} must have exactly 3 values")
-            if not all(isinstance(x, int) for x in seg):
-                raise ValueError(f"Pattern segment {i} values must all be integers")
-        return self
+        if not isinstance(v, list):
+            return v
+        return [tuple(seg) if isinstance(seg, (list, tuple)) else seg for seg in v]
 
 
 class SetFunscriptData(BaseModel):

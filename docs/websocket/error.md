@@ -11,7 +11,8 @@ I suggest reading the documentation in the following order:
 Most errors only occur in replies. I will specifically mention if an error can occur in an event.
 
 ## Error Payload
-If the `success` field of a response or event envelope is `false`, the `data` field always follows the schema below:
+If the `success` field of a reply is `false`, the `data` field always follows the schema below. An event that reports
+an error (the `scan_update` event) has only `error`, `message`, and `traceback`:
 
 ```json
 {
@@ -40,7 +41,8 @@ The fields error and message are always strings. The other keys are either strin
   "brand": null
 }
 ```
-In this special case the fields `reply` and `id` of the response envelope are set to `"?"`
+In this special case the fields `reply` and `id` of the response envelope are set to `"?"`. A binary message that is
+not UTF-8 is a Malformed Request as well.
 
 ---
 
@@ -276,7 +278,7 @@ This error can only occur in the `start_scan` command.
   "brand": null
 }
 ```
-This error can only occur in the `discovered_toys` event.
+This error can only occur in the `scan_update` event.
 
 ---
 

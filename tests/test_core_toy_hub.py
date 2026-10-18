@@ -500,6 +500,10 @@ async def test_power_off_removes_toy(hub):
     await _add_thunder(hub)
     await hub._on_power_off("Thunder_ID")
     assert await _wait_until(lambda: "Thunder_ID" not in hub._toys)
+    # Like a lost toy, it keeps its status until it is added again.
+    assert await hub.get_status("Thunder_ID") == ToyStatus.POWERED_OFF
+    await _add_thunder(hub)
+    assert await hub.get_status("Thunder_ID") == ToyStatus.CONNECTED
 
 
 async def test_poll_batteries_reports_changes(hub):
@@ -1200,3 +1204,136 @@ async def test_seek_to_a_non_finite_time_is_refused(hub):
     with pytest.raises(ValueError):
         await hub.seek("Thunder_ID", float("inf"))
     assert (await hub.get_state("Thunder_ID"))["elapsed"] < 10_000
+
+
+# ---------------------------------------------------------------------------
+# Removing a toy while it reconnects
+# ---------------------------------------------------------------------------
+
+
+async def test_removing_a_reconnecting_toy_ends_its_reconnect(
+    hub, short_reconnect_pause
+):
+    controller = await _add_thunder(hub)
+    controller.reconnect = AsyncMock(side_effect=ConnectionError("still gone"))
+    await hub._on_disconnect("Thunder_ID")
+    reconnecting = hub._reconnect_tasks["Thunder_ID"][1]
+
+    await hub.remove("Thunder_ID")
+
+    assert reconnecting.cancelled()
+    assert "Thunder_ID" not in hub._reconnect_tasks
+    assert "Thunder_ID" not in hub._toy_status
+
+
+async def test_a_toy_added_again_is_not_given_up_by_the_old_reconnect(
+    hub, short_reconnect_window
+):
+    """The old reconnect would give the toy up by its id: by then, that is the toy added again."""
+    old = await _add_thunder(hub)
+    old.reconnect = AsyncMock(side_effect=ConnectionError("still gone"))
+    await hub._on_disconnect("Thunder_ID")
+    await hub.remove("Thunder_ID")
+    assert await _wait_until(lambda: "Thunder_ID" in hub._toy_data)
+    new = await _add_thunder(hub)
+
+    await asyncio.sleep(0.6)  # past the (shortened) reconnect window
+
+    assert hub._toys.get("Thunder_ID") is new
+    assert hub._toy_status["Thunder_ID"] == ToyStatus.CONNECTED
+
+
+async def test_a_stale_reconnect_leaves_the_toy_now_under_its_id_alone(
+    hub, short_reconnect_window
+):
+    old = await _add_thunder(hub)
+    await hub.remove("Thunder_ID")
+    assert await _wait_until(lambda: "Thunder_ID" in hub._toy_data)
+    new = await _add_thunder(hub)
+    statuses: list = []
+    hub._on_status_change = lambda toy_id, status: statuses.append(status)
+
+    await hub._reconnect_toy(old)  # the old controller is closed: it gives up
+
+    assert hub._toys.get("Thunder_ID") is new
+    assert hub._toy_status["Thunder_ID"] == ToyStatus.CONNECTED
+    assert statuses == []
+
+
+async def test_a_removed_controller_is_not_reconnected(hub):
+    old = await _add_thunder(hub)
+    await hub.remove("Thunder_ID")
+
+    await hub._start_reconnecting(old, "Command failed")
+
+    assert not hub._reconnect_tasks
+    assert "Thunder_ID" not in hub._toy_status
+
+
+# ---------------------------------------------------------------------------
+# A failed command reconnects after releasing the command lock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command, args, failing",
+    [
+        ("intensity", (0, 5), "intensity"),
+        ("set_model", ("Lightning",), "set_model_name"),
+    ],
+)
+async def test_a_failed_command_reports_reconnecting_after_releasing_the_lock(
+    hub, command, args, failing
+):
+    """A status callback that is slow to return must not hold the lock: playback and a stop would wait for it."""
+    controller = await _add_thunder(hub)
+    setattr(controller, failing, AsyncMock(side_effect=ConnectionError("dropped")))
+    seen: list = []
+    hub._on_status_change = lambda toy_id, status: seen.append(
+        (status, controller.cmd_lock.locked())
+    )
+
+    with pytest.raises(ToyConnectionError):
+        await getattr(hub, command)("Thunder_ID", *args)
+
+    assert seen[0] == (ToyStatus.RECONNECTING, False)
+    assert "Thunder_ID" in hub._reconnect_tasks or seen[-1][0] == ToyStatus.CONNECTED
+
+
+# ---------------------------------------------------------------------------
+# Commands called while set_funscript converts
+# ---------------------------------------------------------------------------
+
+# One hour of strokes: its conversion takes long enough for a later command to arrive meanwhile.
+_LONG_SCRIPT = Funscript(
+    actions=[(t, 0 if (t // 250) % 2 else 100) for t in range(0, 3_600_000, 250)]
+)
+_SHORT_SCRIPT = Funscript(actions=[(0, 0), (500, 100), (1000, 0)])
+
+
+@pytest.mark.parametrize(
+    "later, check",
+    [
+        (lambda hub: hub.seek("Thunder_ID", 90_000), lambda s: s["elapsed"] == 90_000),
+        (
+            lambda hub: hub.set_pattern("Thunder_ID", [], True, True),
+            lambda s: s["pattern"] == [],
+        ),
+        (
+            lambda hub: hub.set_funscript("Thunder_ID", _SHORT_SCRIPT),
+            lambda s: sum(segment[0] for segment in s["pattern"]) == 1000,
+        ),
+    ],
+    ids=["seek", "clear", "newer script"],
+)
+async def test_a_command_called_while_set_funscript_converts_is_not_undone(
+    hub, later, check
+):
+    await _add_thunder(hub)
+    await hub.set_paused("Thunder_ID", True)  # the pattern time stands still
+
+    converting = asyncio.create_task(hub.set_funscript("Thunder_ID", _LONG_SCRIPT))
+    following = asyncio.create_task(later(hub))
+    await asyncio.gather(converting, following)
+
+    assert check(await hub.get_state("Thunder_ID"))

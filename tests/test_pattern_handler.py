@@ -10,7 +10,7 @@ from tikal._private.pattern_handler import PatternHandler
 
 
 class FakeClock:
-    """Controllable stand-in for ``time.time()`` (returns seconds; the handler converts to ms)."""
+    """Controllable stand-in for ``time.monotonic()`` (returns seconds; the handler converts to ms)."""
 
     def __init__(self, start: float = 1000.0):
         self.now = start
@@ -25,7 +25,7 @@ class FakeClock:
 @pytest.fixture
 def clock(monkeypatch):
     c = FakeClock()
-    monkeypatch.setattr(ph_module, "time", c)
+    monkeypatch.setattr(ph_module, "monotonic", c)
     return c
 
 

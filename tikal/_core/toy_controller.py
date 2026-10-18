@@ -37,6 +37,7 @@ class _ToyController:
     def __init__(self, toy: Toy, initial_battery: int | None = None):
         self._toy = toy
         self._cmd_lock = asyncio.Lock()
+        self._pattern_lock = asyncio.Lock()
         self._pattern_handler = PatternHandler()
         # What playback last sent on each channel, so it only sends a value when it changes.
         self._last_values: list[int | None] = [None, None]
@@ -59,6 +60,14 @@ class _ToyController:
         Prevents races (e.g., clients racing on set_paused) and serializes concurrent BLE commands to the same toy.
         """
         return self._cmd_lock
+
+    @property
+    def pattern_lock(self) -> asyncio.Lock:
+        """
+        Puts the hub's commands that replace the pattern or move its position (``set_pattern``, ``set_funscript``,
+        ``seek``) in the order they were called. ``set_funscript`` holds it while it converts its script.
+        """
+        return self._pattern_lock
 
     # ------------------------------------------------------------------
     # Read-only passthroughs to the underlying toy
@@ -547,7 +556,7 @@ class _ToyController:
         State information contains:
 
         - `toy_id` (str) Unique identifier of the toy.
-        - `current_intensity` (list[int, int]) Current intensity values.
+        - `current_intensities` (list[int, int]) Current intensity values.
             The second value is always 0 if the toy only has one intensity.
         - `intensity_limits` (list[int, int]) Current set intensity limits.
         - `is_blocked` (bool) Whether the toy is currently blocked (toy's intensities are forced to zero).
@@ -556,7 +565,7 @@ class _ToyController:
         - `wraparound` (bool) Whether the pattern repeats from the beginning after completing the last segment.
             If False, both Intensities are 0 after the last segment.
         - `is_paused` (bool) Whether the toy is currently paused (patterns do not advance).
-        - `elapsed` (float) Time elapsed since the start of the pattern or last wraparound in ms
+        - `elapsed` (float) The pattern time in ms, without paused time. A wraparound does not reset it.
 
         Returns:
             The state.

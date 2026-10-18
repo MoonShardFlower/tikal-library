@@ -45,9 +45,9 @@ This is an example shape. The list of Lovense models is a lot longer, and there 
 ---
 
 ### 2. `start_scan`
-This action allows you to discover toys that you can connect to, by subscribing to the `discovered_toys` event.
+This action allows you to discover toys that you can connect to, by subscribing to the `scan_update` event.
 You should skip events for now. Instead, start the ToyServer with the --mock-toys flag, then start the scan, wait 3 seconds,
-before using "00:00:00:00:00:01" as toy_id for the other actions. **events.md** will later explain the `discovered_toys` event.
+before using "00:00:00:00:00:01" as toy_id for the other actions. **events.md** will later explain the `scan_update` event.
 
 **Request data**: `{}`
 
@@ -69,8 +69,9 @@ before using "00:00:00:00:00:01" as toy_id for the other actions. **events.md** 
 
 ### 3. `add`
 This action allows you to connect to a previously discovered toy.
-This action takes a long time, so the reply only acknowledges the request, and the actual result will be communicated via an event.
-You should skip events for now. After adding the mock toy (Solace, 00:00:00:00:00:01) wait 5 s, then use "00:00:00:00:00:01" as toy_id for the other actions.
+Connecting can take a few seconds. The reply comes once the toy is connected, or with the error that prevented connection.
+Every client also gets a `toy_ids_changed` event (see **events.md**) once the toy is added.
+After the reply for the mock toy (Solace, 00:00:00:00:00:01), use "00:00:00:00:00:01" as toy_id for the other actions.
 You can start a new `add` request (ONLY for a DIFFERENT toy!) while the previous one is still pending.
 
 **Request data**:
@@ -108,7 +109,7 @@ You can start a new `add` request (ONLY for a DIFFERENT toy!) while the previous
 ---
 
 ### 4. `stop_scan`
-This action unsubscribes from the `discovered_toys` event. You should not add toys while unsubscribed.
+This action unsubscribes from the `scan_update` event. You should not add toys while unsubscribed.
 
 **Request data**: `{}`
 
@@ -199,7 +200,8 @@ Retrieve the in‑memory connection status of the toy.
   "toy_id": "00:00:00:00:00:01"
 }
 ```
-`connection_status` may be any of `connected`, `reconnecting`, `lost` and `powered_off`.
+`connection_status` may be any of `connected`, `reconnecting`, `lost` and `powered_off`. A toy that is `lost` or was
+switched off with its power button (`powered_off`) is removed, but keeps that status until it is added again.
 
 **Possible errors**
 - Unknown Toy: The provided toy ID is not known to the server.
@@ -238,17 +240,17 @@ Retrieve the in‑memory state of a toy. This is completely retrieved from the s
 }
 ```
 
-| Field                 | Type            | Description                                                                                     |
-|-----------------------|-----------------|-------------------------------------------------------------------------------------------------|
-| `toy_id`              | string          | Unique Toy identifier.                                                                          |
-| `current_intensities` | [int, int]      | Current intensity levels. Second value is always `0` if the toy has no second capability.       |
-| `intensity_limits`    | [int, int]      | Current intensity limits. All intensity commands are clamped to these values.                   |
-| `is_blocked`          | boolean         | `true` if the toy is blocked (both intensities forced to zero).                                 |
-| `pattern_version`     | integer         | Increments each time the pattern state changes.                                                 |
-| `pattern`             | array of arrays | Active pattern segments: `[duration_ms, intensity1, intensity2]`. `[]` if no pattern is active. |
-| `wraparound`          | boolean         | Whether the pattern loops back to the start after finishing.                                    |
-| `is_paused`           | boolean         | `true` if pattern playback is paused.                                                           |
-| `elapsed`             | float           | Milliseconds elapsed since pattern start / last wraparound. Does not advance during pauses.     |
+| Field                 | Type            | Description                                                                                                                                      |
+|-----------------------|-----------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
+| `toy_id`              | string          | Unique Toy identifier.                                                                                                                           |
+| `current_intensities` | [int, int]      | Current intensity levels. Second value is always `0` if the toy has no second capability.                                                        |
+| `intensity_limits`    | [int, int]      | Current intensity limits. All intensity commands are clamped to these values.                                                                    |
+| `is_blocked`          | boolean         | `true` if the toy is blocked (both intensities forced to zero).                                                                                  |
+| `pattern_version`     | integer         | Increments each time the pattern state changes.                                                                                                  |
+| `pattern`             | array of arrays | Active pattern segments: `[duration_ms, intensity1, intensity2]`. `[]` if no pattern is active.                                                  |
+| `wraparound`          | boolean         | Whether the pattern loops back to the start after finishing.                                                                                     |
+| `is_paused`           | boolean         | `true` if pattern playback is paused.                                                                                                            |
+| `elapsed`             | float           | Pattern time in ms, without paused time. A wraparound does not reset it: the position in the pattern is `elapsed` modulo the pattern's duration. |
 
 **Possible errors**
 - Unknown Toy: The provided toy ID is not known to the server.
@@ -659,7 +661,8 @@ segments, the intensity limits, pause and block apply, and `seek` moves playback
 `inverted` (optional, defaults to `false`) are read. Other fields, such as `version`, `range` or `metadata`, are ignored.
 Each action is either an object `{"at": ms, "pos": 0-100}` (the file format) or a compact pair `[at, pos]`. The compact
 form halves the message size. The server accepts messages of up to 1 MiB. Actions don't have to be sorted. Of several 
-actions at the same time, the last one counts. Fractional values are rounded.
+actions at the same time, the last one counts. Fractional values are rounded. An action may be at most 24 hours
+(86 400 000 ms) into the script.
 
 Compact form:
 ```json
@@ -681,8 +684,8 @@ Compact form:
 - Unknown Toy: The provided toy ID is not known to the server.
 - Connection Error: The script converted to an empty pattern, and the toy could not be stopped. The pattern is cleared all the same.
 - Malformed Request: Your request is wrong. See the request envelope defined in **documentation.md**.
-- Invalid Data: Your request data is wrong, e.g., an action without `pos`, a position outside 0–100, a negative time, 
-an unknown `mode`, or a `max_speed` that is not positive.
+- Invalid Data: Your request data is wrong, e.g., an action without `pos`, a position outside 0–100, a negative time or
+one after 24 hours, an unknown `mode`, or a `max_speed` that is not positive.
 - Developer Error: Congratulations, you found a bug! Please report it to MoonShardFlower@gmail.com
 
 ---

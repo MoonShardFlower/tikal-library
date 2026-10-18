@@ -24,6 +24,12 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 ### Changed
     - Pattern playback finds the current segment with a binary search instead of scanning the whole pattern, making it
         cheaper. A segment with a negative duration now counts as zero.
+    - Web API: `tikal-server` exits with status 1 if it fails, e.g., the port is in use (it used to exit with 0)
+    - Web API: `tikal-server --log-path None` logs to stderr at `--log-level`. An unknown `--log-level` is a usage error.
+    - Web API: A toy switched off with its power button keeps its `powered_off` status, as a `lost` toy does:
+        `get_connection_status` reports it instead of an Unknown Toy error.
+    - Funscripts: an action may be at most 24 h into the script, and `funscript_to_pattern` refuses more than 1 000 000
+        grid slots.
 
 ### Fixed
     - Web API docs: A request with invalid data is reported as "Invalid Data". error.md and the `set_pattern` section
@@ -39,6 +45,19 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
     - `shutdown()` cancels the connects in flight. A toy that finished connecting afterward used to stay connected.
     - Starting a scan that is running already keeps the toys found so far. The Bluetooth toys found so far used to disappear from the list.
     - Intensity levels and limits of Lovense toys must be ints. A float such as `7.5` raises `TypeError` instead of being sent to the toy as `Vibrate:7.5`.
+    - Web API: A slow client no longer stalls other's client's replies and events. Every client now has its own queue.
+    - A failed command starts reconnecting after releasing the toy's command lock: a slow status callback no longer holds
+        up new commands for the toy
+    - Removing a toy while it reconnects ends the reconnect.
+    - Web API: A `seek`, `set_pattern` or `set_funscript` sent right after a `set_funscript` can no longer be undone by it.
+    - Web API: Two clients leaving at once no longer leave an idle-shutdown countdown that later shut the server down.
+    - Web API: A malformed `pattern` in `set_pattern` is answered with "Invalid Data". It used to get no reply at all.
+    - Web API: A binary message that is not UTF-8 is answered with "Malformed Request". It used to drop the connection.
+    - Web API: When the last client leaves, all toys are stopped at once, so a toy that does not answer delays no other.
+    - Web API: The tasks that handle messages are kept until they are done, and a failure in one is logged.
+    - Web API: The status page shows each connection status in its own color, and escapes the toys' names.
+    - Web API docs: The scan event (`scan_update`), `battery_changed`, the `add` reply, `elapsed`, `toy_state_changed`
+        and `powered_off` are corrected to reflect the actual implementation.
 
 ## [2.0.0] - 2026-10-06
 

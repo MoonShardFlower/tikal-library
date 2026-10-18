@@ -24,14 +24,18 @@ Optional arguments are:
 - `--toy-cache-path <path_to_cache_file>`: defaults to `./data/toy_cache.json` and defines the path and name of the toy cache file.
 If set to the string "None", the cache degrades to in-memory only (No persistence)
 If the file does not exist, it will be created. If the path up to the file does not exist, it will be created.
-- `--log-level <level>`: defaults to `INFO` and defines the log level. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`.
+- `--log-level <level>`: defaults to `INFO` and defines the log level. One of `DEBUG`, `INFO`, `WARNING`, `ERROR` (case-insensitive).
+Any other value ends the server with a usage error (exit status 2).
 - `--log-path <path_to_log_file>`: defaults to `./data/tikal_ws.log` and defines the path and name of the log file.
-If set to the string "None", no log file is used. If the file does not exist, it will be created. If the path up to the file does not exist, it will be created.
+If set to the string "None", no log file is used, and the log goes to stderr. If the file does not exist, it will be created. If the path up to the file does not exist, it will be created.
 
 Example including all arguments:
 `tikal-server --host 0.0.0.0 --insecure --port 8081 --timeout 4 --toy-cache-path ./pretty/cache.json --log-level DEBUG --log-path ./important/log.txt`
 
 The server shuts down automatically if no client is connected to it for a period of `--timeout` seconds (default 3).
+
+If the server cannot start, e.g., because the port is in use, the error goes to the log file and to stderr, and the
+process ends with exit status 1. A non-loopback `--host` without `--insecure` ends it with exit status 2.
 
 
 ## Message Format

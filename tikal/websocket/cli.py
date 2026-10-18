@@ -31,10 +31,14 @@ import argparse
 import asyncio
 import logging
 import signal
+import sys
 import traceback
 from pathlib import Path
 
 from .toy_server import InsecureBindError, ToyServer
+
+#: The values of ``--log-level``.
+_LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"]
 
 
 async def _serve_until_signal(server: ToyServer, logger: logging.Logger) -> None:
@@ -83,11 +87,25 @@ async def _serve_until_signal(server: ToyServer, logger: logging.Logger) -> None
             await asyncio.gather(*pending, return_exceptions=True)
 
 
+def _report_error(logger: logging.Logger, has_log_file: bool, message: str) -> None:
+    """
+    Report an error that ends the server: in the log, and on stderr as well if the log goes to a file.
+
+    Args:
+        logger: The server's logger.
+        has_log_file: Whether *logger* writes to a log file.
+        message: The error.
+    """
+    logger.critical(message)
+    if has_log_file and sys.stderr is not None:
+        print(message, file=sys.stderr)
+
+
 def main() -> None:
     """
     Run the WebSocket server with the command-line options. Every toy is stopped and disconnected when the server ends,
-    also on Ctrl+C and (where supported) SIGTERM. An error while serving, e.g., the port is in use, is reported on
-    stderr (not in the log file), and the process exits with status 0.
+    also on Ctrl+C and (where supported) SIGTERM. An error while serving, e.g., the port is in use, is reported in the
+    log file and on stderr.
 
     Options:
 
@@ -99,8 +117,9 @@ def main() -> None:
       it in memory only.
     - ``--mock-toys``: Fake toys instead of Bluetooth.
     - ``--insecure``: Allow a non-loopback ``--host``, although the server has no authentication.
-    - ``--log-path``: Log file. Default ``./data/tikal_ws.log``; ``None``: no log file.
-    - ``--log-level``: ``DEBUG``, ``INFO`` (default), ``WARNING``, or ``ERROR``. Case-insensitive.
+    - ``--log-path``: Log file. Default ``./data/tikal_ws.log``; ``None``: the log goes to stderr instead.
+    - ``--log-level``: ``DEBUG``, ``INFO`` (default), ``WARNING``, or ``ERROR``. Case-insensitive. Another value ends
+      the process with a usage error (status 2).
     """
 
     parser = argparse.ArgumentParser(description="WebSocket server for _ToyHub")
@@ -137,12 +156,14 @@ def main() -> None:
     parser.add_argument(
         "--log-path",
         default="./data/tikal_ws.log",
-        help="File to write the log to (default: ./data/tikal_ws.log). If the string 'None' is passed disables logging.",
+        help="File to write the log to (default: ./data/tikal_ws.log). If the string 'None' is passed, the log goes to stderr instead.",
     )
     parser.add_argument(
         "--log-level",
         default="INFO",
-        help="Logging level (DEBUG, INFO, WARNING, ERROR)",
+        type=str.upper,
+        choices=_LOG_LEVELS,
+        help="Logging level (DEBUG, INFO, WARNING, ERROR), case-insensitive",
     )
 
     args = parser.parse_args()
@@ -151,15 +172,19 @@ def main() -> None:
         "%(asctime)s [%(levelname)s] : %(module)s.%(funcName)s reports: %(message)s"
     )
     logger = logging.getLogger("tikal_ws")
-    if args.log_path != "None":
+    logger.setLevel(args.log_level)
+    has_log_file = args.log_path != "None"
+    handler: logging.Handler | None = None
+    if has_log_file:
         log_path = Path(args.log_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_level = args.log_level.upper()
-        file_handler = logging.FileHandler(log_path, "w", "utf-8")
-        file_handler.setLevel(log_level)
-        file_handler.setFormatter(formatting)
-        logger.setLevel(log_level)
-        logger.addHandler(file_handler)
+        handler = logging.FileHandler(log_path, "w", "utf-8")
+    elif sys.stderr is not None:  # None in the windowless build
+        handler = logging.StreamHandler(sys.stderr)
+    if handler is not None:
+        handler.setLevel(args.log_level)
+        handler.setFormatter(formatting)
+        logger.addHandler(handler)
 
     logger.info("Starting ToyServer")
     toy_cache_path = (
@@ -175,7 +200,9 @@ def main() -> None:
             insecure=args.insecure,
         )
     except InsecureBindError as e:
-        logging.error("Failed to bind to %s:%d: %s", args.host, args.port, e)
+        _report_error(
+            logger, has_log_file, f"Failed to bind to {args.host}:{args.port}: {e}"
+        )
         raise SystemExit(2)
 
     try:
@@ -185,7 +212,12 @@ def main() -> None:
         logger.info("Interrupted. All toys were stopped during shutdown.")
     except Exception:
         details = traceback.format_exc()
-        logging.critical("Server shutting down due to unhandled exception: %s", details)
+        _report_error(
+            logger,
+            has_log_file,
+            f"Server shutting down due to unhandled exception: {details}",
+        )
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
