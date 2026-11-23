@@ -6,11 +6,11 @@ from logging import Logger
 
 from websockets.asyncio.server import ServerConnection
 
-#: Seconds a client may take to accept one message before it is dropped. The same as the server's ping timeout.
+#: Maximum seconds one pending send may take before the connection is aborted.
 SEND_TIMEOUT = 20.0
 #: Seconds the closing handshake may take before the connection is aborted. The same as the server's close timeout.
 CLOSE_TIMEOUT = 10.0
-#: Messages that may wait for a client before it is dropped.
+#: Messages that may wait in the application queue, excluding the in-flight send and networking buffers.
 MAX_WAITING_MESSAGES = 256
 #: Characters that may wait for a client before it is dropped (the messages are JSON, mostly ASCII).
 MAX_WAITING_CHARS = 8 * 2**20

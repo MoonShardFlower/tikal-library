@@ -21,6 +21,7 @@ import pytest
 import pytest_asyncio
 import websockets
 from pydantic import ValidationError
+from websockets.asyncio.server import ServerConnection
 
 from tikal._core import (
     AddConnectionError,
@@ -1832,26 +1833,42 @@ async def _poll(predicate: Callable[[], object], timeout: float = 5.0) -> bool:
     return bool(predicate())
 
 
-# 20000 segments: every toy_state_changed carries the pattern (~300 kB), so a client that stops reading has full buffers
-# after a few commands.
+# Each toy_state_changed carries this pattern (~210 kB). Only the stuck connection's socket buffers are constrained;
+# otherwise several broadcasts fit in Linux's kernel buffers without ever blocking a send.
 _BIG_PATTERN = [[100, i % 20, 0] for i in range(20_000)]
 
 
 def _stuck_client(port: int) -> socket.socket:
     """Open a WebSocket connection by hand that completes the handshake and never reads. Blocking: run it in a thread."""
-    sock = socket.create_connection(("localhost", port))
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(
-        (
-            f"GET / HTTP/1.1\r\nHost: localhost:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
-        ).encode()
-    )
-    assert b"101" in sock.recv(1024)
-    return sock
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(5)
+        # Set before connecting so TCP starts with a small receive window on both Linux and Windows.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)
+        sock.connect(("127.0.0.1", port))
+        key = base64.b64encode(os.urandom(16)).decode()
+        sock.sendall(
+            (
+                f"GET / HTTP/1.1\r\nHost: localhost:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            ).encode()
+        )
+        response = b""
+        while b"\r\n\r\n" not in response:
+            chunk = sock.recv(4096)
+            assert chunk, "Connection closed before the handshake completed"
+            response += chunk
+            assert len(response) <= 65536, "WebSocket handshake headers are too large"
+        assert response.startswith(b"HTTP/1.1 101 "), response
+        return sock
+    except BaseException:
+        sock.close()
+        raise
 
 
-async def _app_with_a_stuck_client(server, connect) -> tuple[_Client, socket.socket]:
+async def _app_with_a_stuck_client(
+    server, connect
+) -> tuple[_Client, socket.socket, ServerConnection]:
     """A client playing a big pattern on Thunder, and a second client that stopped reading."""
     app = await connect()
     await _scan_and_add(app, "Thunder_ID", "Thunder")
@@ -1865,24 +1882,62 @@ async def _app_with_a_stuck_client(server, connect) -> tuple[_Client, socket.soc
         },
     )
     stuck = await asyncio.to_thread(_stuck_client, server._port)
-    assert await _poll(lambda: len(server._clients) == 2)
-    return app, stuck
+    try:
+        assert await _poll(lambda: len(server._clients) == 2)
+        connection = next(
+            ws for ws in server._clients if ws.remote_address == stuck.getsockname()
+        )
+        # asyncio's write-buffer limit does not cap the OS send buffer. Constrain only this test connection, not
+        # the healthy client or the production server. OSes may round or double the requested buffer sizes.
+        connection.transport.get_extra_info("socket").setsockopt(
+            socket.SOL_SOCKET, socket.SO_SNDBUF, 8192
+        )
+        return app, stuck, connection
+    except BaseException:
+        stuck.close()
+        raise
+
+
+async def _fill_stuck_client(app: _Client, connection: ServerConnection) -> None:
+    """Broadcast until the real transport pauses and a send is waiting in websockets' drain(), not for a fixed count."""
+    pause = True
+    async with asyncio.timeout(5):
+        while not (connection.paused and connection.drain_waiters):
+            reply = await app.request(
+                "set_paused", {"toy_id": "Thunder_ID", "pause": pause}, timeout=2
+            )
+            assert reply["success"] is True
+            pause = not pause
+    assert connection.transport.get_write_buffer_size() > 0
 
 
 async def test_a_client_that_stops_reading_holds_up_no_other_client(
-    ws_server, monkeypatch
+    ws_server, monkeypatch, caplog
 ):
-    monkeypatch.setattr(_outbox, "SEND_TIMEOUT", 2.0)
+    # Leave enough time to verify isolation while the send is still blocked, before the timeout drops the client.
+    monkeypatch.setattr(_outbox, "SEND_TIMEOUT", 5.0)
     server, connect = ws_server
-    app, stuck = await _app_with_a_stuck_client(server, connect)
+    app, stuck, connection = await _app_with_a_stuck_client(server, connect)
     try:
-        for i in range(10):  # each one broadcasts the big state to the stuck client too
-            reply = await app.request(
-                "set_paused", {"toy_id": "Thunder_ID", "pause": i % 2 == 0}, timeout=2
-            )
-            assert reply["success"] is True
-        # It did not accept a message within the send timeout: it is dropped.
-        assert await _poll(lambda: len(server._clients) == 1, timeout=10)
+        outbox = server._outboxes[connection]
+        await _fill_stuck_client(app, connection)
+
+        # The healthy client must receive a reply while the other client's send is still blocked, not only after
+        # the slow connection has been dropped.
+        assert (await app.request("get_toy_ids", timeout=2))["success"] is True
+        assert connection in server._clients
+        assert connection.paused and connection.drain_waiters
+
+        assert await _poll(
+            lambda: connection not in server._clients
+            and connection not in server._outboxes
+            and outbox._task.done(),
+            timeout=10,
+        ), "The blocked connection and its outbox were not cleaned up after the send timeout"
+        assert "it did not accept a message within 5 s" in caplog.text
+        assert outbox._closed
+        assert len(server._clients) == 1
+        assert (await app.request("get_toy_ids", timeout=2))["success"] is True
     finally:
         stuck.close()
 
@@ -1892,16 +1947,20 @@ async def test_shutdown_does_not_wait_for_a_client_that_stopped_reading(
 ):
     monkeypatch.setattr(_outbox, "CLOSE_TIMEOUT", 0.5)
     server, connect = ws_server
-    app, stuck = await _app_with_a_stuck_client(server, connect)
+    app, stuck, connection = await _app_with_a_stuck_client(server, connect)
     try:
-        for i in range(4):
-            await app.request(
-                "set_paused", {"toy_id": "Thunder_ID", "pause": i % 2 == 0}
-            )
-        # The stuck client never answers the closing handshake (websockets would wait 10 s for it), and may not even
-        # take the close frame (websockets would wait forever).
+        outbox = server._outboxes[connection]
+        await _fill_stuck_client(app, connection)
+        # The send is blocked already, so shutdown must handle a blocked close as well as an unanswered handshake.
+        # The send timeout is still 20 s: only the bounded close-or-abort path can finish within this deadline.
         await asyncio.wait_for(server.shutdown(), 3)
         assert not server._hub._toys
+        assert await _poll(
+            lambda: connection not in server._clients
+            and connection not in server._outboxes
+            and outbox._task.done()
+        ), "Shutdown did not clean up the blocked connection and its outbox"
+        assert outbox._closed
     finally:
         stuck.close()
 

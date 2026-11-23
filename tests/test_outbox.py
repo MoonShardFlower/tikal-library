@@ -2,7 +2,8 @@
 Tests for the per-client outbox of the WebSocket server (:mod:`tikal.websocket._outbox`).
 
 A stand-in connection records what is sent, or never finishes sending, the way a client that stopped reading looks to
-the server: ``send`` waits forever in websockets' ``drain()``.
+the server once its networking buffers fill: ``send`` waits in websockets' ``drain()``.
+The real-socket tests live in ``test_toy_server.py``.
 """
 
 import asyncio
