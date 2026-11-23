@@ -49,33 +49,33 @@ LOVENSE_TOY_SPECIFICATIONS: dict[str, ToySpecification] = {
         supports_rotation=True,
     ),
     "Osci": ToySpecification(
-        ToyCommands("Vibration", "Vibrate", "Oscillation", "Oscillate"),
+        ToyCommands("Vibration", "Vibrate1", "Oscillation", "Vibrate2"),
         min_interval=200,
-    ),  # Unsure about the second command, Oscillate assumed
+    ),
     "Mission": ToySpecification(ToyCommands("Vibration", "Vibrate"), min_interval=200),
     "Flexer": ToySpecification(
         ToyCommands("Vibration", "Vibrate", "Fingering", "Finger"), min_interval=200
     ),  # Second command unknown; I just assume 'Finger'
     "Gravity": ToySpecification(
-        ToyCommands("Vibration", "Vibrate", "Thrust", "Thrusting"), min_interval=200
+        ToyCommands("Vibration", "Vibrate1", "Thrust", "Vibrate2"), min_interval=200
     ),
-    "Dolce": ToySpecification(ToyCommands("Vibration", "Vibrate"), min_interval=200),
+    "Dolce": ToySpecification(
+        ToyCommands("Vibration1", "Vibrate1", "Vibration2", "Vibrate2"),
+        min_interval=200,
+    ),
     "Vulse": ToySpecification(ToyCommands("Vibration", "Vibrate"), min_interval=200),
-    "Tenera": ToySpecification(
-        ToyCommands("Sucking", "Suck"), min_interval=400
-    ),  # Command unknown, just assume 'Suck'
+    "Tenera": ToySpecification(ToyCommands("Sucking", "Vibrate"), min_interval=400),
     "Lapis": ToySpecification(
         ToyCommands("Vibration", "Vibrate"), min_interval=200
     ),  # Has 3 independent vibrators, no idea how to independently control them
     "Ambi": ToySpecification(ToyCommands("Vibration", "Vibrate"), min_interval=200),
     "Hyphy": ToySpecification(ToyCommands("Vibration", "Vibrate"), min_interval=200),
     "Exomoon": ToySpecification(ToyCommands("Vibration", "Vibrate"), min_interval=200),
-    "Gush": ToySpecification(
-        ToyCommands("Vibration", "Vibrate"), min_interval=200
-    ),  # Apparently, Oscillation cannot be controlled independently
+    "Gush": ToySpecification(ToyCommands("Vibration", "Vibrate"), min_interval=200),
     "Edge": ToySpecification(
-        ToyCommands("Vibration", "Vibrate"), min_interval=200
-    ),  # Has 2 independent vibrators, no idea how to independently control them
+        ToyCommands("Vibration1", "Vibrate1", "Vibration2", "Vibrate2"),
+        min_interval=200,
+    ),
     "Max": ToySpecification(
         ToyCommands("Vibration", "Vibrate", "Air", "Air:Level"), min_interval=200
     ),
@@ -91,14 +91,21 @@ LOVENSE_TOY_SPECIFICATIONS: dict[str, ToySpecification] = {
     "Hush": ToySpecification(ToyCommands("Vibration", "Vibrate"), min_interval=200),
     "Domi": ToySpecification(ToyCommands("Vibration", "Vibrate"), min_interval=200),
     "Gemini": ToySpecification(
-        ToyCommands("Vibration", "Vibrate"), min_interval=200
-    ),  # Has 2 independent vibrators, no idea how to independently control them
+        ToyCommands("Vibration1", "Vibrate1", "Vibration2", "Vibrate2"),
+        min_interval=200,
+    ),
     "Lush Anal": ToySpecification(
         ToyCommands("Vibration", "Vibrate"), min_interval=200
     ),
     "Spinel": ToySpecification(
-        ToyCommands("Vibration", "Vibrate", "Thrust", "Thrusting"), min_interval=200
-    ),  # Second command unknown, assume Thrusting
+        ToyCommands("Vibration", "Vibrate1", "Thrust", "Vibrate2"), min_interval=200
+    ),
+    "Velvo": ToySpecification(
+        ToyCommands("Vibration1", "Vibrate1", "Vibration2", "Vibrate2"),
+        min_interval=200,
+    ),
+    "Fizz": ToySpecification(ToyCommands("Vibration", "Vibrate"), min_interval=200),
+    "Glint": ToySpecification(ToyCommands("Vibration", "Vibrate"), min_interval=200),
 }
 
 

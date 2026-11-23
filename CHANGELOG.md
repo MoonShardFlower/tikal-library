@@ -8,6 +8,7 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 ## [Unreleased]
 
 ### Added
+    - New toys: Lovense Velvo, Fizz, Glint (Experimental: I don't have these toys so I can't test if my commands work)
     - New module `tikal.funscript`: `Funscript` loads, validates and converts `.funscript` files into a pattern that 
         any of the APIs can play. By default the intensity follows the stroke speed, alternatively a position mapping 
         is available too. Segments are laid on a grid of the toy's recommended minimum interval, so a dense script does 
