@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools==83.0.0", "wheel"]
+requires = ["setuptools==84.2.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -16,10 +16,10 @@ authors = [
 ]
 
 dependencies = [
-    "bleak==3.0.2",
+    "bleak==3.1.0",
     "pyserial-asyncio-fast==0.16",
-    "pydantic==2.13.5",
-    "websockets==17.1",
+    "pydantic==2.14.4",
+    "websockets==17.4",
 ]
 
 keywords = [
@@ -35,19 +35,20 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Operating System :: OS Independent",
     "Topic :: Software Development :: Libraries",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "black~=26.5.1",
-    "isort~=9.0.1",
-    "pytest~=9.1.1",
-    "pytest-asyncio~=1.4.0",
+    "black~=26.10.1",
+    "isort~=9.0.2",
+    "pytest~=9.2.0",
+    "pytest-asyncio~=1.5.0",
     "pytest-cov~=7.1.0",
-    "flake8~=7.4.1",
-    "mypy~=2.3.1",
+    "flake8~=7.5.0",
+    "mypy~=2.4.1",
 ]
 
 [project.urls]
@@ -61,7 +62,8 @@ Issues = "https://github.com/MoonShardFlower/tikal-library/issues"
 tikal-server = "tikal.websocket.cli:main"
 
 [tool.setuptools]
-packages = { find = {} }
+# tools/ holds development tools (the fake ToyServer), which are not part of the installed package
+packages = { find = { exclude = ["tools*"] } }
 
 [tool.setuptools.dynamic]
 version = { attr = "tikal.__version__" }

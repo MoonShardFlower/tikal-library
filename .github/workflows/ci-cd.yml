@@ -24,7 +24,7 @@ permissions:
 
 jobs:
 
-  # We test it on Windows + Linux with Python 3.13 + 3.14
+  # We test it on Windows + Linux with Python 3.13 + 3.14 + 3.15
   build-and-test:
     runs-on: ${{ matrix.os }}
 
@@ -32,18 +32,18 @@ jobs:
       fail-fast: true   # Cancel other jobs if one fails
       matrix:
         os: [windows-latest, ubuntu-latest]
-        python-version: ['3.13', '3.14']
+        python-version: ['3.13', '3.14', '3.15']
 
     steps:
       # Checkout repository
       - name: Checkout code
-        uses: actions/checkout@v6.0.0
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
       # Install selected Python version
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -120,7 +120,7 @@ jobs:
       # Upload coverage to Codecov. Runs on every matrix job; Codecov merges the reports for a commit.
       # relative_files (see pyproject.toml) lets the Windows and Linux reports line up.
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
@@ -131,10 +131,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.14'
           cache: 'pip'
@@ -160,7 +160,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6.0.0
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -203,10 +203,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.14'
           cache: 'pip'
@@ -237,7 +237,7 @@ jobs:
 
       # Upload built .exe for later use
       - name: Upload zip artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
             name: ToyServer-standalone
             path: ToyServer.zip
@@ -255,10 +255,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v6.2.0
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.14'
           cache: 'pip'
@@ -273,7 +273,7 @@ jobs:
 
       # Uploads everything in dist/ using OIDC trusted publishing
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@v1.14.3
 
   # When we want to release, take the previously built zip and create a GitHub release
   publish-release:
@@ -285,16 +285,16 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Download built artifact
-        uses: actions/download-artifact@v6.0.0
+        uses: actions/download-artifact@v8.0.2
         with:
           name: ToyServer-standalone
           path: .
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3.0.3
         with:
           tag_name: ${{ needs.check-release.outputs.git_tag }}
           name: ${{ needs.check-release.outputs.git_tag }}
