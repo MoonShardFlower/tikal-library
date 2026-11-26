@@ -16,10 +16,10 @@ authors = [
 ]
 
 dependencies = [
-    "bleak==3.1.0",
-    "pyserial-asyncio-fast==0.16",
-    "pydantic==2.14.4",
-    "websockets==17.4",
+    "bleak>=0.22.3,<4",
+    "pyserial-asyncio-fast>=0.10,<1",
+    "pydantic>=2.10.4,<3",
+    "websockets>=14.2,<18",
 ]
 
 keywords = [

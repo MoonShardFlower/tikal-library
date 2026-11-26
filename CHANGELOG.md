@@ -29,6 +29,7 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
         to a position, e.g., to follow a video.
 
 ### Changed
+    - Dependencies accept a range instead of one exact version
     - Low-Level API: `BLEBrandHandler.handles_device` and `create_toy_data` take the device's advertisement as a second
         argument (`None` if there is none). `BLEConnectionBuilder` scans with `return_adv=True`, so the scanner class
         passed to it must support that
