@@ -7,6 +7,8 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-26
+
 ### Added
     - New toys: Lovense Velvo, Fizz, Glint (Experimental: I don't have these toys so I can't test if my commands work)
     - Discovery fills in the model of Lovense toys: Unlike the bluetooth names the service UUID seem to reliable carry 
