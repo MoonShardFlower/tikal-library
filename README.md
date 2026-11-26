@@ -85,4 +85,4 @@ I am NOT affiliated with Lovense in any way. Bugs and issues of this software ar
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The Lovense model table is derived from Buttplug (BSD 3-Clause), see [NOTICE](NOTICE).

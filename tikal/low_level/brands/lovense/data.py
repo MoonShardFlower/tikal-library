@@ -170,10 +170,11 @@ MIN_SEGMENT_LENGTH: dict[str, int] = {
 #: Maps the start of a Lovense service UUID to the model name (a key of :data:`LOVENSE_TOY_SPECIFICATIONS`).
 #:
 #: A Lovense service UUID looks like ``42410001-0023-4bd4-bbd5-a6920e4c5653``. Its first four hex digits differ per
-#  model. Most toys advertise that UUID, so discovery can tell the model before connecting.
+#:  model. Most toys advertise that UUID, so discovery can tell the model before connecting.
 #:
 #: Derived from the device configuration of Buttplug (https://github.com/buttplugio/buttplug),
 #: Copyright (c) 2016-2023, Nonpolynomial Labs, LLC, under the BSD 3-Clause license.
+#: Its full license text is in the NOTICE file.
 #: ``4241`` (Solace Pro) and ``455a`` (Gush 2) are confirmed on my own toys. The others are assumed as working.
 #:
 #: Type:
