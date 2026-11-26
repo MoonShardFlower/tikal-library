@@ -83,7 +83,7 @@ class ToyData:
     Properties:
         name: Read-only human-readable identifier for the toy, e.g., the Bluetooth name "LVS-B12".
         toy_id: Read-only unique identifier for the toy, e.g., the Bluetooth address "DC:F5:05:A3:6D:1E".
-        model_name: Model name of the toy (e.g., "Lush"). For Lovense toys, this is empty and must be set manually.
+        model_name: Model name of the toy (e.g., "Lush"). Filled if known (Lovense: a known service UUID), else empty
         brand: Read-only brand name of the toy (e.g., "Lovense").
 
     Example:
@@ -92,7 +92,7 @@ class ToyData:
             # Created during discovery
             print(lovense_data.name)  # "LVS-Z36D"
             print(lovense_data.toy_id)  # "DC:F5:05:A3:6D:1E"
-            print(lovense_data.model_name)  # ""
+            print(lovense_data.model_name)  # "" if the toy did not reveal its model
 
             # User selects model
             lovense_data.model_name = "Nora"

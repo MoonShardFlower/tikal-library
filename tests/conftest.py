@@ -33,7 +33,7 @@ def mock_hub():
 
     def make(**kwargs) -> ToyHub:
         scanner = MagicMock()
-        scanner.discover = AsyncMock(return_value=[])
+        scanner.discover = AsyncMock(return_value={})
         hub = ToyHub(
             logger_name="test", bluetooth_scanner=scanner, mock_toys=True, **kwargs
         )

@@ -70,7 +70,7 @@ class ToyHub:
         logger_name: Name of the logger.
         toy_cache_path: JSON file that remembers each toy's model name, so discovery can fill it in (see
             :class:`~tikal.high_level.ToyCache`). In-memory only if the empty path ``Path()`` is given.
-        default_model: Model name of discovered toys that the toy cache does not know.
+        default_model: Model name of discovered toys who can't be identified by the toy cache or by its advertisement.
         bluetooth_scanner: BleakScanner (sub)class to scan with, e.g., ``tikal.mock.MockBleakScanner``.
         bluetooth_client: BleakClient (sub)class to connect with, e.g., ``tikal.mock.MockBleakClient``.
         mock_toys: Offer the fictional MockEstimToys brand. Not part of the public API and may be removed.
@@ -237,9 +237,9 @@ class ToyHub:
 
         Args:
             on_update: Called with all available toys whenever they change: first with an empty list, or with the toys
-                found so far if the scan was running already. Model names come from the toy cache. Already connected
-                toys are not discovered. If the scan fails, it ends: *on_update* receives an empty list, and *on_error*
-                the :class:`~tikal.high_level.DiscoveryError`.
+                found so far if the scan was running already. Model names are filled in as by
+                :meth:`discover_toys_blocking`. Already connected toys are not discovered.  If the scan fails, it ends:
+                *on_update* receives an empty list, and *on_error* the :class:`~tikal.high_level.DiscoveryError`.
 
         Raises:
             DiscoveryStartError: The scan could not start, e.g., Bluetooth is off.
@@ -274,7 +274,8 @@ class ToyHub:
             timeout: Scan duration in seconds. Longer scans find more toys.
 
         Returns:
-            The toys found, with model names from the toy cache (or *default_model*).
+            The toys found. A model name comes from the toy cache (the model the toy was connected with before),
+            else from the toy's advertisement (e.g., a service UUID) if possible, else it is *default_model*.
 
         Raises:
             RuntimeError: A scan started by :meth:`start_discovery` is running, or called from a callback.

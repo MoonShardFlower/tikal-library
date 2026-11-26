@@ -12,6 +12,7 @@ from typing import Any, Callable, Type
 
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
 
 from .toy import Toy
 from .toy_data import ToyData
@@ -45,8 +46,19 @@ class BLEBrandHandler(ABC):
 
     @staticmethod
     @abstractmethod
-    def handles_device(device: BLEDevice) -> bool:
-        """Return ``True`` if the BLE device belongs to this brand."""
+    def handles_device(
+        device: BLEDevice, advertisement: AdvertisementData | None = None
+    ) -> bool:
+        """
+        Whether the BLE device belongs to this brand.
+
+        Args:
+            device: The device.
+            advertisement: Its latest advertisement. None if the scanner gives none (e.g., a mock).
+
+        Returns:
+            True if it does.
+        """
         raise NotImplementedError
 
     @staticmethod
@@ -57,8 +69,19 @@ class BLEBrandHandler(ABC):
 
     @staticmethod
     @abstractmethod
-    def create_toy_data(device: BLEDevice) -> ToyData:
-        """The :class:`~tikal.low_level.ToyData` of a device for which :meth:`handles_device` is true."""
+    def create_toy_data(
+        device: BLEDevice, advertisement: AdvertisementData | None = None
+    ) -> ToyData:
+        """
+        The :class:`~tikal.low_level.ToyData` of a device for which :meth:`handles_device` is true.
+
+        Args:
+            device: The device.
+            advertisement: Its latest advertisement, or None.
+
+        Returns:
+            The toy data. Its model name is the model the advertisement reveals, or empty if it reveals none.
+        """
         raise NotImplementedError
 
     @abstractmethod

@@ -5,13 +5,71 @@ import contextlib
 
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
 
 from ...brand_handler import BLEBrandHandler
 from ...toy import Toy
 from ...toy_data import InvalidModelError, ToyData, ValidationError
 from ...transport import BleTransport
-from .data import LOVENSE_TOY_NAMES
+from .data import LOVENSE_TOY_NAMES, LOVENSE_UUID_PREFIXES
 from .toy import LovenseToy
+
+#: The end of the Lovense service UUID. The first group differs per model: its first four hex digits tell the model
+#: (see :data:`~tikal.low_level.brands.lovense.data.LOVENSE_UUID_PREFIXES`).
+_LOVENSE_SERVICE_SUFFIX = "-4bd4-bbd5-a6920e4c5653"
+
+#: The generic serial services some older toys use instead -> their ``(tx, rx)`` characteristics.
+_GENERIC_SERVICES: dict[str, tuple[str, str]] = {
+    "6e400001-b5a3-f393-e0a9-e50e24dcca9e": (
+        "6e400002-b5a3-f393-e0a9-e50e24dcca9e",
+        "6e400003-b5a3-f393-e0a9-e50e24dcca9e",
+    ),
+    "0000fff0-0000-1000-8000-00805f9b34fb": (
+        "0000fff2-0000-1000-8000-00805f9b34fb",
+        "0000fff1-0000-1000-8000-00805f9b34fb",
+    ),
+}
+
+
+def _is_lovense_service(uuid: str) -> bool:
+    """Whether *uuid* (lower case) has the form of a Lovense service UUID."""
+    return len(uuid) == 36 and uuid.endswith(_LOVENSE_SERVICE_SUFFIX)
+
+
+def _characteristics(service_uuid: str) -> tuple[str, str] | None:
+    """
+    The ``(tx, rx)`` characteristic UUIDs a toy's service should have, lower case.
+
+    A Lovense service ``xxxxxxx1-...`` has its tx characteristic at ``xxxxxxx2-...`` and its rx at ``xxxxxxx3-...``.
+
+    Args:
+        service_uuid: Any service UUID.
+
+    Returns:
+        ``(tx, rx)``, or None if *service_uuid* is neither a Lovense service nor one of the generic ones.
+    """
+    uuid = service_uuid.lower()
+    if uuid in _GENERIC_SERVICES:
+        return _GENERIC_SERVICES[uuid]
+    if not _is_lovense_service(uuid):
+        return None
+    try:
+        first_group = int(uuid[:8], 16)
+    except ValueError:
+        return None
+    rest = uuid[8:]
+    return f"{first_group + 1:08x}{rest}", f"{first_group + 2:08x}{rest}"
+
+
+def _advertised_model(advertisement: AdvertisementData | None) -> str:
+    """The model of the first advertised Lovense service UUID whose start is known (see LOVENSE_UUID_PREFIXES), or ""."""
+    if advertisement is None:
+        return ""
+    for uuid in advertisement.service_uuids:
+        uuid = uuid.lower()
+        if _is_lovense_service(uuid) and uuid[:4] in LOVENSE_UUID_PREFIXES:
+            return LOVENSE_UUID_PREFIXES[uuid[:4]]
+    return ""
 
 
 class LovenseHandler(BLEBrandHandler):
@@ -19,21 +77,19 @@ class LovenseHandler(BLEBrandHandler):
     Brand handler for Lovense BLE toys.
 
     Encapsulates all Lovense-specific logic: identification, UUID resolution, connection, and notification setup.
-    Recognizes Lovense toys by their Bluetooth name (``LVS-...``).
+    Recognizes Lovense toys by their Bluetooth name (``LVS-...``) or by an advertised Lovense service UUID.
     """
 
-    _LOVENSE_SERVICE_PATTERN = "-4bd4-bbd5-a6920e4c5653"
-    _UUID_REPLACEMENTS = {
-        "tx": ("0001", "0002"),
-        "rx": ("0001", "0003"),
-    }
-
     @staticmethod
-    def handles_device(device: BLEDevice) -> bool:
-        """Return ``True`` if the BLE device is a lovense toy. Lovense toys advertise with a name prefixed 'LVS-'"""
+    def handles_device(
+        device: BLEDevice, advertisement: AdvertisementData | None = None
+    ) -> bool:
+        """Whether the device is a Lovense toy: its name starts with ``LVS-``, or it advertises a Lovense service."""
         if device.name and device.name.startswith("LVS-"):
             return True
-        return False
+        return advertisement is not None and any(
+            _is_lovense_service(uuid.lower()) for uuid in advertisement.service_uuids
+        )
 
     @staticmethod
     def handles_toy(toy_data: ToyData) -> bool:
@@ -41,10 +97,19 @@ class LovenseHandler(BLEBrandHandler):
         return toy_data.brand == "Lovense"
 
     @staticmethod
-    def create_toy_data(device: BLEDevice) -> ToyData:
-        """Create a ``LovenseData`` instance (inherits from ``ToyData``) from a BLE device."""
-        name = device.name if device.name else "unknown"
-        return ToyData(name, device.address, "", "Lovense")
+    def create_toy_data(
+        device: BLEDevice, advertisement: AdvertisementData | None = None
+    ) -> ToyData:
+        """
+        The :class:`~tikal.low_level.ToyData` of a Lovense toy.
+
+        The model name is filled out if the UUID is known, else empty.
+        (see :data:`~tikal.low_level.brands.lovense.data.LOVENSE_UUID_PREFIXES`)
+        """
+        name = device.name or (advertisement and advertisement.local_name) or "unknown"
+        return ToyData(
+            name, device.address, _advertised_model(advertisement), "Lovense"
+        )
 
     async def create_toy(self, toy_data: ToyData, device: BLEDevice) -> Toy:
         """
@@ -113,9 +178,10 @@ class LovenseHandler(BLEBrandHandler):
         rx_uuid = await self._find_uuid_by_type(client, "rx")
         return tx_uuid, rx_uuid
 
-    async def _find_uuid_by_type(self, client: BleakClient, uuid_type: str) -> str:
+    @staticmethod
+    async def _find_uuid_by_type(client: BleakClient, uuid_type: str) -> str:
         """
-        Find the TX or RX characteristic in the Lovense service.
+        Find the TX or RX characteristic in the Lovense service, or else in one of the generic serial services.
 
         Args:
             client: The connected client.
@@ -128,20 +194,18 @@ class LovenseHandler(BLEBrandHandler):
         Returns:
             The UUID, upper case.
         """
-        if uuid_type not in self._UUID_REPLACEMENTS:
+        if uuid_type not in ("tx", "rx"):
             raise ValueError(f"Invalid UUID type: {uuid_type}")
-        old_pattern, new_pattern = self._UUID_REPLACEMENTS[uuid_type]
-        for service in client.services:
-            uuid_str = str(service.uuid).lower()
-            if (
-                uuid_str.endswith(self._LOVENSE_SERVICE_PATTERN)
-                and uuid_str.startswith("4")
-                and old_pattern in uuid_str
-            ):
-                target_uuid = uuid_str.replace(old_pattern, new_pattern).upper()
-                if any(
-                    str(char.uuid).upper() == target_uuid
-                    for char in service.characteristics
-                ):
-                    return target_uuid
+        index = 0 if uuid_type == "tx" else 1
+        # A Lovense service wins over a generic one. sorted() keeps the order otherwise.
+        services = sorted(
+            client.services, key=lambda s: str(s.uuid).lower() in _GENERIC_SERVICES
+        )
+        for service in services:
+            characteristics = _characteristics(str(service.uuid))
+            if characteristics is None:
+                continue
+            target_uuid = characteristics[index]
+            if any(str(c.uuid).lower() == target_uuid for c in service.characteristics):
+                return target_uuid.upper()
         raise ConnectionError(f"Unable to find {uuid_type}-UUID for {client.address}")

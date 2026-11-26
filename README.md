@@ -57,13 +57,16 @@ TIKAL talks to the toys directly, thanks to reverse-engineering efforts by
 - Patterns are played by sending intensity commands, not with the toys' own pattern feature. To avoid overloading a
   toy, keep changes at least its recommended minimum interval apart (`recommended_min_interval`, per model). Two
   commands (e.g., thrust and depth) every 100 ms worked on my toys.
-- A toy's model name must be set by hand: let the user pick one from `LOVENSE_TOY_NAMES`. `ToyCache` remembers it.
+- The model isn't known for all toys. If it is known discovery fills it in for you. Else the User must pick the model
+  from `LOVENSE_TOY_NAMES`. `ToyCache` can be used to remember the choice.
 
-### Toys Cannot Be Identified Automatically
+### How Toys Are Identified
 
-- Some toys advertise as `LVS-<model>`.
-- Most advertise as `LVS-<identifier><firmware version>`, where the identifier is a single letter. The letter-to-model
-  mapping is not public and not unique: Nora appears as A or C, while Max and Solace Pro both appear as B.
+- By the service UUID most toys advertise: its first four hex digits tell the model (`42410001-...` -> Solace Pro).
+  `LOVENSE_UUID_PREFIXES` maps them to models. I copied from the source of [Buttplug](https://github.com/buttplugio/buttplug) 
+  (BSD 3-Clause, Copyright (c) 2016-2023, Nonpolynomial Labs, LLC) and would like to thank them a lot.
+  The Solace Pro (`4241`) and the Gush 2 (`455a`) are confirmed on my own toys, the others are just assumed to work.
+- The High-Level API and the Web API prefer the model saved in `ToyCache`, so user picks win against the defaults.
 
 ## Help Me
 

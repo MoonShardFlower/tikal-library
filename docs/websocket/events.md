@@ -169,7 +169,8 @@ This event is sent only to clients that have started a scan (sent a `start_scan`
 Where:
 - `toy_id` is a unique identifier of the toy.
 - `name` is a human-readable identifier of the toy.
-- `model_name` is the model name of the toy (if known), else the emtpy string.
+- `model_name` is the model the toy cache remembers for the toy, else the model its advertisement reveals (most
+  Lovense toys reveal theirs), else the empty string.
 - `brand` is the brand of the toy.
 
 

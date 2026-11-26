@@ -19,12 +19,14 @@ Example::
 """
 
 import asyncio
+import copy
 import time
 from logging import getLogger
 from typing import Any, Callable, Protocol, Type
 
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
 
 from .brands import build_handlers
 from .brands.mock_estim import MockConnectionBuilder
@@ -124,7 +126,7 @@ class BLEConnectionBuilder:
             Exception: Whatever the scanner raises, e.g., Bluetooth is off or the permission is missing.
 
         Returns:
-            List of ``ToyData`` objects with brand‑appropriate types. This is a snapshot and not updated.
+            List of ``ToyData`` objects, with the model name filled in if known. This is a snapshot and not updated.
 
         Examples::
 
@@ -138,7 +140,7 @@ class BLEConnectionBuilder:
                 "Continuous scan in progress. Use meth: stop_continuous_scan"
             )
         self._log.info(f"Starting toy discovery for {timeout}s")
-        devices = await self._scanner_class.discover(timeout=timeout)
+        found = await self._scanner_class.discover(timeout=timeout, return_adv=True)
         if self._continuous_task and not self._continuous_task.done():
             raise RuntimeError(
                 "Continuous scan in progress. Use meth: stop_continuous_scan"
@@ -146,12 +148,12 @@ class BLEConnectionBuilder:
         self._ble_devices.clear()
 
         toy_data_list = []
-        for dev in devices:
+        for dev, advertisement in found.values():
             self._ble_devices[dev.address] = dev
             self._all_seen_addresses.add(dev.address)
             for handler in self._handlers:
-                if handler.handles_device(dev):
-                    td = handler.create_toy_data(dev)
+                if handler.handles_device(dev, advertisement):
+                    td = handler.create_toy_data(dev, advertisement)
                     toy_data_list.append(td)
                     break  # first handler that claims the device wins
         self._log.info(f"Discovery complete: {len(toy_data_list)} toy(s) found")
@@ -345,27 +347,51 @@ class BLEConnectionBuilder:
             if scanner:
                 await scanner.stop()
 
-    async def _on_device_detected(self, device: BLEDevice, _: Any) -> None:
-        """Callback invoked by BleakScanner when a BLE advertisement is received"""
+    async def _on_device_detected(
+        self, device: BLEDevice, advertisement: AdvertisementData | None
+    ) -> None:
+        """
+        Callback invoked by BleakScanner when a BLE advertisement is received.
+
+        A new toy is added to the snapshot. For a toy found already, the timestamp is refreshed. If revealed by the
+        advertisement (service UUID) the model is filled in.
+        """
         addr = device.address
         now = time.time()
         self._ble_devices[addr] = device
 
-        # already discovered, so just refresh timestamp
         existing = self._discovered.get(addr)
         if existing:
             td, _ = existing
+            model_name = (
+                "" if td.model_name else self._model_of(td, device, advertisement)
+            )
+            if model_name:
+                # A new object: the old one may have been handed out with an earlier snapshot.
+                td = copy.copy(td)
+                td.model_name = model_name
             self._discovered[addr] = (td, now)
+            if model_name:
+                self._emit_snapshot()
             return
 
         # new device: identify + emit
         self._all_seen_addresses.add(addr)
         for handler in self._handlers:
-            if handler.handles_device(device):
-                td = handler.create_toy_data(device)
+            if handler.handles_device(device, advertisement):
+                td = handler.create_toy_data(device, advertisement)
                 self._discovered[addr] = (td, now)
                 self._emit_snapshot()
                 break
+
+    def _model_of(
+        self, td: ToyData, device: BLEDevice, advertisement: AdvertisementData | None
+    ) -> str:
+        """The model name *advertisement* reveals for the toy *td* describes, or ""."""
+        handler = next((h for h in self._handlers if h.handles_toy(td)), None)
+        if handler is None:
+            return ""
+        return handler.create_toy_data(device, advertisement).model_name
 
     async def _cleanup_stale_devices(self) -> None:
         """Remove devices that were not seen for more than 5 seconds."""
@@ -452,7 +478,8 @@ class ConnectionBuilder:
             Exception: Whatever a scanner raises, e.g., Bluetooth is off or the permission is missing.
 
         Returns:
-            The toys found. Lovense toys come without a model name.
+            The toys found. A toy's model name is filled in if its advertisement reveals the model (Lovense:
+            a known service UUID), else it is empty.
         """
         results = await asyncio.gather(
             *(builder.discover_toys(timeout) for builder in self._builders)

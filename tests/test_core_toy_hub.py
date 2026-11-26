@@ -541,8 +541,30 @@ async def test_discover_fills_in_cached_model_names(bare_hub):
 
     found = {data.toy_id: data for data in await bare_hub.discover(0.1)}
 
-    assert found["Thunder_ID"].model_name == "Lightning"  # from the cache
-    assert found["Lightning_ID"].model_name == ""  # the default model
+    assert (
+        found["Thunder_ID"].model_name == "Lightning"
+    )  # from the cache, over the "Thunder" it reports
+    assert found["Lightning_ID"].model_name == "Lightning"  # the model it reports
+
+
+async def test_discover_prefers_the_cache_then_the_detected_model_then_the_default():
+    hub = _ToyHub(mock_toys=True, log_name="test", default_model="PICK_ME")
+    await hub.startup()
+    try:
+        hub._toy_cache.update({"LVS-Cached": "Nora"})
+        hub._connection_builder.discover_toys = AsyncMock(
+            return_value=[
+                ToyData("LVS-Cached", "a", "Solace", "Lovense"),
+                ToyData("LVS-Detected", "b", "Solace", "Lovense"),
+                ToyData("LVS-Unknown", "c", "", "Lovense"),
+            ]
+        )
+
+        found = {data.toy_id: data.model_name for data in await hub.discover(0.1)}
+
+        assert found == {"a": "Nora", "b": "Solace", "c": "PICK_ME"}
+    finally:
+        await hub.shutdown()
 
 
 async def test_discover_leaves_the_builders_toy_data_alone(bare_hub):

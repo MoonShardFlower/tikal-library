@@ -47,14 +47,14 @@ def _thunder_data(model_name="Thunder") -> ToyData:
 # ---------------------------------------------------------------------------
 
 
-def test_discover_fills_in_the_default_and_the_cached_model(mock_hub, tmp_path):
+def test_discover_prefers_the_cached_model_over_the_reported_one(mock_hub, tmp_path):
     cache_file = tmp_path / "cache.json"
     cache_file.write_text('{"Thunder1": "Lightning"}', encoding="utf-8")
     hub = mock_hub(toy_cache_path=cache_file, default_model="PICK_ME")
 
     found = {t.toy_id: t.model_name for t in hub.discover_toys_blocking(0.1)}
 
-    assert found == {"Thunder_ID": "Lightning", "Lightning_ID": "PICK_ME"}
+    assert found == {"Thunder_ID": "Lightning", "Lightning_ID": "Lightning"}
 
 
 def test_corrupted_cache_does_not_break_discovery(mock_hub, tmp_path):
@@ -67,7 +67,8 @@ def test_corrupted_cache_does_not_break_discovery(mock_hub, tmp_path):
 
     found = {t.toy_id: t.model_name for t in hub.discover_toys_blocking(0.1)}
 
-    assert found == {"Thunder_ID": "unknown", "Lightning_ID": "Thunder"}
+    # The bad entry is dropped, so Thunder keeps the model it reports.
+    assert found == {"Thunder_ID": "Thunder", "Lightning_ID": "Thunder"}
 
 
 def test_start_discovery_reports_toys_with_their_models(mock_hub, tmp_path):

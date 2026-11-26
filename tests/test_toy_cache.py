@@ -58,6 +58,21 @@ class TestToyCache(unittest.TestCase):
         cache = ToyCache(self.cache_path, self.default_model, "")
         self.assertEqual(cache.get_model_name("LVS-UNKNOWN"), self.default_model)
 
+    def test_get_cached_model_name_has_no_default(self):
+        """get_cached_model_name returns None, not the default model, for an unknown name."""
+        cache = ToyCache(self.cache_path, self.default_model, "")
+        cache.update({"LVS-A123": "Gush"})
+        self.assertEqual(cache.get_cached_model_name("LVS-A123"), "Gush")
+        self.assertIsNone(cache.get_cached_model_name("LVS-UNKNOWN"))
+
+    def test_default_model_property(self):
+        """default_model is the constructor's, or "" for a non-str."""
+        self.assertEqual(
+            ToyCache(self.cache_path, self.default_model, "").default_model,
+            self.default_model,
+        )
+        self.assertEqual(ToyCache(Path(), 5, "").default_model, "")  # type: ignore[arg-type]
+
     def test_update_adds_new_entry(self):
         """update adds an entry."""
         cache = ToyCache(self.cache_path, self.default_model, "")

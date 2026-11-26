@@ -63,12 +63,11 @@ def main():
     toy_data_list = toy_hub.discover_toys_blocking()
     print(f"Discovered {len(toy_data_list)} toys")
 
-    # Because ToyCache is currently empty, all returned toys have the default model name.
-    default_model = True
+    # A toy's model name comes from ToyCache, else from the toy itself: most Lovense toys advertise their model. A toy
+    # that does neither gets the default model name. ToyCache is still empty: the mocked Solace and Nora advertise
+    # their model, the mocked Gush does not, so it is "unknown".
     for toy_data in toy_data_list:
-        if toy_data.model_name != "unknown":
-            default_model = False
-    print(f"All toys have the default model name: {default_model}")
+        print(f"{toy_data.name} is of model {toy_data.model_name}")
 
     # When we connect to a toy, ToyCache remembers its model name. Connecting is explained below; here we briefly
     # connect the Gush (with its model name set) and disconnect it again.
@@ -77,7 +76,7 @@ def main():
     toy_hub.connect_toys_blocking([gush_data])
     toy_hub.disconnect_toys_blocking([gush_data.toy_id])
 
-    # Let's scan again. This time we should see the correct model name for the Gush
+    # Let's scan again. This time we should see the correct model name for the Gush, from ToyCache
     toy_data_list = toy_hub.discover_toys_blocking()
     for toy_data in toy_data_list:
         if toy_data.name == "LVS-Gush":
@@ -93,12 +92,13 @@ def main():
     gush_data = toy_data_list[1]
     nora_data = toy_data_list[2]
 
-    # for toys that come with the default model name, you'll need to manually set the model name
-    # valid model names can be found in LOVENSE_TOY_NAMES.keys(). For an invalid model name, the connect method
-    # returns an InvalidModelError (from tikal.high_level) in place of the controller
+    # For toys that come with the default model name, you'll need to set the model name, e.g., let the user pick one.
+    # You can also replace a model name the toy came with. Valid model names can be found in LOVENSE_TOY_NAMES.keys().
+    # For an invalid model name, the connect method returns an InvalidModelError (from tikal.high_level) in place of
+    # the controller
     print("valid model names:\n", LOVENSE_TOY_NAMES.keys())
     solace_data.model_name = "Sex Machine"  # valid but incorrect model
-    nora_data.model_name = "Nora"
+    print(f"Nora came with its model name: {nora_data.model_name}")
 
     # Similar to toy discovery, the connect method also has a callback version
     toys = toy_hub.connect_toys_blocking([solace_data, gush_data, nora_data])

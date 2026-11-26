@@ -9,6 +9,12 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 
 ### Added
     - New toys: Lovense Velvo, Fizz, Glint (Experimental: I don't have these toys so I can't test if my commands work)
+    - Discovery fills in the model of Lovense toys: Unlike the bluetooth names the service UUID seem to reliable carry 
+        unique identifiers (e.g., `4241...` for the Solace Pro). The UUID -> model mapping is largely unknown though, 
+        so this only works for a very small selection of toys (I identified SolacePro and Gush 2 which I own) and copied
+        a few more from Buttplug (BSD 3-Clause, Copyright (c) 2016-2023, Nonpolynomial Labs, LLC). I assume the copied
+        ones are correct, but can't verify them.
+        Web API: `scan_update` reports the model in `model_name`. The protocol is unchanged.
     - New module `tikal.funscript`: `Funscript` loads, validates and converts `.funscript` files into a pattern that 
         any of the APIs can play. By default the intensity follows the stroke speed, alternatively a position mapping 
         is available too. Segments are laid on a grid of the toy's recommended minimum interval, so a dense script does 
@@ -23,6 +29,10 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
         to a position, e.g., to follow a video.
 
 ### Changed
+    - Low-Level API: `BLEBrandHandler.handles_device` and `create_toy_data` take the device's advertisement as a second
+        argument (`None` if there is none). `BLEConnectionBuilder` scans with `return_adv=True`, so the scanner class
+        passed to it must support that
+    - Mock: The mocked Solace and Nora advertise a Lovense service UUID, so their model is filled in.
     - Pattern playback finds the current segment with a binary search instead of scanning the whole pattern, making it
         cheaper. A segment with a negative duration now counts as zero.
     - Web API: `tikal-server` exits with status 1 if it fails, e.g., the port is in use (it used to exit with 0)
@@ -33,6 +43,8 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
         grid slots.
 
 ### Fixed
+    - Lovense toys that use a generic serial service (Nordic UART `6e400001-...` or `0000fff0-...`) failed to connect: 
+        their tx/rx characteristics were not found. The characteristics are now derived from the toy's service UUID.
     - Web API docs: A request with invalid data is reported as "Invalid Data". error.md and the `set_pattern` section
         of actions.md wrongly called it "Validation Error".
     - High-Level API: `set_pattern` copies the pattern. Changing the list afterward no longer changes playback.

@@ -71,38 +71,40 @@ async def main():
     first_discovery = len(toy_data)
 
     print(
-        f"\nAs you will see below the model name is always empty and needs to be manually assigned.\n"
-        f"(e.g. by letting the user select the correct toy). View the README as to why automatic assignment is difficult\n"
-        f"A full list of all valid model names can be found in lovense.LOVENSE_TOY_NAMES.keys():\n"
+        f"\nAs you will see below, the model name is filled in if the toy advertises it (most Lovense toys do).\n"
+        f"Else it is empty and needs to be assigned (e.g., by letting the user select the correct toy). View the\n"
+        f"README for how toys are identified. A full list of all valid model names can be found in\n"
+        f"lovense.LOVENSE_TOY_NAMES.keys():\n"
         f"{LOVENSE_TOY_NAMES.keys()}"
         f"In a later example I will show ToyCache as a way to alleviate this problem a bit."
     )
 
-    # The first toy is a mocked version of a Lovense SolacePro
+    # The first toy is a mocked version of a Lovense SolacePro. It advertises its model.
     solace_data = toy_data[0]
     print(
         f"Solace Info: "
         f"Bluetooth Name={solace_data.name}, "
         f"Bluetooth Address={solace_data.toy_id}, "
         f"Brand={solace_data.brand}, "
-        f"model_name is emtpy={solace_data.model_name == ''}"
+        f"model_name={solace_data.model_name!r}"
     )
 
-    # The second toy is a mocked version of a Lovense Gush2
+    # The second toy is a mocked version of a Lovense Gush2. It does not advertise its model.
     gush_data = toy_data[1]
     print(
         f"Gush Info: "
         f"Bluetooth Name={gush_data.name}, "
         f"Bluetooth Address={gush_data.toy_id}, "
         f"Brand={gush_data.brand}, "
-        f"model_name is emtpy={gush_data.model_name == ''}"
+        f"model_name is empty={gush_data.model_name == ''}"
     )
 
     # ------------------------------------------------------------------------------------------------------------------
     # Connecting to toys
     # ------------------------------------------------------------------------------------------------------------------
 
-    # First, we need to set the model_name. Remember that LOVENSE_TOY_NAMES.keys() contains all valid model names.
+    # First, we need to set the model_name of the Gush. Remember that LOVENSE_TOY_NAMES.keys() contains all valid
+    # model names. To show what an invalid name does, we also replace the one the Solace came with.
     gush_data.model_name = "Gush"  # Valid name
     print(
         f"\n'Gush' is in LOVENSE_TOY_NAMES.keys(): {'Gush' in LOVENSE_TOY_NAMES.keys()}'"

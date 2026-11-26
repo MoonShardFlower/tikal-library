@@ -86,6 +86,23 @@ class ToyCache:
         self._log.debug(f"ToyCache retrieved {name} for {bluetooth_name}")
         return name
 
+    def get_cached_model_name(self, bluetooth_name: str) -> str | None:
+        """
+        The model name the cache remembers for a toy, without falling back to the default model.
+
+        Args:
+            bluetooth_name: The toy's Bluetooth name (``ToyData.name``), e.g., ``"LVS-A123"``.
+
+        Returns:
+            The cached model name, or None if the cache does not know the toy.
+        """
+        return self._cache.get(bluetooth_name)
+
+    @property
+    def default_model(self) -> str:
+        """What :meth:`get_model_name` returns for a toy the cache does not know."""
+        return self._default_model
+
     def _ensure_cache_exists(self) -> None:
         """
         Create the file (as ``{}``) and its directories if missing. Does nothing if the file/directories already exist.

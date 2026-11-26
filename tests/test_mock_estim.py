@@ -355,7 +355,7 @@ async def test_continuous_scan_re_emits_when_connection_changes(callbacks):
 async def test_composite_surfaces_and_routes_mock_toys(callbacks):
     # BLE finds nothing; with mock_toys=True the fake toys still come through and get routed to MockConnectionBuilder.
     scanner = MagicMock()
-    scanner.discover = AsyncMock(return_value=[])
+    scanner.discover = AsyncMock(return_value={})
 
     builder = ConnectionBuilder(
         *callbacks, logger_name="test", bluetooth_scanner=scanner, mock_toys=True
@@ -447,7 +447,7 @@ def test_high_level_controller_set_model_name_is_executed():
 def test_toy_hub_connects_mock_estim_toy():
     # BLE finds nothing; with mock_toys=True the fake toys still come through ToyHub and connect.
     scanner = MagicMock()
-    scanner.discover = AsyncMock(return_value=[])
+    scanner.discover = AsyncMock(return_value={})
     hub = ToyHub(logger_name="test", bluetooth_scanner=scanner, mock_toys=True)
     try:
         toys = hub.discover_toys_blocking(0.1)
@@ -513,7 +513,7 @@ async def test_websocket_hub_adds_mock_estim_toy():
 def _no_ble_scanner() -> MagicMock:
     """A BLE scanner that finds nothing, so only the mock brand's fake devices come through."""
     scanner = MagicMock()
-    scanner.discover = AsyncMock(return_value=[])
+    scanner.discover = AsyncMock(return_value={})
     return scanner
 
 

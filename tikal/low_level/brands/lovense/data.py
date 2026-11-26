@@ -9,6 +9,8 @@ This module is the single place to edit when adding or adjusting a Lovense model
 - :data:`ROTATION_TOY_NAMES`: models that support changing the rotation direction
 - :data:`MIN_SEGMENT_LENGTH`: suggested minimum interval between intensity changes (ms)
 
+:data:`LOVENSE_UUID_PREFIXES` maps the start of the service UUID a toy advertises to these model names.
+
 The brand-agnostic data structures these build on (``ToyData``, ``ToyCommands``, ``ToySpecification`` and the validation
 exceptions) live in :mod:`tikal.low_level.toy_data`.
 """
@@ -162,4 +164,58 @@ ROTATION_TOY_NAMES: list[str] = [
 #:         print(MIN_SEGMENT_LENGTH["Nora"])  # 200
 MIN_SEGMENT_LENGTH: dict[str, int] = {
     name: spec.min_interval for name, spec in LOVENSE_TOY_SPECIFICATIONS.items()
+}
+
+
+#: Maps the start of a Lovense service UUID to the model name (a key of :data:`LOVENSE_TOY_SPECIFICATIONS`).
+#:
+#: A Lovense service UUID looks like ``42410001-0023-4bd4-bbd5-a6920e4c5653``. Its first four hex digits differ per
+#  model. Most toys advertise that UUID, so discovery can tell the model before connecting.
+#:
+#: Derived from the device configuration of Buttplug (https://github.com/buttplugio/buttplug),
+#: Copyright (c) 2016-2023, Nonpolynomial Labs, LLC, under the BSD 3-Clause license.
+#: ``4241`` (Solace Pro) and ``455a`` (Gush 2) are confirmed on my own toys. The others are assumed as working.
+#:
+#: Type:
+#:     dict[str, str]
+#:
+#: Example:
+#:     ::
+#:
+#:         print(LOVENSE_UUID_PREFIXES["4241"])  # "Solace"
+LOVENSE_UUID_PREFIXES: dict[str, str] = {
+    "4130": "Nora",
+    "414e": "Lush Anal",
+    "4230": "Max",
+    "4241": "Solace",  # Solace Pro
+    "4330": "Nora",
+    "4341": "Mission",  # Mission 2
+    "4342": "Velvo",
+    "4541": "Gravity",
+    "4542": "Hyphy",
+    "4544": "Gush",
+    "4549": "Flexer",
+    "454c": "Ridge",
+    "455a": "Gush",  # Gush 2
+    "4630": "Sex Machine",
+    "4653": "Sex Machine",  # Mini Sex Machine
+    "4830": "Solace",
+    "4a30": "Dolce",
+    "4c30": "Ambi",
+    "4e30": "Gemini",
+    "4f30": "Osci",
+    "4f43": "Osci",  # Osci 3
+    "5030": "Edge",
+    "5130": "Tenera",
+    "5142": "Fizz",
+    "5230": "Diamo",
+    "5330": "Lush",
+    "5344": "Vulse",
+    "5430": "Calor",
+    "5530": "Lapis",
+    "5630": "Mission",
+    "5730": "Domi",
+    "5744": "Spinel",
+    "5830": "Ferri",
+    "5a30": "Hush",
 }

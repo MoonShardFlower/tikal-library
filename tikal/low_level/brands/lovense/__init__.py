@@ -3,6 +3,7 @@
 from .data import (
     LOVENSE_TOY_NAMES,
     LOVENSE_TOY_SPECIFICATIONS,
+    LOVENSE_UUID_PREFIXES,
     MIN_SEGMENT_LENGTH,
     ROTATION_TOY_NAMES,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "LovenseToy",
     "LovenseHandler",
     "LOVENSE_TOY_SPECIFICATIONS",
+    "LOVENSE_UUID_PREFIXES",
     "LOVENSE_TOY_NAMES",
     "ROTATION_TOY_NAMES",
     "MIN_SEGMENT_LENGTH",

@@ -215,7 +215,8 @@ class _ToyHub:
             no battery).
         toy_cache_path: JSON file that remembers each toy's model name (see :class:`ToyCache`).
             In memory-only if toy_cache_path is the empty Path.
-        default_model: Model name of discovered toys that the toy cache does not know.
+        default_model: Model name of discovered toys that the toy cache does not know and whose advertisement does
+            not reveal their model.
         log_name: Name of the logger.
         mock_toys: Use the fake Lovense toys of :mod:`tikal.mock`, and offer the fictional MockEstimToys brand.
         bluetooth_scanner: BleakScanner (sub)class to scan with, instead of the one *mock_toys* picks.
@@ -385,8 +386,9 @@ class _ToyHub:
             Exception: Any exception from the underlying scanner (e.g., Bluetooth not available).
 
         Returns:
-            The toys found, with model names from the toy cache (or the default model). Copy: Changing them does
-            not affect the hub. Connect one with :meth:`add_toy_data`.
+            The toys found. Their model names come from the toy cache, else from the toy's advertisement, else
+            they are the default model. Copy: Changing them does not affect the hub. Connect one with
+            :meth:`add_toy_data`.
         """
         self._log.info(f"Discovering toys for {timeout} s")
         found = await self._connection_builder.discover_toys(timeout)
@@ -400,9 +402,9 @@ class _ToyHub:
         continues with the toys found so far, and *callback* replaces the earlier one.
 
         Args:
-            callback: Called with all toys found whenever they change, with model names from the toy cache: first with
-                an empty list, or with the toys found so far if the scan was running already. Called with a
-                :class:`DiscoveryError` if the scan fails. May be sync or async.
+            callback: Called with all toys found whenever they change, with model names as :meth:`discover` fills
+                them in: first with an empty list, or with the toys found so far if the scan was running already.
+                Called with a :class:`DiscoveryError` if the scan fails. May be sync or async.
 
         Raises:
             DiscoveryStartError: The scan could not start, e.g., Bluetooth is off.
@@ -449,11 +451,12 @@ class _ToyHub:
         callback: Callable[[Exception | list[ToyData]], Any],
     ) -> None:
         """
-        Updates the discovery state, fills in the cached model names, and delivers the toys to callback
+        Updates the discovery state, fills in the model names (see :meth:`_with_cached_model`), and delivers the toys
+        to callback
 
         Args:
             update: The toys found, or the exception that ended the scan.
-            callback: Receives the toys with cached model names (copies), or a :class:`DiscoveryError`.
+            callback: Receives the toys with their model names (copies), or a :class:`DiscoveryError`.
         """
         result: DiscoveryError | list[ToyData]
         if isinstance(update, Exception):
@@ -467,9 +470,19 @@ class _ToyHub:
         await self._fire_callback(callback, result)
 
     def _with_cached_model(self, data: ToyData) -> ToyData:
-        """A copy of *data* with the model name from the toy cache (or the default model)."""
+        """
+        A copy of *data* with its model name filled in. The first that knows the model wins:
+
+        1. The toy cache: the model the user connected the toy with before.
+        2. Discovery: the model the toy's advertisement reveals (e.g., a Lovense service UUID), already in *data*.
+        3. The default model.
+        """
         filled = copy.copy(data)
-        filled.model_name = self._toy_cache.get_model_name(data.name)
+        cached = self._toy_cache.get_cached_model_name(data.name)
+        if cached is not None:
+            filled.model_name = cached
+        elif not data.model_name:
+            filled.model_name = self._toy_cache.default_model
         return filled
 
     async def _set_toy_status(self, toy_id: str, new_status: ToyStatus) -> None:

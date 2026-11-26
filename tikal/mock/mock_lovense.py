@@ -4,6 +4,11 @@ import asyncio
 from enum import Enum
 from typing import Any, Callable, Optional
 
+from bleak.backends.scanner import AdvertisementData
+
+#: The Lovense service of a mock toy that advertises none. ``4030`` is no known model (see LOVENSE_UUID_PREFIXES).
+_UNADVERTISED_SERVICE = "40300001-0023-4bd4-bbd5-a6920e4c5653"
+
 
 class MockBehavior(Enum):
     """Defines different toy simulation behaviors for testing"""
@@ -35,11 +40,32 @@ class MockService:
 
 
 class MockBLEDevice:
-    """Mock a BLE device that simulates discovered toys"""
+    """
+    Mock a BLE device that simulates discovered toys.
 
-    def __init__(self, name: str, address: str):
+    Args:
+        name: The Bluetooth name.
+        address: The Bluetooth address.
+        service_uuid: The Lovense service UUID the device advertises, which reveals its model. None: it advertises
+            none, so its model is unknown until the user picks one.
+    """
+
+    def __init__(self, name: str, address: str, service_uuid: str | None = None):
         self.name = name
         self.address = address
+        self.service_uuid = service_uuid
+
+    def advertisement(self) -> AdvertisementData:
+        """What the device advertises: its name and, if it has one, its service UUID."""
+        return AdvertisementData(
+            local_name=self.name,
+            manufacturer_data={},
+            service_data={},
+            service_uuids=[self.service_uuid] if self.service_uuid else [],
+            tx_power=None,
+            rssi=-60,
+            platform_data=(),
+        )
 
 
 class MockBleakScanner:
@@ -77,7 +103,6 @@ class MockBleakScanner:
         Args:
             detection_callback: Optional callback that receives (device, advertisement_data)
                                 when a device is detected during continuous scanning.
-                                The second argument is None in this mock implementation.
         """
         self._detection_callback = detection_callback
         self._stop_event: Optional[asyncio.Event] = None
@@ -132,42 +157,56 @@ class MockBleakScanner:
             for device in all_devices:
                 if device.address not in self._connected_addresses:
                     # Simulate advertisement detection
-                    task = callback(device, None)
+                    task = callback(device, device.advertisement())
                     if asyncio.iscoroutine(task):
                         await task
 
     @staticmethod
     def _get_all_devices() -> list[MockBLEDevice]:
-        """Return the full list of mock devices (same as in discover())."""
+        """
+        Return the full list of mock devices (same as in discover()). The Solace (id H) and the Nora (id A) advertise
+        their service UUID, so discovery knows their model. The Gushes advertise none.
+        """
         return [
-            MockBLEDevice("LVS-Solace", "00:00:00:00:00:01"),
+            MockBLEDevice(
+                "LVS-Solace",
+                "00:00:00:00:00:01",
+                "48300001-0023-4bd4-bbd5-a6920e4c5653",
+            ),
             MockBLEDevice("LVS-Gush", "00:00:00:00:00:02"),
-            MockBLEDevice("LVS-Nora", "00:00:00:00:00:03"),
+            MockBLEDevice(
+                "LVS-Nora", "00:00:00:00:00:03", "41300001-0023-4bd4-bbd5-a6920e4c5653"
+            ),
             MockBLEDevice("LVS-Gush connection_failure", "00:00:00:00:00:04"),
             MockBLEDevice("LVS-Gush POWEROFF", "00:00:00:00:00:05"),
         ]
 
     @staticmethod
-    async def discover(timeout: float) -> list[MockBLEDevice]:
+    async def discover(
+        timeout: float, return_adv: bool = False
+    ) -> list[MockBLEDevice] | dict[str, tuple[MockBLEDevice, AdvertisementData]]:
         """
-        One-shot discovery: returns a list of mock devices that are not currently connected.
+        One-shot discovery: the mock devices that are not currently connected.
 
         Args:
             timeout: Simulated scan duration (ignored except for a small delay).
+            return_adv: Return each device with its advertisement, as BleakScanner does.
 
         Returns:
-            List of MockBLEDevice objects for non-connected toys.
+            The devices, or with *return_adv* a dict of address -> (device, advertisement).
         """
         await asyncio.sleep(
             timeout * 0.1
         )  # Real scan time will be exactly timeout seconds, we speed it up.
 
-        all_devices = MockBleakScanner._get_all_devices()
-        return [
+        devices = [
             device
-            for device in all_devices
+            for device in MockBleakScanner._get_all_devices()
             if device.address not in MockBleakScanner._connected_addresses
         ]
+        if return_adv:
+            return {d.address: (d, d.advertisement()) for d in devices}
+        return devices
 
 
 class MockBleakClient:
@@ -213,10 +252,10 @@ class MockBleakClient:
         # Register this device as connected so it won't appear in future scans
         MockBleakScanner.register_connection(self.address)
 
-        # Create a mock service structure for UUID discovery
-        base_uuid = "40300001-0023-4bd4-bbd5-a6920e4c5653"
-        tx_uuid = "40300002-0023-4bd4-bbd5-a6920e4c5653"
-        rx_uuid = "40300003-0023-4bd4-bbd5-a6920e4c5653"
+        # Create a mock service structure for UUID discovery: xxxxxxx1 with tx xxxxxxx2 and rx xxxxxxx3
+        base_uuid = getattr(self._device, "service_uuid", None) or _UNADVERTISED_SERVICE
+        tx_uuid = base_uuid[:7] + "2" + base_uuid[8:]
+        rx_uuid = base_uuid[:7] + "3" + base_uuid[8:]
 
         self._services_cache = [
             MockService(

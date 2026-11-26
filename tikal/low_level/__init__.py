@@ -4,6 +4,7 @@ Low-Level API: async, direct control of toys.
 - :class:`ConnectionBuilder` discovers toys (:class:`ToyData`) and connects them.
 - A connected toy is a :class:`Toy`, e.g., a :class:`LovenseToy`.
 - :data:`BRANDS` and :data:`LOVENSE_TOY_NAMES` list the valid model names. A toy needs one to connect.
+  :data:`LOVENSE_UUID_PREFIXES` maps the start of the service UUID a Lovense toy advertises to them.
 """
 
 from .brand_handler import BLEBrandHandler
@@ -11,6 +12,7 @@ from .brands import BRANDS
 from .brands.lovense import (
     LOVENSE_TOY_NAMES,
     LOVENSE_TOY_SPECIFICATIONS,
+    LOVENSE_UUID_PREFIXES,
     MIN_SEGMENT_LENGTH,
     ROTATION_TOY_NAMES,
     LovenseToy,
@@ -54,6 +56,7 @@ __all__ = [
     "UnexpectedToyResponse",
     "BRANDS",
     "LOVENSE_TOY_SPECIFICATIONS",
+    "LOVENSE_UUID_PREFIXES",
     "LOVENSE_TOY_NAMES",
     "ROTATION_TOY_NAMES",
     "MIN_SEGMENT_LENGTH",
