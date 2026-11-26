@@ -9,4 +9,4 @@ TIKAL ('Toys I Know And Love'): control Lovense toys over Bluetooth, without the
 - :mod:`tikal.funscript`: converts funscripts into patterns.
 """
 
-__version__ = "2.1.0"
+__version__ = "2.1.1"
