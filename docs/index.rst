@@ -26,8 +26,8 @@ There are three APIs:
   them. Each connected toy is a :class:`~tikal.low_level.Toy` (e.g., a :class:`~tikal.low_level.LovenseToy`), whose
   async methods send commands directly. No pattern playback or automatic reconnection.
 * **WebSocket** (:mod:`tikal.websocket`): ``tikal-server`` lets any language control the toys over a WebSocket, in
-  JSON. The Tikal App uses it, which makes it the best-tested API. Windows executables are available on GitHub
-  Releases.
+  JSON. The Tikal App uses it, which makes it the best-tested API. Windows executables and portable Linux builds
+  (x86_64, aarch64) are available on GitHub Releases.
 
 :class:`~tikal.high_level.ToyCache` remembers each toy's model name between sessions. The High-Level and WebSocket
 APIs use it.

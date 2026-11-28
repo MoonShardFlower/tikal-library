@@ -2,9 +2,9 @@
 # 1. Runs on pushes to main and version tags (v*.*.*)
 # 2. Runs on pull requests targeting main
 # 3. Builds, tests, lints, and formats the project
-# 4. Creates a Windows executable on release tags
+# 4. Creates a Windows executable and portable Linux bundles (x86_64, aarch64) on release tags
 # 5. Publishes to PyPI on release tags
-# 6. Creates a GitHub Release and uploads the executable
+# 6. Creates a GitHub Release and uploads the executable and the bundles
 
 name: CI/CD Pipeline
 
@@ -226,13 +226,20 @@ jobs:
           .\venv\Scripts\Activate.ps1
           python.exe -m nuitka --assume-yes-for-downloads ./ToyServer.py
 
+      # The licenses go into the zip: tikal's own (LICENSE, NOTICE) and those of what ToyServer.exe bundles
+      # (THIRD-PARTY-LICENSES: from the installed distributions, Python, and .github\licenses for the texts that no
+      # installed distribution brings along: OpenSSL's Apache-2.0, pyserial's license)
       - name: Rename folder and create zip
         shell: pwsh
         run: |
+          .\venv\Scripts\Activate.ps1
           # Rename ToyServer.dist -> ToyServer
           if (Test-Path ToyServer.dist) {
             Rename-Item -Path ToyServer.dist -NewName ToyServer
           }
+          Copy-Item LICENSE, NOTICE ToyServer
+          python.exe .github\scripts\collect_licenses.py tikal ToyServer\THIRD-PARTY-LICENSES --extra .github\licenses
+          Get-Content ToyServer\THIRD-PARTY-LICENSES\README.txt
           Compress-Archive -Path ToyServer -DestinationPath ToyServer.zip -Force
 
       # Upload built .exe for later use
@@ -243,6 +250,95 @@ jobs:
             path: ToyServer.zip
             retention-days: 7
             if-no-files-found: error
+
+  # When we want to release, create a portable ToyServer for Linux: a standalone Python with tikal installed into it.
+  # The python-build-standalone builds and the manylinux wheels run on practically every glibc distro.
+  build-linux-bundle:
+    needs: [build-and-test, type-check, check-release]
+    if: needs.check-release.outputs.is_release == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    env:
+      # Release of https://github.com/astral-sh/python-build-standalone and the CPython version it ships
+      PBS_RELEASE: '20261124'
+      PBS_PYTHON: '3.14.10'
+      # Newest glibc the bundle may need.
+      MAX_GLIBC: '2.28'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+
+      - name: Download standalone Python
+        shell: bash
+        run: |
+          asset="cpython-${PBS_PYTHON}%2B${PBS_RELEASE}-${{ matrix.arch }}-unknown-linux-gnu-install_only_stripped.tar.gz"
+          curl --fail --location --retry 3 --output python.tar.gz \
+            "https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/${asset}"
+          mkdir ToyServer
+          tar -xzf python.tar.gz -C ToyServer   # creates ToyServer/python/
+
+      # From the checkout, not PyPI: publish-pypi runs at the same time, so the new version may not be on PyPI yet
+      - name: Install tikal into the bundle
+        shell: bash
+        run: ToyServer/python/bin/python3 -m pip install --no-cache-dir --no-warn-script-location .
+
+      # pip's own tikal-server script holds the absolute path of this runner's Python, so it breaks once the folder is
+      # moved. The launcher finds the bundled Python next to itself. -I ignores PYTHON* variables, the user's
+      # site-packages, and the working directory, so nothing on the user's system can replace the bundled packages.
+      - name: Write launcher
+        shell: bash
+        run: |
+          cat > ToyServer/ToyServer <<'EOF'
+          #!/bin/sh
+          # Starts the tikal WebSocket server with the bundled Python. Takes the same options as tikal-server.
+          here="$(dirname "$(readlink -f "$0")")"
+          exec "$here/python/bin/python3" -I -m tikal.websocket.cli "$@"
+          EOF
+          chmod +x ToyServer/ToyServer
+
+      # Imports the Linux Bluetooth backend and the compiled dependencies, then starts a mock server that shuts itself
+      # down after 2 s without clients
+      - name: Smoke test
+        shell: bash
+        run: |
+          ToyServer/python/bin/python3 -I -c "import bleak.backends.bluezdbus.scanner, dbus_fast.message, pydantic_core, websockets, serial_asyncio_fast, tikal; print('tikal', tikal.__version__)"
+          ToyServer/ToyServer --help
+          timeout 30 ToyServer/ToyServer --mock-toys --timeout 2 --log-path None --toy-cache-path None
+
+      # Fails the release if a dependency starts shipping wheels for a newer glibc, which would silently drop older distros
+      - name: Check glibc requirement
+        shell: bash
+        run: |
+          command -v objdump >/dev/null || { sudo apt-get update && sudo apt-get install -y binutils; }
+          # objdump fails on files that are not ELF (e.g., the python3-config script): "|| true" keeps pipefail quiet
+          needed=$(find ToyServer -type f \( -name '*.so' -o -name '*.so.*' -o -path '*/bin/python3*' \) \
+            -exec objdump -T {} + 2>/dev/null | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/GLIBC_//' | sort -Vu | tail -n 1) || true
+          echo "The bundle needs glibc $needed (allowed: $MAX_GLIBC)"
+          if [ -z "$needed" ]; then echo "::error::Found no glibc symbol versions"; exit 1; fi
+          if [ "$(printf '%s\n' "$needed" "$MAX_GLIBC" | sort -V | tail -n 1)" != "$MAX_GLIBC" ]; then
+            echo "::error::The bundle needs glibc $needed, newer than MAX_GLIBC $MAX_GLIBC"
+            exit 1
+          fi
+
+      - name: Create archive
+        shell: bash
+        run: tar -czf ToyServer-linux-${{ matrix.arch }}.tar.gz ToyServer
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ToyServer-linux-${{ matrix.arch }}
+          path: ToyServer-linux-${{ matrix.arch }}.tar.gz
+          retention-days: 7
+          if-no-files-found: error
 
   # when we want to release build wheel + sdist and upload to PyPI.
   publish-pypi:
@@ -275,9 +371,9 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@v1.14.3
 
-  # When we want to release, take the previously built zip and create a GitHub release
+  # When we want to release, take the previously built zip and Linux bundles and create a GitHub release
   publish-release:
-    needs: [build-executable, check-release]
+    needs: [build-executable, build-linux-bundle, check-release]
     if: needs.check-release.outputs.is_release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -287,10 +383,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7.0.1
 
-      - name: Download built artifact
+      # ToyServer-standalone (Windows) and ToyServer-linux-<arch>, each holding one file, all into the same folder
+      - name: Download built artifacts
         uses: actions/download-artifact@v8.0.2
         with:
-          name: ToyServer-standalone
+          pattern: ToyServer-*
+          merge-multiple: true
           path: .
 
       - name: Create GitHub Release
@@ -303,4 +401,7 @@ jobs:
           prerelease: false
           files: |
             ToyServer.zip
+            ToyServer-linux-x86_64.tar.gz
+            ToyServer-linux-aarch64.tar.gz
+          fail_on_unmatched_files: true
           token: ${{ secrets.GITHUB_TOKEN }}

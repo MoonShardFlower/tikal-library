@@ -12,6 +12,12 @@ I suggest reading the documentation in the following order:
 ## Starting the Server
 The server can be started with the command `tikal-server` (installed with the package) or, equivalently, `python -m tikal.websocket.cli`.
 
+Without Python, use the builds on GitHub Releases. Both take the same options as `tikal-server`:
+- **Windows** (`ToyServer.zip`): run `ToyServer\ToyServer.exe`.
+- **Linux** (`ToyServer-linux-x86_64.tar.gz` or `ToyServer-linux-aarch64.tar.gz`): unpack with `tar -xzf <file>` and
+run `ToyServer/ToyServer`. It brings its own Python and runs on distros with glibc 2.28 or newer. Bluetooth needs
+BlueZ (`bluetoothd`). Toys connected by USB need access to the serial port.
+
 > **Security:** tikal performs **no authentication of its own** — anyone who can reach the port has full control of the connected toys.
 > The server therefore refuses to bind a non-loopback `--host` unless you also pass `--insecure`.
 > To expose it safely, keep it on `localhost` and put a reverse proxy (TLS + auth) in front. See **security.md**.

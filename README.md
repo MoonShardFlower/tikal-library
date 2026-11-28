@@ -44,8 +44,8 @@ meaning both APIs behave the same.
 ### WebSocket API
 
 `tikal-server` runs a server that lets any language control the toys over a WebSocket, in JSON. It's the best-tested 
-API (because the Tikal App uses it). Windows executables are available on GitHub Releases. The protocol is documented
-in Markdown in [./docs/websocket](./docs/websocket/documentation.md).
+API (because the Tikal App uses it). Windows executables and portable Linux builds (x86_64, aarch64) are available on
+GitHub Releases. The protocol is documented in Markdown in [./docs/websocket](./docs/websocket/documentation.md).
 
 ## What You Should Know
 

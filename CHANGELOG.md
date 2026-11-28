@@ -7,6 +7,16 @@ and for versions >= 1.0.0 this project adheres to [Semantic Versioning](https://
 
 ## [Unreleased]
 
+### Added
+    - Linux ToyServer: GitHub Releases now also carry `ToyServer-linux-x86_64.tar.gz` and 
+        `ToyServer-linux-aarch64.tar.gz`, a standalone Python with tikal installed. Unpack and run `ToyServer/ToyServer`
+        (same options as `tikal-server`). Needs no installed Python and runs on distros with glibc 2.28 or newer.
+
+### Fixed
+    - ToyServer.zip now contains the licenses: tikal's `LICENSE` and `NOTICE`, and `THIRD-PARTY-LICENSES` with the 
+        licenses of everything ToyServer.exe bundles (Python, OpenSSL, bleak, websockets, pydantic, pyserial, ...), 
+        collected by `.github/scripts/collect_licenses.py`.
+
 ## [2.1.1] - 2026-11-26
 
 ### Fixed
